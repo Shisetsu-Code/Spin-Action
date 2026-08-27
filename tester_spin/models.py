@@ -34,25 +34,39 @@ class Game:
 class SpinAttempt:
     number: int
     ok: bool
+    mode_id: str = "SPIN"
+    mode_kind: str = "SPIN"
+    provider_bl: int | None = None
+    provider_pur: int | None = None
     status_code: int | None = None
     elapsed_ms: float | None = None
     symbol: str = ""
     endpoint: str = ""
     na: str = ""
+    terminal: bool = False
+    wire_steps: int = 0
+    warning: str = ""
     error: str = ""
-    bootstrap: str = ""
+    artifact_dir: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "number": self.number,
             "ok": self.ok,
+            "mode_id": self.mode_id,
+            "mode_kind": self.mode_kind,
+            "provider_bl": self.provider_bl,
+            "provider_pur": self.provider_pur,
             "status_code": self.status_code,
             "elapsed_ms": self.elapsed_ms,
             "symbol": self.symbol,
             "endpoint": self.endpoint,
             "na": self.na,
+            "terminal": self.terminal,
+            "wire_steps": self.wire_steps,
+            "warning": self.warning,
             "error": self.error,
-            "bootstrap": self.bootstrap,
+            "artifact_dir": self.artifact_dir,
         }
 
 
@@ -67,10 +81,12 @@ class GameTestResult:
     failed_spins: int
     status: str
     symbol: str = ""
+    discovered_modes: list[dict[str, Any]] = field(default_factory=list)
     started_at: str = field(default_factory=utc_now_iso)
     finished_at: str = field(default_factory=utc_now_iso)
     elapsed_ms: float = 0.0
     error: str = ""
+    run_dir: str = ""
     attempts: list[SpinAttempt] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -84,9 +100,11 @@ class GameTestResult:
             "failed_spins": self.failed_spins,
             "status": self.status,
             "symbol": self.symbol,
+            "discovered_modes": self.discovered_modes,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
             "elapsed_ms": self.elapsed_ms,
             "error": self.error,
+            "run_dir": self.run_dir,
             "attempts": [attempt.to_dict() for attempt in self.attempts],
         }
