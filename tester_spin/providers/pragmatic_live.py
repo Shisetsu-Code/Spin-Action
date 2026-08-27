@@ -3,7 +3,7 @@ from __future__ import annotations
 import threading
 from urllib.parse import urljoin
 
-from tester_spin.models import Game
+from tester_spin.models import Game, GameTestResult
 from tester_spin.providers.base import GameCallback, Progress
 from tester_spin.providers.pragmatic import PragmaticProvider as _PragmaticProvider
 
@@ -63,3 +63,30 @@ class PragmaticProvider(_PragmaticProvider):
         self._write_catalog_index(games)
         progress(f"Catálogo Pragmatic terminado: {len(games)} juegos únicos")
         return games
+
+    def test_game(
+        self,
+        game: Game,
+        *,
+        spins: int,
+        timeout_s: float,
+        stop_event: threading.Event,
+        progress: Progress,
+    ) -> GameTestResult:
+        result = super().test_game(
+            game,
+            spins=spins,
+            timeout_s=timeout_s,
+            stop_event=stop_event,
+            progress=progress,
+        )
+        warnings = [attempt.warning for attempt in result.attempts if attempt.warning]
+        if warnings and result.status == "OK":
+            result.status = "PARCIAL"
+            result.error = (
+                f"{len(warnings)} intento(s) respondieron pero terminaron en estados de continuación "
+                "aún no automatizados; RAW preservado para implementar esos estados."
+            )
+            self._write_json(__import__("pathlib").Path(result.run_dir) / "result.json", result.to_dict())
+            self._record_last_test_in_game_json(game, result)
+        return result
