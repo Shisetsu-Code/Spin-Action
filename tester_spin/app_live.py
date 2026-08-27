@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import queue
 import threading
-from tkinter import messagebox
+from tkinter import messagebox, ttk
 
 from tester_spin.app import TesterSpinApp
 from tester_spin.models import Game
@@ -11,20 +11,33 @@ from tester_spin.models import Game
 class LiveTesterSpinApp(TesterSpinApp):
     """GUI variant that streams catalog discoveries into the table immediately."""
 
+    def __init__(self) -> None:
+        super().__init__()
+        self._rename_catalog_limit_label(self)
+
+    def _rename_catalog_limit_label(self, widget) -> None:
+        for child in widget.winfo_children():
+            try:
+                if isinstance(child, ttk.Label) and child.cget("text") == "Máx. páginas:":
+                    child.configure(text="Máx. cargas:")
+            except Exception:
+                pass
+            self._rename_catalog_limit_label(child)
+
     def _start_crawl(self) -> None:
         if self._worker and self._worker.is_alive():
             return
         try:
             max_pages = max(1, int(self.max_pages_var.get()))
         except ValueError:
-            messagebox.showerror("Tester-Spin", "Máx. páginas debe ser un entero.")
+            messagebox.showerror("Tester-Spin", "Máx. cargas debe ser un entero.")
             return
 
         provider = self._provider()
         provider.catalog_url = self.catalog_url_var.get().strip() or provider.catalog_url
         self._stop_event = threading.Event()
         self._set_busy(True)
-        self.status_var.set("Cargando catálogo...")
+        self.status_var.set("Cargando catálogo dinámico...")
         self.progress.configure(mode="indeterminate")
         self.progress.start(10)
 
