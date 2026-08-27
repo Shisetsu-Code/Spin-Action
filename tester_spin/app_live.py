@@ -18,8 +18,8 @@ class LiveTesterSpinApp(TesterSpinApp):
     def _rename_catalog_limit_label(self, widget) -> None:
         for child in widget.winfo_children():
             try:
-                if isinstance(child, ttk.Label) and child.cget("text") == "Máx. páginas:":
-                    child.configure(text="Máx. cargas:")
+                if isinstance(child, ttk.Label) and child.cget("text") in {"Máx. páginas:", "Máx. cargas:"}:
+                    child.configure(text="Máx. páginas HTTP:")
             except Exception:
                 pass
             self._rename_catalog_limit_label(child)
@@ -30,14 +30,14 @@ class LiveTesterSpinApp(TesterSpinApp):
         try:
             max_pages = max(1, int(self.max_pages_var.get()))
         except ValueError:
-            messagebox.showerror("Tester-Spin", "Máx. cargas debe ser un entero.")
+            messagebox.showerror("Tester-Spin", "Máx. páginas HTTP debe ser un entero.")
             return
 
         provider = self._provider()
         provider.catalog_url = self.catalog_url_var.get().strip() or provider.catalog_url
         self._stop_event = threading.Event()
         self._set_busy(True)
-        self.status_var.set("Cargando catálogo dinámico...")
+        self.status_var.set("Cargando catálogo por HTTP...")
         self.progress.configure(mode="indeterminate")
         self.progress.start(10)
 
