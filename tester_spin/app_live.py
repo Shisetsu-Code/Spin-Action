@@ -13,13 +13,20 @@ class LiveTesterSpinApp(TesterSpinApp):
 
     def __init__(self) -> None:
         super().__init__()
+        # Zero means "continue until the site's Load More control disappears".
+        self.max_pages_var.set("0")
         self._rename_catalog_limit_label(self)
 
     def _rename_catalog_limit_label(self, widget) -> None:
         for child in widget.winfo_children():
             try:
-                if isinstance(child, ttk.Label) and child.cget("text") in {"Máx. páginas:", "Máx. cargas:"}:
-                    child.configure(text="Máx. páginas HTTP:")
+                if isinstance(child, ttk.Label) and child.cget("text") in {
+                    "Máx. páginas:",
+                    "Máx. cargas:",
+                    "Máx. páginas HTTP:",
+                    "Máx. cargas dinámicas:",
+                }:
+                    child.configure(text="Máx. cargas (0=todas):")
             except Exception:
                 pass
             self._rename_catalog_limit_label(child)
@@ -28,16 +35,21 @@ class LiveTesterSpinApp(TesterSpinApp):
         if self._worker and self._worker.is_alive():
             return
         try:
-            max_pages = max(1, int(self.max_pages_var.get()))
+            requested_loads = int(self.max_pages_var.get())
+            if requested_loads < 0:
+                raise ValueError
+            # The provider still gets a finite loop guard. In normal use it exits
+            # much earlier when "Load More Games" disappears.
+            max_pages = 10_000 if requested_loads == 0 else max(1, requested_loads)
         except ValueError:
-            messagebox.showerror("Tester-Spin", "Máx. páginas HTTP debe ser un entero.")
+            messagebox.showerror("Tester-Spin", "Máx. cargas debe ser 0 o un entero positivo.")
             return
 
         provider = self._provider()
         provider.catalog_url = self.catalog_url_var.get().strip() or provider.catalog_url
         self._stop_event = threading.Event()
         self._set_busy(True)
-        self.status_var.set("Cargando catálogo por HTTP...")
+        self.status_var.set("Cargando catálogo completo...")
         self.progress.configure(mode="indeterminate")
         self.progress.start(10)
 
