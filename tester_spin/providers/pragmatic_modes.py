@@ -25,6 +25,14 @@ def _float_list(raw: str | None) -> list[float]:
     return out
 
 
+def _first_positive(mapping: dict[str, str], keys: tuple[str, ...]) -> tuple[float | None, str]:
+    for key in keys:
+        value = _num(mapping.get(key))
+        if value is not None and value > 0:
+            return value, key
+    return None, ""
+
+
 def _enabled_tokens(raw: str | None) -> list[bool]:
     if raw is None or str(raw).strip() == "":
         return []
@@ -102,7 +110,7 @@ class PragmaticModeCatalog:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "schema": "tester-spin/pragmatic-mode-catalog/v1",
+            "schema": "tester-spin/pragmatic-mode-catalog/v2",
             "base_scale": self.base_scale,
             "base_coin": self.base_coin,
             "base_bet": self.base_bet,
@@ -122,19 +130,60 @@ def discover_modes(init: dict[str, str], requested_base_bet: float = 2.0) -> Pra
     raw_pur_init_e = str(init.get("purInit_e") or "")
 
     bls = _float_list(raw_bls)
-    if not bls:
-        raise ValueError("doInit no contiene bls; no se puede resolver el modo base")
+    scale_source = ""
+    if bls:
+        base_scale = bls[0]
+        scale_source = "bls[0]"
+    else:
+        base_scale, scale_source = _first_positive(
+            init,
+            ("l", "defl", "def_l", "lines", "lineCount", "line_count", "baseScale", "base_scale"),
+        )
+        if base_scale is None:
+            coin_probe, _ = _first_positive(init, ("c", "defc", "def_c", "coin", "defaultCoin", "default_coin"))
+            if coin_probe is not None or _float_list(init.get("sc")):
+                base_scale = 1.0
+                scale_source = "unit-scale-fallback"
+            else:
+                interesting = sorted(
+                    key for key in init
+                    if any(token in key.lower() for token in ("bet", "coin", "line", "scale", "stake", "wager", "bl"))
+                )
+                raise ValueError(
+                    "doInit no contiene bls ni una escala de apuesta alternativa utilizable; "
+                    f"campos relacionados={interesting[:30]}"
+                )
 
-    base_scale = bls[0]
     allowed_coins = _float_list(init.get("sc"))
     desired_coin = requested_base_bet / base_scale
-    if allowed_coins:
-        base_coin = desired_coin if any(
-            math.isclose(desired_coin, coin, rel_tol=0.0, abs_tol=1e-9)
-            for coin in allowed_coins
-        ) else min(allowed_coins)
+    explicit_coin, coin_source = _first_positive(
+        init,
+        ("c", "defc", "def_c", "coin", "defaultCoin", "default_coin"),
+    )
+
+    if bls:
+        if allowed_coins:
+            base_coin = desired_coin if any(
+                math.isclose(desired_coin, coin, rel_tol=0.0, abs_tol=1e-9)
+                for coin in allowed_coins
+            ) else min(allowed_coins)
+            coin_source = "requested/sc" if any(
+                math.isclose(desired_coin, coin, rel_tol=0.0, abs_tol=1e-9)
+                for coin in allowed_coins
+            ) else "sc[0]"
+        else:
+            base_coin = desired_coin
+            coin_source = "requested-base-bet"
     else:
-        base_coin = desired_coin
+        if explicit_coin is not None:
+            base_coin = explicit_coin
+        elif allowed_coins:
+            base_coin = min(allowed_coins, key=lambda coin: abs(coin - desired_coin))
+            coin_source = "nearest-sc"
+        else:
+            base_coin = desired_coin
+            coin_source = "requested-base-bet"
+
     base_bet = base_coin * base_scale
 
     modes: list[PragmaticMode] = [
@@ -146,12 +195,11 @@ def discover_modes(init: dict[str, str], requested_base_bet: float = 2.0) -> Pra
             enabled=True,
             price_x_base=1.0,
             paid_cost=base_bet,
-            source_field="bls[0]",
+            source_field=scale_source,
             source_value=str(base_scale),
         )
     ]
 
-    # Pragmatic encodes ante-bet / enhanced spin entries as non-zero bl values.
     for provider_bl, scale in enumerate(bls[1:], start=1):
         price_x = scale / base_scale
         modes.append(
@@ -198,13 +246,16 @@ def discover_modes(init: dict[str, str], requested_base_bet: float = 2.0) -> Pra
             )
         )
 
-    # Preserve every field that looks mode-related even when we do not yet know
-    # how to activate it. This makes game.json useful when adding future protocol
-    # handlers without having to crawl/test the game again.
-    evidence: dict[str, str] = {}
+    evidence: dict[str, str] = {
+        "base_scale_source": scale_source,
+        "base_coin_source": coin_source,
+    }
     for key, value in init.items():
         lowered = key.lower()
-        if any(token in lowered for token in ("bet", "buy", "pur", "ante", "mode", "feature", "bonus", "bls")):
+        if any(
+            token in lowered
+            for token in ("bet", "buy", "pur", "ante", "mode", "feature", "bonus", "bls", "coin", "line", "scale", "stake", "wager")
+        ):
             evidence[str(key)] = str(value)
 
     return PragmaticModeCatalog(
