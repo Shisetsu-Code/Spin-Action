@@ -1,15 +1,16 @@
 from __future__ import annotations
 
 import threading
+from pathlib import Path
 from urllib.parse import urljoin
 
 from tester_spin.models import Game, GameTestResult
 from tester_spin.providers.base import GameCallback, Progress
-from tester_spin.providers.pragmatic import PragmaticProvider as _PragmaticProvider
+from tester_spin.providers.pragmatic import HttpBootstrap, PragmaticProvider as _PragmaticProvider
 
 
 class PragmaticProvider(_PragmaticProvider):
-    """Pragmatic adapter with streaming catalog callbacks for the GUI."""
+    """Pragmatic adapter with streaming catalog callbacks and clean test sessions."""
 
     def crawl_catalog(
         self,
@@ -64,6 +65,29 @@ class PragmaticProvider(_PragmaticProvider):
         progress(f"Catálogo Pragmatic terminado: {len(games)} juegos únicos")
         return games
 
+    def _http_bootstrap(
+        self,
+        source_url: str,
+        symbol: str,
+        cver: str | None,
+        base_bet: float,
+        timeout_s: float,
+    ) -> HttpBootstrap:
+        # The bootstrap includes one base calibration spin. Never start a target
+        # mode while that calibration is waiting for collect/free-spin/another
+        # provider transition. Re-open until calibration lands in an idle state.
+        last_state = ""
+        for _ in range(12):
+            bootstrap = super()._http_bootstrap(source_url, symbol, cver, base_bet, timeout_s)
+            last_state = str(bootstrap.calibration_response.get("na") or "")
+            feature_active = self._feature_active(bootstrap.calibration_response)
+            if last_state in {"", "s"} and not feature_active:
+                return bootstrap
+            bootstrap.session.close()
+        raise RuntimeError(
+            f"no se obtuvo una sesión idle tras 12 calibraciones; último na={last_state!r}"
+        )
+
     def test_game(
         self,
         game: Game,
@@ -87,6 +111,6 @@ class PragmaticProvider(_PragmaticProvider):
                 f"{len(warnings)} intento(s) respondieron pero terminaron en estados de continuación "
                 "aún no automatizados; RAW preservado para implementar esos estados."
             )
-            self._write_json(__import__("pathlib").Path(result.run_dir) / "result.json", result.to_dict())
+            self._write_json(Path(result.run_dir) / "result.json", result.to_dict())
             self._record_last_test_in_game_json(game, result)
         return result
