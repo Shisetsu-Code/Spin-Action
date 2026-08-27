@@ -5,18 +5,19 @@ from pathlib import Path
 
 from tester_spin.models import Game, GameTestResult
 from tester_spin.providers.base import GameCallback, Progress
-from tester_spin.providers.pragmatic_catalog_preloaded import crawl_pragmatic_catalog_preloaded
+from tester_spin.providers.pragmatic_catalog_ajax import crawl_pragmatic_catalog_ajax
 from tester_spin.providers.pragmatic_endpoint import PragmaticProvider as _EndpointPragmaticProvider
 from tester_spin.providers.pragmatic_protocol import analyze_response, summarize_analysis_files
 
 
 class PragmaticProvider(_EndpointPragmaticProvider):
-    """Pragmatic adapter with preloaded-DOM catalog enumeration and endpoint game I/O.
+    """Pragmatic adapter with direct-AJAX catalog enumeration and endpoint game I/O.
 
-    The observed catalog does not need a catalog XHR for Load More: cards can already
-    exist client-side and only become visible/lazy-load images after each click.
-    Catalog discovery therefore enumerates hidden/preloaded cards first and uses Load
-    More only to detect genuine structural additions.
+    A complete browser HAR and Pragmatic's own ``gamesFilters`` JavaScript show that
+    ``Load More Games`` increments a page counter and performs a same-origin GET to
+    ``/en/games/?ajax=1...&page=N``. Catalog discovery therefore uses that endpoint
+    directly, in ordered parallel batches, and falls back to the DOM implementation
+    if the site changes or rejects the AJAX request.
 
     Once a game is selected, discovery/bootstrap and all game state transitions are
     handled by the endpoint-first implementation through HTTP/gameService. Every
@@ -32,8 +33,8 @@ class PragmaticProvider(_EndpointPragmaticProvider):
         max_pages: int = 100,
         on_game: GameCallback | None = None,
     ) -> list[Game]:
-        progress("Catálogo híbrido v5 ULTRA: DOM oculto/preloaded + verificación Load More.")
-        return crawl_pragmatic_catalog_preloaded(
+        progress("Catálogo híbrido v6 AJAX: endpoint real de Load More + fallback DOM.")
+        return crawl_pragmatic_catalog_ajax(
             self,
             stop_event=stop_event,
             progress=progress,
