@@ -5,17 +5,19 @@ from pathlib import Path
 
 from tester_spin.models import Game, GameTestResult
 from tester_spin.providers.base import GameCallback, Progress
-from tester_spin.providers.pragmatic_catalog import crawl_pragmatic_catalog
+from tester_spin.providers.pragmatic_catalog_dom import crawl_pragmatic_catalog_dom
 from tester_spin.providers.pragmatic_endpoint import PragmaticProvider as _EndpointPragmaticProvider
 from tester_spin.providers.pragmatic_protocol import analyze_response, summarize_analysis_files
 
 
 class PragmaticProvider(_EndpointPragmaticProvider):
-    """Pragmatic adapter with robust catalog enumeration and endpoint game I/O.
+    """Pragmatic adapter with visible-DOM catalog enumeration and endpoint game I/O.
 
-    Catalog discovery observes both the rendered DOM and the XHR/fetch responses
-    produced by ``Load More Games``. This avoids depending on one frontend card
-    structure. Numbered ``/page/N/`` pages are used only as a union/fallback.
+    The catalog's Load More control does not necessarily fetch a new catalog page.
+    The observed browser HAR shows lazy-loaded game images after the click without a
+    catalog XHR/fetch. Catalog discovery therefore treats newly visible live DOM
+    cards/images as authoritative and recovers slugs from href/data-* attributes or,
+    when necessary, from native thumbnail filenames.
 
     Once a game is selected, discovery/bootstrap and all game state transitions are
     handled by the endpoint-first implementation through HTTP/gameService. Every
@@ -31,8 +33,8 @@ class PragmaticProvider(_EndpointPragmaticProvider):
         max_pages: int = 100,
         on_game: GameCallback | None = None,
     ) -> list[Game]:
-        progress("Catálogo híbrido v2: DOM + red dinámica; protocolo de juego por endpoint.")
-        return crawl_pragmatic_catalog(
+        progress("Catálogo híbrido v3: tarjetas visibles del DOM; protocolo de juego por endpoint.")
+        return crawl_pragmatic_catalog_dom(
             self,
             stop_event=stop_event,
             progress=progress,
