@@ -38,6 +38,33 @@ class PragmaticModeDiscoveryTests(unittest.TestCase):
         self.assertIn("PURCHASE_1", enabled)
         self.assertNotIn("PURCHASE_2", enabled)
 
+    def test_without_bls_uses_line_and_default_coin_fields(self) -> None:
+        init = {
+            "l": "20",
+            "defc": "0.1",
+            "sc": "0.05,0.1,0.2",
+        }
+        catalog = discover_modes(init, requested_base_bet=2.0)
+        enabled = {mode.id for mode in catalog.enabled()}
+        self.assertEqual(enabled, {"SPIN"})
+        self.assertEqual(catalog.base_scale, 20.0)
+        self.assertEqual(catalog.base_coin, 0.1)
+        self.assertEqual(catalog.base_bet, 2.0)
+        self.assertEqual(catalog.mode_evidence["base_scale_source"], "l")
+        self.assertEqual(catalog.mode_evidence["base_coin_source"], "defc")
+
+    def test_without_bls_can_use_unit_scale_with_coin_list(self) -> None:
+        init = {"sc": "0.5,1,2,5"}
+        catalog = discover_modes(init, requested_base_bet=2.0)
+        self.assertEqual(catalog.base_scale, 1.0)
+        self.assertEqual(catalog.base_coin, 2.0)
+        self.assertEqual(catalog.base_bet, 2.0)
+        self.assertEqual(catalog.mode_evidence["base_scale_source"], "unit-scale-fallback")
+
+    def test_without_any_wager_evidence_still_fails_explicitly(self) -> None:
+        with self.assertRaisesRegex(ValueError, "escala de apuesta alternativa"):
+            discover_modes({"foo": "bar"}, requested_base_bet=2.0)
+
 
 if __name__ == "__main__":
     unittest.main()
