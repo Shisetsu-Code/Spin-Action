@@ -7,6 +7,7 @@ from collections.abc import Callable
 from tester_spin.models import Game, GameTestResult
 
 Progress = Callable[[str], None]
+GameCallback = Callable[[Game], None]
 
 
 class ProviderAdapter(ABC):
@@ -21,6 +22,7 @@ class ProviderAdapter(ABC):
         stop_event: threading.Event,
         progress: Progress,
         max_pages: int = 100,
+        on_game: GameCallback | None = None,
     ) -> list[Game]:
         raise NotImplementedError
 
