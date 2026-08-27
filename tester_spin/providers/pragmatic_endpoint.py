@@ -3,16 +3,22 @@ from __future__ import annotations
 import html
 import re
 import threading
+import time
+from pathlib import Path
 from urllib.parse import parse_qs, urljoin, urlparse
 
-from tester_spin.models import Game
+from tester_spin.models import Game, SpinAttempt
 from tester_spin.providers.base import GameCallback, Progress
 from tester_spin.providers.pragmatic import (
     BrowserBootstrap,
+    HttpBootstrap,
     _extract_cver,
     _extract_launch_urls,
+    _fmt,
+    _int,
 )
 from tester_spin.providers.pragmatic_current import PragmaticProvider as _CurrentPragmaticProvider
+from tester_spin.providers.pragmatic_modes import PragmaticMode, PragmaticModeCatalog
 
 
 _SYMBOL_PATTERNS = (
@@ -28,8 +34,8 @@ class PragmaticProvider(_CurrentPragmaticProvider):
     """Endpoint-first Pragmatic adapter.
 
     The normal execution path does not click UI controls and does not need a
-    browser. Catalog traversal is HTTP pagination and game discovery/bootstrap is
-    resolved from the game page plus Pragmatic HTTP endpoints.
+    browser. Catalog traversal is HTTP pagination, game discovery/bootstrap is
+    HTTP-only, and game state transitions are sent directly to gameService.
     """
 
     def crawl_catalog(
@@ -89,8 +95,6 @@ class PragmaticProvider(_CurrentPragmaticProvider):
             else:
                 duplicate_pages = 0
 
-            # Some WordPress/CDN configurations return the last page again instead
-            # of 404. Two pages without a new slug are sufficient to terminate.
             if duplicate_pages >= 2:
                 progress("Dos páginas HTTP consecutivas sin juegos nuevos; catálogo agotado.")
                 break
@@ -106,8 +110,6 @@ class PragmaticProvider(_CurrentPragmaticProvider):
         text = html.unescape(response.text)
         final_url = response.url
 
-        # Prefer the provider's own launch URL because its gameSymbol parameter is
-        # authoritative when present.
         for launch_url in _extract_launch_urls(text, final_url):
             parsed = urlparse(launch_url)
             symbol = (parse_qs(parsed.query).get("gameSymbol") or [""])[0].strip()
@@ -121,9 +123,6 @@ class PragmaticProvider(_CurrentPragmaticProvider):
                 if symbol:
                     return symbol, _extract_cver(text), final_url
 
-        # Last-resort heuristic: Pragmatic slot IDs commonly use a compact provider
-        # prefix such as vs/cs followed by an alphanumeric identifier. Keep this
-        # deliberately conservative to avoid treating arbitrary JS tokens as IDs.
         candidates = re.findall(r"\b(?:vs|cs|bn|rng)[A-Za-z0-9]{3,40}\b", text, flags=re.I)
         if candidates:
             return candidates[0], _extract_cver(text), final_url
@@ -165,3 +164,259 @@ class PragmaticProvider(_CurrentPragmaticProvider):
             )
         finally:
             bootstrap.session.close()
+
+    @staticmethod
+    def _server_error(fields: dict[str, str]) -> str:
+        value = fields.get("error") or fields.get("err") or fields.get("errorCode")
+        return "" if value in (None, "", "0") else str(value)
+
+    def _test_mode_once(
+        self,
+        game: Game,
+        *,
+        symbol: str,
+        cver: str | None,
+        mode: PragmaticMode,
+        catalog: PragmaticModeCatalog,
+        attempt_number: int,
+        repetition: int,
+        run_root: Path,
+        timeout_s: float,
+    ) -> SpinAttempt:
+        attempt_root = run_root / mode.id / f"attempt-{repetition:04d}"
+        attempt_root.mkdir(parents=True, exist_ok=True)
+        started = time.monotonic()
+        bootstrap: HttpBootstrap | None = None
+
+        try:
+            bootstrap = self._http_bootstrap(game.url, symbol, cver, catalog.base_bet, timeout_s)
+            self._write_http_bootstrap(attempt_root, bootstrap)
+
+            index = (
+                _int(bootstrap.calibration_response.get("index"))
+                or _int(bootstrap.init_response.get("index"))
+                or 1
+            ) + 1
+            counter = (
+                _int(bootstrap.calibration_response.get("counter"))
+                or _int(bootstrap.init_response.get("counter"))
+                or 1
+            ) + 1
+
+            fields = dict(bootstrap.spin_template)
+            fields.update(
+                {
+                    "action": "doSpin",
+                    "symbol": symbol,
+                    "c": _fmt(catalog.base_coin),
+                    "l": _fmt(catalog.base_scale),
+                    "bl": str(mode.provider_bl or 0),
+                    "index": str(index),
+                    "counter": str(counter),
+                    "repeat": fields.get("repeat", "0") or "0",
+                    "mgckey": bootstrap.mgckey,
+                }
+            )
+            if mode.kind == "PURCHASE":
+                fields["pur"] = str(mode.provider_pur)
+            else:
+                fields.pop("pur", None)
+
+            status_code, _, last, _ = self._post_and_store(
+                bootstrap,
+                fields,
+                attempt_root,
+                step=0,
+                label="entry",
+                timeout_s=timeout_s,
+            )
+            if status_code >= 400:
+                raise RuntimeError(f"HTTP {status_code}")
+            error = self._server_error(last)
+            if error:
+                raise RuntimeError(f"server error={error}")
+
+            wire_steps = 1
+            terminal = False
+            warning = ""
+            in_bonus = False
+
+            while wire_steps < 128:
+                na = str(last.get("na") or "").strip().lower()
+
+                if na == "b":
+                    # Pragmatic's documented flow enters the bonus game with
+                    # doBonus. Subsequent bonus steps can request b again.
+                    in_bonus = True
+                    index = (_int(last.get("index")) or index) + 1
+                    counter = (_int(last.get("counter")) or counter) + 1
+                    bonus_fields = {
+                        "symbol": symbol,
+                        "action": "doBonus",
+                        "index": str(index),
+                        "counter": str(counter),
+                        "repeat": "0",
+                        "mgckey": bootstrap.mgckey,
+                    }
+                    status_code, _, last, _ = self._post_and_store(
+                        bootstrap,
+                        bonus_fields,
+                        attempt_root,
+                        step=wire_steps,
+                        label="bonus",
+                        timeout_s=timeout_s,
+                    )
+                    wire_steps += 1
+                    if status_code >= 400:
+                        raise RuntimeError(f"doBonus HTTP {status_code}")
+                    error = self._server_error(last)
+                    if error:
+                        raise RuntimeError(f"doBonus server error={error}")
+                    continue
+
+                if na in {"cb", "bc"} or (na == "c" and in_bonus):
+                    index = (_int(last.get("index")) or index) + 1
+                    counter = (_int(last.get("counter")) or counter) + 1
+                    collect_bonus_fields = {
+                        "symbol": symbol,
+                        "action": "doCollectBonus",
+                        "index": str(index),
+                        "counter": str(counter),
+                        "repeat": "0",
+                        "mgckey": bootstrap.mgckey,
+                    }
+                    status_code, _, last, _ = self._post_and_store(
+                        bootstrap,
+                        collect_bonus_fields,
+                        attempt_root,
+                        step=wire_steps,
+                        label="collect-bonus",
+                        timeout_s=timeout_s,
+                    )
+                    wire_steps += 1
+                    if status_code >= 400:
+                        raise RuntimeError(f"doCollectBonus HTTP {status_code}")
+                    error = self._server_error(last)
+                    if error:
+                        raise RuntimeError(f"doCollectBonus server error={error}")
+                    # Collection is a terminal operation unless the server explicitly
+                    # tells us to continue with another state.
+                    next_na = str(last.get("na") or "").strip().lower()
+                    if next_na in {"", "s"} and not self._feature_active(last):
+                        terminal = True
+                        break
+                    continue
+
+                if na == "c":
+                    index = (_int(last.get("index")) or index) + 1
+                    counter = (_int(last.get("counter")) or counter) + 1
+                    collect_fields = {
+                        "symbol": symbol,
+                        "action": "doCollect",
+                        "index": str(index),
+                        "counter": str(counter),
+                        "repeat": "0",
+                        "mgckey": bootstrap.mgckey,
+                    }
+                    status_code, _, last, _ = self._post_and_store(
+                        bootstrap,
+                        collect_fields,
+                        attempt_root,
+                        step=wire_steps,
+                        label="collect",
+                        timeout_s=timeout_s,
+                    )
+                    wire_steps += 1
+                    if status_code >= 400:
+                        raise RuntimeError(f"doCollect HTTP {status_code}")
+                    error = self._server_error(last)
+                    if error:
+                        raise RuntimeError(f"doCollect server error={error}")
+                    terminal = True
+                    break
+
+                if na == "s" and self._feature_active(last):
+                    index = (_int(last.get("index")) or index) + 1
+                    counter = (_int(last.get("counter")) or counter) + 1
+                    continuation = dict(bootstrap.spin_template)
+                    continuation.update(
+                        {
+                            "action": "doSpin",
+                            "symbol": symbol,
+                            "c": _fmt(catalog.base_coin),
+                            "l": _fmt(catalog.base_scale),
+                            "bl": str(mode.provider_bl or 0),
+                            "index": str(index),
+                            "counter": str(counter),
+                            "repeat": "0",
+                            "mgckey": bootstrap.mgckey,
+                        }
+                    )
+                    continuation.pop("pur", None)
+                    status_code, _, last, _ = self._post_and_store(
+                        bootstrap,
+                        continuation,
+                        attempt_root,
+                        step=wire_steps,
+                        label="continuation-spin",
+                        timeout_s=timeout_s,
+                    )
+                    wire_steps += 1
+                    if status_code >= 400:
+                        raise RuntimeError(f"continuation doSpin HTTP {status_code}")
+                    error = self._server_error(last)
+                    if error:
+                        raise RuntimeError(f"continuation doSpin server error={error}")
+                    continue
+
+                if na in {"", "s"}:
+                    terminal = True
+                    break
+
+                warning = f"estado de continuación no automatizado: na={na!r}; RAW preservado"
+                break
+
+            if not terminal and not warning and wire_steps >= 128:
+                warning = "límite de 128 pasos alcanzado; RAW preservado"
+
+            elapsed_ms = (time.monotonic() - started) * 1000.0
+            attempt = SpinAttempt(
+                number=attempt_number,
+                ok=True,
+                mode_id=mode.id,
+                mode_kind=mode.kind,
+                provider_bl=mode.provider_bl,
+                provider_pur=mode.provider_pur,
+                status_code=status_code,
+                elapsed_ms=elapsed_ms,
+                symbol=symbol,
+                endpoint=bootstrap.endpoint,
+                na=str(last.get("na") or ""),
+                terminal=terminal,
+                wire_steps=wire_steps,
+                warning=warning,
+                artifact_dir=str(attempt_root),
+            )
+            self._write_json(attempt_root / "attempt.json", attempt.to_dict())
+            return attempt
+
+        except Exception as exc:
+            elapsed_ms = (time.monotonic() - started) * 1000.0
+            attempt = SpinAttempt(
+                number=attempt_number,
+                ok=False,
+                mode_id=mode.id,
+                mode_kind=mode.kind,
+                provider_bl=mode.provider_bl,
+                provider_pur=mode.provider_pur,
+                elapsed_ms=elapsed_ms,
+                symbol=symbol,
+                endpoint="" if bootstrap is None else bootstrap.endpoint,
+                error=f"{type(exc).__name__}: {exc}",
+                artifact_dir=str(attempt_root),
+            )
+            self._write_json(attempt_root / "attempt.json", attempt.to_dict())
+            return attempt
+        finally:
+            if bootstrap is not None:
+                bootstrap.session.close()
