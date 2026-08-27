@@ -5,17 +5,17 @@ from pathlib import Path
 
 from tester_spin.models import Game, GameTestResult
 from tester_spin.providers.base import GameCallback, Progress
-from tester_spin.providers.pragmatic_current import PragmaticProvider as _DynamicCatalogProvider
+from tester_spin.providers.pragmatic_catalog import crawl_pragmatic_catalog
 from tester_spin.providers.pragmatic_endpoint import PragmaticProvider as _EndpointPragmaticProvider
 from tester_spin.providers.pragmatic_protocol import analyze_response, summarize_analysis_files
 
 
 class PragmaticProvider(_EndpointPragmaticProvider):
-    """Pragmatic adapter with dynamic catalog enumeration and endpoint game I/O.
+    """Pragmatic adapter with robust catalog enumeration and endpoint game I/O.
 
-    Pragmatic's public catalog is currently expanded by a JavaScript control named
-    ``Load More Games``. Numbered ``/page/N/`` URLs are not a reliable enumeration
-    primitive, so catalog discovery intentionally uses the current dynamic crawler.
+    Catalog discovery observes both the rendered DOM and the XHR/fetch responses
+    produced by ``Load More Games``. This avoids depending on one frontend card
+    structure. Numbered ``/page/N/`` pages are used only as a union/fallback.
 
     Once a game is selected, discovery/bootstrap and all game state transitions are
     handled by the endpoint-first implementation through HTTP/gameService. Every
@@ -31,12 +31,8 @@ class PragmaticProvider(_EndpointPragmaticProvider):
         max_pages: int = 100,
         on_game: GameCallback | None = None,
     ) -> list[Game]:
-        progress("Catálogo híbrido: enumeración dinámica + protocolo de juego por endpoint.")
-        progress(
-            "El límite configurado representa cargas dinámicas de 'Load More Games', "
-            "no páginas /page/N/."
-        )
-        return _DynamicCatalogProvider.crawl_catalog(
+        progress("Catálogo híbrido v2: DOM + red dinámica; protocolo de juego por endpoint.")
+        return crawl_pragmatic_catalog(
             self,
             stop_event=stop_event,
             progress=progress,
@@ -57,6 +53,24 @@ class PragmaticProvider(_EndpointPragmaticProvider):
         analysis = analyze_response(parsed)
         self._write_json(root / f"step-{step:03d}-{label}.analysis.json", analysis)
         return result
+
+    def _write_discovery(self, run_root, discovery, catalog) -> None:
+        super()._write_discovery(run_root, discovery, catalog)
+        root = Path(run_root) / "discovery"
+        self._write_json(root / "doInit.response.analysis.json", analyze_response(discovery.init_response))
+        self._write_json(
+            root / "calibration.response.analysis.json",
+            analyze_response(discovery.calibration_response),
+        )
+
+    def _write_http_bootstrap(self, root, bootstrap) -> None:
+        super()._write_http_bootstrap(root, bootstrap)
+        boot = Path(root) / "bootstrap"
+        self._write_json(boot / "doInit.response.analysis.json", analyze_response(bootstrap.init_response))
+        self._write_json(
+            boot / "calibration.response.analysis.json",
+            analyze_response(bootstrap.calibration_response),
+        )
 
     def test_game(
         self,
@@ -92,7 +106,7 @@ class PragmaticProvider(_EndpointPragmaticProvider):
             if unknown:
                 progress(
                     "Los estados aún no ejecutables quedaron clasificados en "
-                    "protocol-observations.json y en los step-*.analysis.json."
+                    "protocol-observations.json y en los *.analysis.json."
                 )
 
         return result
