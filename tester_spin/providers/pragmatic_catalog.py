@@ -16,24 +16,15 @@ from tester_spin.providers.base import GameCallback, Progress
 from tester_spin.providers.pragmatic import _human_from_slug
 
 
-# The public site can expose game links in full HTML, HTML fragments returned by
-# XHR/fetch, escaped JSON strings or generic link/data-* fields. Do not rely on
-# one DOM shape.
+# Dynamic responses can contain full URLs, relative URLs, escaped HTML or JSON.
+# _clean_dynamic_text() normalizes escaped slashes before this regex is applied.
 _GAME_URL_RE = re.compile(
-    r"(?P<url>(?:https?:\\?/\\?/[^\s\"'<>]+)?\\?/(?:[a-z]{2}(?:-[a-z]{2})?\\?/)?games\\?/"
-    r"(?P<slug>[a-z0-9][a-z0-9_-]{1,100})\\?/?(?:\\?[?#][^\s\"'<>]*)?)",
+    r"(?P<url>(?:https?://[^\s\"'<>]+)?/(?:[a-z]{2}(?:-[a-z]{2})?/)?games/"
+    r"(?P<slug>[a-z0-9][a-z0-9_-]{1,100})/?(?:[?#][^\s\"'<>]*)?)",
     re.I,
 )
 
-_RESERVED_SLUGS = {
-    "page",
-    "search",
-    "category",
-    "categories",
-    "tag",
-    "feed",
-}
-
+_RESERVED_SLUGS = {"page", "search", "category", "categories", "tag", "feed"}
 _LOAD_MORE_RE = re.compile(r"(?:load\s+more\s+games|cargar\s+m[aá]s\s+juegos)", re.I)
 
 _LINK_KEYS = {
@@ -60,24 +51,27 @@ def _clean_dynamic_text(value: str) -> str:
 
 
 def _game_from_url(url: str, base_url: str, name: str = "", thumbnail_url: str = "") -> Game | None:
-    cleaned = _clean_dynamic_text(url).strip().strip('"\'')
+    cleaned = _clean_dynamic_text(url).strip().strip("\"'")
     if not cleaned:
         return None
     absolute = urljoin(base_url, cleaned)
     parsed = urlparse(absolute)
     path = parsed.path.replace("\\", "/")
-    match = re.search(r"/(?:[a-z]{2}(?:-[a-z]{2})?/)?games/([a-z0-9][a-z0-9_-]{1,100})/?$", path, re.I)
+    match = re.search(
+        r"/(?:[a-z]{2}(?:-[a-z]{2})?/)?games/([a-z0-9][a-z0-9_-]{1,100})/?$",
+        path,
+        re.I,
+    )
     if not match:
         return None
     slug = match.group(1).strip().lower()
     if slug in _RESERVED_SLUGS:
         return None
-    canonical = f"https://www.pragmaticplay.com/en/games/{slug}/"
     return Game(
         provider="pragmatic",
         slug=slug,
         name=(name or _human_from_slug(slug)).strip(),
-        url=canonical,
+        url=f"https://www.pragmaticplay.com/en/games/{slug}/",
         thumbnail_url=urljoin(base_url, thumbnail_url) if thumbnail_url else "",
     )
 
@@ -107,13 +101,7 @@ def _iter_strings(value: Any, *, limit: int = 10_000) -> Iterable[str]:
 
 
 def extract_dynamic_games(provider, text: str, base_url: str) -> list[Game]:
-    """Extract catalog games from HTML, fragments, JSON and escaped payloads.
-
-    The provider's normal BeautifulSoup parser remains the high-quality source for
-    human names and thumbnails. This function adds recovery paths for the payloads
-    returned after pressing Load More Games, where the response is not guaranteed
-    to be a complete HTML page.
-    """
+    """Extract games from full HTML, fragments, JSON and escaped payloads."""
     cleaned = _clean_dynamic_text(text)
     found: dict[str, Game] = {}
 
@@ -130,20 +118,17 @@ def extract_dynamic_games(provider, text: str, base_url: str) -> list[Game]:
         if not current.thumbnail_url and game.thumbnail_url:
             current.thumbnail_url = game.thumbnail_url
 
-    # 1. Normal/full HTML or HTML fragment.
+    # Highest-quality path: reuse the existing HTML card parser.
     try:
         for game in provider._extract_catalog_page(cleaned, base_url):
             merge(game)
     except Exception:
         pass
 
-    # 2. Any URL-like string embedded in markup/JSON/JS.
+    # Recovery path for arbitrary HTML/JSON/JS strings containing game URLs.
     for match in _GAME_URL_RE.finditer(cleaned):
-        raw_url = match.group("url")
-        merge(_game_from_url(raw_url, base_url))
+        merge(_game_from_url(match.group("url"), base_url))
 
-    # 3. Structured JSON objects often preserve title/image fields even if their
-    # HTML fragment is escaped or stored under an unexpected property name.
     parsed: Any = None
     stripped = cleaned.strip()
     if stripped.startswith("{") or stripped.startswith("["):
@@ -154,7 +139,10 @@ def extract_dynamic_games(provider, text: str, base_url: str) -> list[Game]:
 
     if parsed is not None:
         for mapping in _iter_json_objects(parsed):
-            lowered = {str(key).replace("-", "_").casefold(): value for key, value in mapping.items()}
+            lowered = {
+                str(key).replace("-", "_").casefold(): value
+                for key, value in mapping.items()
+            }
             links: list[str] = []
             for key in _LINK_KEYS:
                 value = lowered.get(key.casefold())
@@ -185,8 +173,7 @@ def extract_dynamic_games(provider, text: str, base_url: str) -> list[Game]:
             for link in links:
                 merge(_game_from_url(link, base_url, human_name, thumbnail))
 
-        # 4. JSON wrappers frequently contain an HTML fragment under an arbitrary
-        # key. Run all bounded string values through the HTML/URL recovery path.
+        # JSON wrappers often carry an HTML fragment in a generic property.
         for string_value in _iter_strings(parsed):
             fragment = _clean_dynamic_text(string_value)
             if "/games/" not in fragment:
@@ -234,8 +221,6 @@ def _find_load_more(page):
             except Exception:
                 continue
 
-    # Text may live in a nested node or in input.value/aria-label. Resolve the
-    # actual interactive element in JS as a final locator fallback.
     try:
         handle = page.evaluate_handle(
             """() => {
@@ -312,12 +297,7 @@ def crawl_pragmatic_catalog(
     max_pages: int,
     on_game: GameCallback | None = None,
 ) -> list[Game]:
-    """Enumerate the public catalog using DOM + network + HTTP fallback.
-
-    ``max_pages`` is historically named by the provider interface. Here it is the
-    maximum number of dynamic Load More activations. The GUI passes a large guard
-    when the user chooses 0=todas.
-    """
+    """Enumerate the catalog from DOM + network responses + HTTP union fallback."""
     by_slug: dict[str, Game] = {}
     max_loads = max(1, int(max_pages))
     stamp = time.strftime("%Y-%m-%d_%H-%M-%S")
@@ -367,7 +347,7 @@ def crawl_pragmatic_catalog(
         body = event.get("body") or b""
         if isinstance(body, bytes):
             (diag_root / f"{prefix}.raw").write_bytes(body)
-        meta = {key: value for key, value in event.items() if key != "body"}
+        meta = {key: value for key, value in event.items() if key not in {"body", "text"}}
         provider._write_json(diag_root / f"{prefix}.json", meta)
 
     progress(f"Catálogo Pragmatic robusto — {provider.catalog_url}")
@@ -386,15 +366,13 @@ def crawl_pragmatic_catalog(
                 url = request.url
                 if "pragmaticplay.com" not in urlparse(url).netloc.casefold():
                     return
-                headers = response.headers
-                content_type = str(headers.get("content-type") or "")
+                content_type = str(response.headers.get("content-type") or "")
                 try:
                     body = response.body()
                 except Exception:
                     body = b""
                 if len(body) > 8 * 1024 * 1024:
                     body = body[: 8 * 1024 * 1024]
-                text = body.decode("utf-8", errors="replace")
                 network_events.append(
                     {
                         "url": url,
@@ -402,12 +380,11 @@ def crawl_pragmatic_catalog(
                         "resource_type": request.resource_type,
                         "content_type": content_type,
                         "body": body,
-                        "text": text,
+                        "text": body.decode("utf-8", errors="replace"),
                         "captured_at": utc_now_iso(),
                     }
                 )
             except Exception:
-                # Diagnostics must never break the browser event dispatcher.
                 return
 
         context.on("response", on_response)
@@ -453,47 +430,39 @@ def crawl_pragmatic_catalog(
 
                 progress(f"Load More Games #{loads_done}: click={strategy}; esperando DOM/XHR...")
                 deadline = time.monotonic() + 20.0
-                batch_new = 0
                 processed_network = 0
 
                 while time.monotonic() < deadline and not stop_event.is_set():
                     page.wait_for_timeout(300)
 
-                    # Ingest the live DOM even when the site's internal counter or
-                    # card container does not expose a predictable selector.
                     try:
-                        batch_new += ingest_text(page.content(), page.url, f"DOM load {loads_done}")
+                        ingest_text(page.content(), page.url, f"DOM load {loads_done}")
                     except Exception:
                         pass
 
-                    # Process every XHR/fetch body observed since the previous
-                    # cursor. This is the key recovery path when the page virtualizes
-                    # cards or inserts them in a structure our HTML parser cannot see.
                     while network_cursor < len(network_events):
                         event = network_events[network_cursor]
                         network_cursor += 1
                         processed_network += 1
-                        text = str(event.get("text") or "")
-                        extracted = ingest_text(text, str(event.get("url") or page.url), f"XHR load {loads_done}")
-                        batch_new += extracted
+                        extracted = ingest_text(
+                            str(event.get("text") or ""),
+                            str(event.get("url") or page.url),
+                            f"XHR load {loads_done}",
+                        )
                         event["extracted_games"] = extracted
                         write_network_event(event, loads_done)
 
                     if len(by_slug) > before_total:
-                        # Give late XHR callbacks a short settle window before the
-                        # next click so their diagnostics and metadata are retained.
                         page.wait_for_timeout(500)
                         while network_cursor < len(network_events):
                             event = network_events[network_cursor]
                             network_cursor += 1
                             processed_network += 1
-                            text = str(event.get("text") or "")
                             extracted = ingest_text(
-                                text,
+                                str(event.get("text") or ""),
                                 str(event.get("url") or page.url),
                                 f"XHR settle {loads_done}",
                             )
-                            batch_new += extracted
                             event["extracted_games"] = extracted
                             write_network_event(event, loads_done)
                         break
@@ -512,8 +481,6 @@ def crawl_pragmatic_catalog(
                     continue
 
                 no_growth += 1
-                # Do not abort after the first no-growth click: some site versions
-                # return an interstitial/duplicate batch before advancing.
                 if _find_load_more(page) is None:
                     break
                 if no_growth >= 4:
@@ -523,10 +490,8 @@ def crawl_pragmatic_catalog(
             context.close()
             browser.close()
 
-    # Numbered pages are not trusted as the primary source because CDN/cache state
-    # can duplicate arbitrary pages. They are still useful as a union/fallback.
-    # Do not stop on the first duplicate page; sweep until 12 consecutive pages add
-    # nothing or the server returns 404.
+    # Numbered pages are only a union/fallback because CDN/cache state can make
+    # arbitrary pages repeat. Do not stop after one duplicate page.
     if not stop_event.is_set():
         fallback_limit = min(200, max(60, max_loads if max_loads < 10_000 else 120))
         stagnant = 0
