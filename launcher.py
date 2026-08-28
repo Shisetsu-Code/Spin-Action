@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import time
 import traceback
 
 from tester_spin.updater import Updater
@@ -69,6 +70,14 @@ class Splash:
         self.label = None
 
 
+def _tail(path, max_chars: int = 5000) -> str:
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+        return text[-max_chars:].strip()
+    except Exception:
+        return ""
+
+
 def main() -> int:
     splash = Splash()
     try:
@@ -79,17 +88,37 @@ def main() -> int:
         if not entrypoint.exists():
             raise RuntimeError(f"no existe {entrypoint}")
 
-        # The managed Git checkout is disposable. Keep SQLite, RAW captures and
-        # all provider artifacts in the configured persistent data directory by
-        # making its parent the application cwd. Existing installs therefore keep
-        # C:\Proyectos\Tester-Spin\data when that database is detected on first run.
         splash.set("Abriendo Tester-Spin...")
-        subprocess.Popen(
-            [str(python_exe), str(entrypoint)],
-            cwd=str(updater.data_dir.parent),
-            env=env,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
+        startup_log = updater.home / "app-startup.log"
+        startup_log.parent.mkdir(parents=True, exist_ok=True)
+        with startup_log.open("w", encoding="utf-8", errors="replace") as log:
+            process = subprocess.Popen(
+                [str(python_exe), str(entrypoint)],
+                cwd=str(updater.data_dir.parent),
+                env=env,
+                stdout=log,
+                stderr=log,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+
+            # A normal Tk process remains alive. If it exits during bootstrap,
+            # keep the launcher visible long enough to surface the real error.
+            deadline = time.monotonic() + 2.0
+            while time.monotonic() < deadline:
+                code = process.poll()
+                if code is not None:
+                    log.flush()
+                    runtime_error = updater.home / "app-startup-error.log"
+                    detail = _tail(runtime_error) or _tail(startup_log)
+                    if not detail:
+                        detail = f"El proceso terminó inmediatamente con código {code}."
+                    raise RuntimeError(
+                        f"Tester-Spin se cerró durante el inicio (código {code}).\n\n"
+                        f"{detail}\n\n"
+                        f"Diagnóstico: {startup_log}"
+                    )
+                time.sleep(0.1)
+
         splash.close()
         return 0
     except Exception as exc:
