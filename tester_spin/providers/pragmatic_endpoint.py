@@ -29,6 +29,34 @@ _SYMBOL_PATTERNS = (
     re.compile(r"[\"']symbol[\"']\s*[:=]\s*[\"']((?:vs|cs|bn|rng)[A-Za-z0-9_-]+)", re.I),
 )
 
+# The captured Mighty Munching Melons hold-and-spin purchase was still making
+# genuine protocol progress at wire step 128 (rs_p/rs_c/rs_m and win fields kept
+# changing). A low fixed guard therefore truncates valid long/nested features.
+# Keep a high finite safety cap so a malformed provider state still cannot loop
+# forever.
+MAX_WIRE_STEPS = 2048
+
+# Only mechanical continuation fields belong here. Purchase bookkeeping such as
+# puri/purtr is deliberately excluded: those fields can remain present after the
+# purchase itself and are not evidence that another doSpin is required.
+_FEATURE_CONTINUATION_FIELDS = (
+    "fs",
+    "fsmax",
+    "fs_total",
+    "fsleft",
+    "fs_left",
+    "fsmul",
+    "rs",
+    "rs_c",
+    "rs_t",
+    "rs_more",
+    "rs_p",
+    "rsc",
+    "respins",
+    "respin",
+)
+_INACTIVE_VALUES = {"", "0", "0.0", "false", "null", "none"}
+
 
 class PragmaticProvider(_CurrentPragmaticProvider):
     """Endpoint-first Pragmatic adapter.
@@ -170,6 +198,22 @@ class PragmaticProvider(_CurrentPragmaticProvider):
         value = fields.get("error") or fields.get("err") or fields.get("errorCode")
         return "" if value in (None, "", "0") else str(value)
 
+    @staticmethod
+    def _feature_active(response: dict[str, str]) -> bool:
+        """Return True only for mechanical free-spin/respin continuation state.
+
+        Real captures show ``puri=0``/``purtr=1`` on terminal or choice states, so
+        purchase metadata must not force another doSpin. Conversely long hold-and-
+        spin rounds expose rs/rs_p/rs_c and remain active even after many steps.
+        """
+        for key in _FEATURE_CONTINUATION_FIELDS:
+            raw = response.get(key)
+            if raw is None:
+                continue
+            if str(raw).strip().casefold() not in _INACTIVE_VALUES:
+                return True
+        return False
+
     def _test_mode_once(
         self,
         game: Game,
@@ -241,7 +285,7 @@ class PragmaticProvider(_CurrentPragmaticProvider):
             warning = ""
             in_bonus = False
 
-            while wire_steps < 128:
+            while wire_steps < MAX_WIRE_STEPS:
                 na = str(last.get("na") or "").strip().lower()
 
                 if na == "b":
@@ -376,8 +420,8 @@ class PragmaticProvider(_CurrentPragmaticProvider):
                 warning = f"estado de continuación no automatizado: na={na!r}; RAW preservado"
                 break
 
-            if not terminal and not warning and wire_steps >= 128:
-                warning = "límite de 128 pasos alcanzado; RAW preservado"
+            if not terminal and not warning and wire_steps >= MAX_WIRE_STEPS:
+                warning = f"límite de {MAX_WIRE_STEPS} pasos alcanzado; RAW preservado"
 
             elapsed_ms = (time.monotonic() - started) * 1000.0
             attempt = SpinAttempt(

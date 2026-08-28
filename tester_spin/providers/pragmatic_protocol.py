@@ -22,6 +22,7 @@ FEATURE_GROUPS: dict[str, tuple[str, ...]] = {
         "fsres_total",
     ),
     "respins": (
+        "rs",
         "rs_c",
         "rs_t",
         "rs_more",
@@ -30,6 +31,8 @@ FEATURE_GROUPS: dict[str, tuple[str, ...]] = {
         "respins",
         "respin",
     ),
+    # Context only: these fields describe how a paid mode was entered. They do
+    # not by themselves mean that another doSpin is mechanically required.
     "purchase": (
         "puri",
         "purtr",
@@ -46,7 +49,23 @@ FEATURE_GROUPS: dict[str, tuple[str, ...]] = {
         "featureType",
         "feature_type",
     ),
+    # Observed in all uploaded na=fso captures. This is an option/choice payload,
+    # not a safe automatic continuation until the exact client request is known.
+    "free_spin_options": (
+        "fs_opt",
+        "fs_opt_mask",
+    ),
+    # Observed in na=m captures from Book of Vikings / John Hunter / Mysterious
+    # Egypt style rounds. Again: semantic classification only, no guessed action.
+    "mystery_choice": (
+        "mb",
+        "psym",
+    ),
 }
+
+# Only these groups are sufficient evidence that na=s requires another doSpin.
+# purchase/choice metadata must not keep a round alive by itself.
+CONTINUATION_GROUPS = {"free_spins", "respins"}
 
 VALUE_GROUPS: dict[str, tuple[str, ...]] = {
     "win": ("tw", "w", "rw", "win", "totalWin", "total_win", "gwm"),
@@ -62,6 +81,14 @@ ACTION_KEYS = {
     "cmd",
     "requestaction",
     "request_action",
+}
+
+UNHANDLED_STATE_KINDS = {
+    "provider_state_unknown",
+    "feature_continuation_unknown",
+    "explicit_action_observed",
+    "free_spin_option_required",
+    "mystery_feature_step_required",
 }
 
 
@@ -146,17 +173,16 @@ def _group_presence(fields: dict[str, str], groups: dict[str, tuple[str, ...]]) 
 def analyze_response(fields: dict[str, str]) -> dict[str, Any]:
     """Classify one Pragmatic gameService response without discarding unknowns.
 
-    The analyzer deliberately separates observation from execution. Unknown
-    continuation states are described and fingerprinted so they can be compared
-    across games. Only states already implemented by the transport state machine
-    are marked with an automatic handler.
+    Observation and execution remain separate. Captured states can be understood
+    semantically without inventing the next provider action. Only transitions that
+    are proven by the existing transport state machine receive automatic_handler.
     """
     normalized = {str(key): "" if value is None else str(value) for key, value in fields.items()}
     na = normalized.get("na", "").strip().lower()
     feature_groups = _group_presence(normalized, FEATURE_GROUPS)
     value_groups = _group_presence(normalized, VALUE_GROUPS)
     explicit_actions = _explicit_actions(normalized)
-    feature_active = bool(feature_groups)
+    feature_active = any(group in CONTINUATION_GROUPS for group in feature_groups)
 
     error_value = (
         normalized.get("error")
@@ -178,6 +204,10 @@ def analyze_response(fields: dict[str, str]) -> dict[str, Any]:
     elif na == "c":
         state_kind = "collect_required"
         automatic_handler = "doCollect"
+    elif na == "fso":
+        state_kind = "free_spin_option_required"
+    elif na == "m":
+        state_kind = "mystery_feature_step_required"
     elif na == "s" and feature_active:
         state_kind = "feature_spin_continuation"
         automatic_handler = "doSpin"
@@ -233,7 +263,7 @@ def summarize_analysis_files(run_root: Path) -> dict[str, Any]:
     signature_counts: Counter[str] = Counter()
     na_counts: Counter[str] = Counter()
     explicit_actions: Counter[str] = Counter()
-    unknown_examples: dict[str, dict[str, Any]] = {}
+    unhandled_examples: dict[str, dict[str, Any]] = {}
     files = sorted(run_root.rglob("step-*.analysis.json")) if run_root.exists() else []
 
     for path in files:
@@ -253,9 +283,9 @@ def summarize_analysis_files(run_root: Path) -> dict[str, Any]:
         for item in payload.get("explicit_actions") or []:
             if isinstance(item, dict) and item.get("action"):
                 explicit_actions[str(item["action"])] += 1
-        if state in {"provider_state_unknown", "feature_continuation_unknown", "explicit_action_observed"}:
+        if state in UNHANDLED_STATE_KINDS:
             key = signature or f"{state}:{na}"
-            unknown_examples.setdefault(
+            unhandled_examples.setdefault(
                 key,
                 {
                     "state_kind": state,
@@ -268,6 +298,7 @@ def summarize_analysis_files(run_root: Path) -> dict[str, Any]:
                 },
             )
 
+    examples = list(unhandled_examples.values())
     return {
         "schema": "tester-spin/pragmatic-protocol-observations/v1",
         "responses_analyzed": sum(state_counts.values()),
@@ -275,5 +306,8 @@ def summarize_analysis_files(run_root: Path) -> dict[str, Any]:
         "na_counts": dict(sorted(na_counts.items())),
         "signature_counts": dict(sorted(signature_counts.items())),
         "explicit_actions": dict(sorted(explicit_actions.items())),
-        "unknown_signatures": list(unknown_examples.values()),
+        # Backward-compatible field used by the GUI/logging. The values now also
+        # include semantically understood but not yet automated choice states.
+        "unknown_signatures": examples,
+        "unhandled_signatures": examples,
     }

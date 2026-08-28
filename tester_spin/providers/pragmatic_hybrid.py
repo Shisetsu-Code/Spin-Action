@@ -21,8 +21,8 @@ class PragmaticProvider(_EndpointPragmaticProvider):
 
     Once a game is selected, discovery/bootstrap and all game state transitions are
     handled by the endpoint-first implementation through HTTP/gameService. Every
-    gameService response is additionally classified and fingerprinted so unknown
-    protocol states remain machine-readable instead of only producing a warning.
+    gameService response is additionally classified and fingerprinted so unknown or
+    understood-but-unhandled protocol states remain machine-readable.
     """
 
     def crawl_catalog(
@@ -96,18 +96,18 @@ class PragmaticProvider(_EndpointPragmaticProvider):
             summary = summarize_analysis_files(run_root)
             self._write_json(run_root / "protocol-observations.json", summary)
 
-            unknown = summary.get("unknown_signatures") or []
+            unhandled = summary.get("unhandled_signatures") or summary.get("unknown_signatures") or []
             explicit = summary.get("explicit_actions") or {}
             progress(
                 "Protocolo observado: "
                 f"respuestas={summary.get('responses_analyzed', 0)}, "
-                f"firmas desconocidas={len(unknown)}, "
+                f"firmas no automatizadas={len(unhandled)}, "
                 f"acciones explícitas={explicit or '{}'}"
             )
 
-            if unknown:
+            if unhandled:
                 progress(
-                    "Los estados aún no ejecutables quedaron clasificados en "
+                    "Los estados pendientes de automatización quedaron clasificados en "
                     "protocol-observations.json y en los *.analysis.json."
                 )
 
