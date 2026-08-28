@@ -38,9 +38,10 @@ class LiveTesterSpinApp(TesterSpinApp):
             requested_loads = int(self.max_pages_var.get())
             if requested_loads < 0:
                 raise ValueError
+            full_catalog_requested = requested_loads == 0
             # The provider still gets a finite loop guard. In normal use it exits
             # much earlier when "Load More Games" disappears.
-            max_pages = 10_000 if requested_loads == 0 else max(1, requested_loads)
+            max_pages = 10_000 if full_catalog_requested else max(1, requested_loads)
         except ValueError:
             messagebox.showerror("Tester-Spin", "Máx. cargas debe ser 0 o un entero positivo.")
             return
@@ -66,6 +67,22 @@ class LiveTesterSpinApp(TesterSpinApp):
                     on_game=on_game,
                 )
                 self.storage.upsert_games(games)
+
+                # Only a user-requested full, non-interrupted crawl is authoritative
+                # enough to remove rows that no longer exist in the provider's
+                # catalogue. Historical test_results and artifact folders remain.
+                if full_catalog_requested and not self._stop_event.is_set() and games:
+                    removed = self.storage.reconcile_provider_games(
+                        provider.key,
+                        {game.slug for game in games},
+                    )
+                    self._events.put(
+                        (
+                            "log",
+                            f"Reconciliación de catálogo: actuales={len(games)}, obsoletos eliminados={removed}.",
+                        )
+                    )
+
                 self._events.put(("catalog_done", len(games)))
             except Exception as exc:
                 self._events.put(("error", f"Catálogo: {type(exc).__name__}: {exc}"))
