@@ -74,7 +74,7 @@ class UpdaterTests(unittest.TestCase):
             path.write_bytes(b"tester-spin")
             self.assertEqual(
                 Updater.sha256_file(path),
-                "8ef2a03ddf28c73a9944df00a58ddfc84ac24a519117b4ef514e657687210d30",
+                "fadaf006a584e2ba04287e4923c881d35c4da93505d1a399df2abfe3f46c705e",
             )
 
 
