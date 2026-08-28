@@ -39,7 +39,9 @@ $manifest = [ordered]@{
     entrypoint = "run.py"
 }
 
-$manifest | ConvertTo-Json -Depth 4 | Set-Content -Encoding UTF8 $manifestPath
+$json = $manifest | ConvertTo-Json -Depth 4
+$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+[System.IO.File]::WriteAllText($manifestPath, $json + [Environment]::NewLine, $utf8NoBom)
 
 Write-Host ""
 Write-Host "Paquete:   $zipPath"
