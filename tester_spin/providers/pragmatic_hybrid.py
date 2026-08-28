@@ -7,16 +7,15 @@ from tester_spin.models import Game, GameTestResult
 from tester_spin.providers.base import GameCallback, Progress
 from tester_spin.providers.pragmatic_catalog_ajax import crawl_pragmatic_catalog_ajax
 from tester_spin.providers.pragmatic_har_protocol import analyze_response, summarize_analysis_files
-from tester_spin.providers.pragmatic_har_states import PragmaticProvider as _EndpointPragmaticProvider
+from tester_spin.providers.pragmatic_symbol_resolver import PragmaticProvider as _EndpointPragmaticProvider
 
 
 class PragmaticProvider(_EndpointPragmaticProvider):
     """Pragmatic adapter with AJAX catalog enumeration and HAR-grounded game I/O.
 
     Catalog discovery uses Pragmatic's real same-origin Load More AJAX endpoint.
-    Game execution remains endpoint-first and now includes continuation transitions
-    proven by captured official-client HARs, including doFSOption and
-    doMysteryScatter.
+    Game execution remains endpoint-first and includes HAR-proven continuation
+    transitions plus bootstrap-validated provider-symbol resolution.
     """
 
     def crawl_catalog(
@@ -27,7 +26,7 @@ class PragmaticProvider(_EndpointPragmaticProvider):
         max_pages: int = 100,
         on_game: GameCallback | None = None,
     ) -> list[Game]:
-        progress("Catálogo híbrido v7 AJAX+HAR: Load More real + estados gameService aprendidos.")
+        progress("Catálogo híbrido v8 AJAX+HAR: Load More real + estados y símbolos validados.")
         return crawl_pragmatic_catalog_ajax(
             self,
             stop_event=stop_event,
