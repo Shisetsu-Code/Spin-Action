@@ -116,6 +116,40 @@ class Storage:
             )
         return len(rows)
 
+    def reconcile_provider_games(self, provider: str, valid_slugs: set[str]) -> int:
+        """Remove stale catalogue rows while preserving historical test results.
+
+        This must only be called after a complete provider crawl.  A temporary
+        table avoids SQLite's host-parameter limit if a provider eventually has
+        more than ~999 catalogue entries. Files under ``data/providers`` and rows
+        in ``test_results`` are deliberately untouched.
+        """
+        normalized = sorted({str(slug).strip() for slug in valid_slugs if str(slug).strip()})
+        with self._lock, self._connect() as con:
+            con.execute("CREATE TEMP TABLE IF NOT EXISTS _current_catalog_slugs (slug TEXT PRIMARY KEY)")
+            con.execute("DELETE FROM _current_catalog_slugs")
+            if normalized:
+                con.executemany(
+                    "INSERT OR IGNORE INTO _current_catalog_slugs(slug) VALUES (?)",
+                    ((slug,) for slug in normalized),
+                )
+                cursor = con.execute(
+                    """
+                    DELETE FROM games
+                    WHERE provider=?
+                      AND NOT EXISTS (
+                          SELECT 1 FROM _current_catalog_slugs current
+                          WHERE current.slug=games.slug
+                      )
+                    """,
+                    (provider,),
+                )
+            else:
+                cursor = con.execute("DELETE FROM games WHERE provider=?", (provider,))
+            removed = max(0, int(cursor.rowcount or 0))
+            con.execute("DROP TABLE _current_catalog_slugs")
+        return removed
+
     def list_games(self, provider: str) -> list[Game]:
         with self._lock, self._connect() as con:
             rows = con.execute(
