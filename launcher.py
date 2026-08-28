@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 import traceback
 
@@ -73,7 +74,22 @@ def main() -> int:
     try:
         updater = Updater()
         app_dir = updater.prepare_runtime(splash.set)
-        updater.launch(app_dir, splash.set)
+        python_exe, env = updater.ensure_environment(app_dir, splash.set)
+        entrypoint = app_dir / "run.py"
+        if not entrypoint.exists():
+            raise RuntimeError(f"no existe {entrypoint}")
+
+        # The managed Git checkout is disposable. Keep SQLite, RAW captures and
+        # all provider artifacts in the configured persistent data directory by
+        # making its parent the application cwd. Existing installs therefore keep
+        # C:\Proyectos\Tester-Spin\data when that database is detected on first run.
+        splash.set("Abriendo Tester-Spin...")
+        subprocess.Popen(
+            [str(python_exe), str(entrypoint)],
+            cwd=str(updater.data_dir.parent),
+            env=env,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
         splash.close()
         return 0
     except Exception as exc:
