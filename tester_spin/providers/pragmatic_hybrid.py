@@ -6,23 +6,17 @@ from pathlib import Path
 from tester_spin.models import Game, GameTestResult
 from tester_spin.providers.base import GameCallback, Progress
 from tester_spin.providers.pragmatic_catalog_ajax import crawl_pragmatic_catalog_ajax
-from tester_spin.providers.pragmatic_endpoint import PragmaticProvider as _EndpointPragmaticProvider
-from tester_spin.providers.pragmatic_protocol import analyze_response, summarize_analysis_files
+from tester_spin.providers.pragmatic_har_protocol import analyze_response, summarize_analysis_files
+from tester_spin.providers.pragmatic_har_states import PragmaticProvider as _EndpointPragmaticProvider
 
 
 class PragmaticProvider(_EndpointPragmaticProvider):
-    """Pragmatic adapter with direct-AJAX catalog enumeration and endpoint game I/O.
+    """Pragmatic adapter with AJAX catalog enumeration and HAR-grounded game I/O.
 
-    A complete browser HAR and Pragmatic's own ``gamesFilters`` JavaScript show that
-    ``Load More Games`` increments a page counter and performs a same-origin GET to
-    ``/en/games/?ajax=1...&page=N``. Catalog discovery therefore uses that endpoint
-    directly, in ordered parallel batches, and falls back to the DOM implementation
-    if the site changes or rejects the AJAX request.
-
-    Once a game is selected, discovery/bootstrap and all game state transitions are
-    handled by the endpoint-first implementation through HTTP/gameService. Every
-    gameService response is additionally classified and fingerprinted so unknown or
-    understood-but-unhandled protocol states remain machine-readable.
+    Catalog discovery uses Pragmatic's real same-origin Load More AJAX endpoint.
+    Game execution remains endpoint-first and now includes continuation transitions
+    proven by captured official-client HARs, including doFSOption and
+    doMysteryScatter.
     """
 
     def crawl_catalog(
@@ -33,7 +27,7 @@ class PragmaticProvider(_EndpointPragmaticProvider):
         max_pages: int = 100,
         on_game: GameCallback | None = None,
     ) -> list[Game]:
-        progress("Catálogo híbrido v6 AJAX: endpoint real de Load More + fallback DOM.")
+        progress("Catálogo híbrido v7 AJAX+HAR: Load More real + estados gameService aprendidos.")
         return crawl_pragmatic_catalog_ajax(
             self,
             stop_event=stop_event,
@@ -98,10 +92,12 @@ class PragmaticProvider(_EndpointPragmaticProvider):
 
             unhandled = summary.get("unhandled_signatures") or summary.get("unknown_signatures") or []
             explicit = summary.get("explicit_actions") or {}
+            automated = summary.get("har_automated_states") or {}
             progress(
                 "Protocolo observado: "
                 f"respuestas={summary.get('responses_analyzed', 0)}, "
                 f"firmas no automatizadas={len(unhandled)}, "
+                f"HAR handlers={automated or '{}'}, "
                 f"acciones explícitas={explicit or '{}'}"
             )
 
