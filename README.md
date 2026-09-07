@@ -4,7 +4,7 @@ GUI extensible en Python para catalogar juegos por proveedor y probar automátic
 
 ## Primera versión
 
-Proveedor implementado: **Pragmatic Play**.
+Proveedores disponibles: **Pragmatic Play**, **1spin4win (D1)** y **Belatra Games**.
 
 - Recorre `https://www.pragmaticplay.com/en/games/` y su paginación.
 - Guarda nombre humano, URL de ficha, slug e ID interno del proveedor cuando se resuelve.
@@ -12,7 +12,7 @@ Proveedor implementado: **Pragmatic Play**.
 - Cada juego vive en su propia carpeta con el mismo nombre humano del juego.
 - Cada carpeta contiene `game.json` con links, IDs, endpoint, cver, campos `doInit`, modos detectados y metadata reutilizable.
 - Conserva respuestas `.raw` además de JSON derivados para diagnóstico.
-- Catálogo persistente en SQLite.
+- Catálogo y resultados persistentes en SQLite local.
 - Selección múltiple de juegos.
 - Prueba todos los juegos o sólo los seleccionados.
 - `Juegos simultáneos` configurable.
@@ -20,6 +20,22 @@ Proveedor implementado: **Pragmatic Play**.
 - `Delay entre juegos` configurable.
 - Timeout configurable.
 - Arquitectura por adaptadores: agregar RubyPlay, BGaming u otros proveedores no requiere modificar el scheduler ni la GUI.
+
+### Belatra Games
+
+- Recorre el catálogo público oficial de Belatra por páginas.
+- Guarda nombre, slug, ficha, miniatura y URL demo.
+- Usa `https://free-slot.belatragames.com/play/<slug>` como fallback de demo cuando la ficha no expone el enlace directamente.
+- En cada prueba realiza bootstrap HTTP de ficha+demo, guarda HTML, scripts y candidatos de endpoints en `bootstrap-discovery.json`.
+- Hasta disponer de una captura HAR/runtime que demuestre el contrato real de tirada/bonus/buy, Belatra se marca `PARCIAL` y nunca `OK` por un simple HTTP 200.
+
+### 1spin4win (D1)
+
+- Recorre el portfolio oficial de `https://www.1spin4win.com/games`.
+- Guarda nombre, slug, ficha, miniatura y el `Game ID` expuesto por la ficha oficial cuando está disponible.
+- Resuelve la URL demo real publicada bajo `gs.1spin4win.com`; no inventa una URL si la ficha no la expone.
+- En cada prueba realiza bootstrap HTTP de ficha+demo, guarda HTML, scripts y candidatos de endpoints en `bootstrap-discovery.json`.
+- Hasta disponer de capturas HAR/runtime que demuestren el contrato real de tirada/bonus/buy, el resultado queda `PARCIAL` y nunca `OK` sólo por recibir HTTP 200.
 
 ## Modos Pragmatic
 
@@ -126,4 +142,4 @@ Cada proveedor implementa el contrato `ProviderAdapter`:
 1. `crawl_catalog(...)` -> catálogo neutral `Game`.
 2. `test_game(...)` -> `GameTestResult` con todos los modos propios del proveedor.
 
-La GUI, SQLite y el scheduler no conocen `openGame`, `doInit`, `doSpin`, `bl`, `pur` ni ninguna particularidad de Pragmatic. Para BGaming/RubyPlay se agrega otro adaptador y se registra en `ProviderRegistry`.
+La GUI, SQLite y el scheduler no conocen `openGame`, `doInit`, `doSpin`, `bl`, `pur` ni ninguna particularidad de Pragmatic. Para BGaming/RubyPlay se agrega otro adaptador y se registra en `ProviderRegistry`. 1spin4win y Belatra ya siguen este mismo contrato.

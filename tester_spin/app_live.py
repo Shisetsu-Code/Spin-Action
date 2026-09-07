@@ -55,8 +55,9 @@ class LiveTesterSpinApp(TesterSpinApp):
         self.progress.start(10)
 
         def on_game(game: Game) -> None:
-            self.storage.upsert_games([game])
-            self._events.put(("catalog_game", (game.provider, game.slug)))
+            # Stream directly to Tk. Persistence is committed in one provider batch
+            # after the crawl, avoiding one remote D1 request per catalogue item.
+            self._events.put(("catalog_game", game))
 
         def worker() -> None:
             try:
@@ -90,11 +91,18 @@ class LiveTesterSpinApp(TesterSpinApp):
         self._worker = threading.Thread(target=worker, daemon=True, name="catalog-crawler")
         self._worker.start()
 
-    def _upsert_catalog_row(self, provider_key: str, slug: str) -> None:
-        game = self.storage.get_game(provider_key, slug)
-        if game is None:
-            return
+    def _upsert_catalog_game(self, game: Game) -> None:
         iid = f"{game.provider}::{game.slug}"
+        current = self._games.get(iid)
+        if current is not None and not game.last_test_at:
+            # Fresh catalogue objects do not carry historical test state. Preserve
+            # the row state already loaded from SQLite/D1 while streaming a recrawl.
+            game.last_status = current.last_status
+            game.last_error = current.last_error
+            game.last_test_at = current.last_test_at
+            game.last_latency_ms = current.last_latency_ms
+            if not game.symbol:
+                game.symbol = current.symbol
         self._games[iid] = game
         image = self._load_tree_thumbnail(game.thumbnail_path)
         values = (
@@ -118,8 +126,13 @@ class LiveTesterSpinApp(TesterSpinApp):
             except queue.Empty:
                 break
             if kind == "catalog_game":
-                provider_key, slug = value  # type: ignore[misc]
-                self._upsert_catalog_row(str(provider_key), str(slug))
+                if isinstance(value, Game):
+                    self._upsert_catalog_game(value)
+                else:
+                    provider_key, slug = value  # type: ignore[misc]
+                    game = self.storage.get_game(str(provider_key), str(slug))
+                    if game is not None:
+                        self._upsert_catalog_game(game)
             else:
                 deferred.append((kind, value))
 

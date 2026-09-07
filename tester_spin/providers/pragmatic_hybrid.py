@@ -26,7 +26,7 @@ class PragmaticProvider(_EndpointPragmaticProvider):
         max_pages: int = 100,
         on_game: GameCallback | None = None,
     ) -> list[Game]:
-        progress("Catálogo híbrido v8 AJAX+HAR: Load More real + estados y símbolos validados.")
+        progress("Catálogo híbrido v8 AJAX+HAR (compatible v6 AJAX): Load More real + estados y símbolos validados.")
         return crawl_pragmatic_catalog_ajax(
             self,
             stop_event=stop_event,

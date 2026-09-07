@@ -13,7 +13,7 @@ from tkinter import messagebox, ttk
 from PIL import Image, ImageTk
 
 from tester_spin.models import Game, GameTestResult
-from tester_spin.providers import PragmaticProvider, ProviderRegistry
+from tester_spin.providers import BelatraProvider, OneSpin4WinProvider, PragmaticProvider, ProviderRegistry
 from tester_spin.scheduler import run_game_tests
 from tester_spin.storage import Storage
 
@@ -32,6 +32,8 @@ class TesterSpinApp(tk.Tk):
 
         self.registry = ProviderRegistry()
         self.registry.register(PragmaticProvider(self.data_root))
+        self.registry.register(OneSpin4WinProvider(self.data_root))
+        self.registry.register(BelatraProvider(self.data_root))
         self._display_to_key = {provider.display_name: provider.key for provider in self.registry.all()}
 
         self._events: queue.Queue[tuple[str, object]] = queue.Queue()
@@ -111,8 +113,9 @@ class TesterSpinApp(tk.Tk):
         ttk.Label(
             opts,
             text=(
-                "Cada juego descubre automáticamente SPIN base, todos los ante-bet/variantes declarados por bls, "
-                "todas las compras declaradas por purInit/purInit_e y conserva evidencia RAW de estados/modos aún no automatizados."
+                "Cada adaptador de proveedor ejecuta únicamente los modos cuyo protocolo fue observado. Pragmatic prueba "
+                "SPIN/ante-bet/compras; 1spin4win y Belatra conservan bootstrap, scripts y candidatos de endpoint "
+                "hasta incorporar sus transiciones de spin/bonus/buy desde evidencia HAR/runtime."
             ),
             wraplength=1400,
         ).pack(anchor="w", pady=(8, 0))
