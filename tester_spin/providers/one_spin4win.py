@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import re
 import threading
@@ -274,6 +275,91 @@ class OneSpin4WinProvider(ProviderAdapter):
             if value.lower().startswith(("http://", "https://"))
         ]
 
+    @staticmethod
+    def _frame_preview(payload: object, *, limit: int = 8192) -> dict[str, object]:
+        if isinstance(payload, bytes):
+            raw = payload[:limit]
+            return {
+                "kind": "binary",
+                "size": len(payload),
+                "base64": base64.b64encode(raw).decode("ascii"),
+                "truncated": len(payload) > limit,
+            }
+        text = str(payload)
+        return {
+            "kind": "text",
+            "size": len(text),
+            "text": text[:limit],
+            "truncated": len(text) > limit,
+        }
+
+    def _observe_websockets_runtime(
+        self,
+        demo_url: str,
+        *,
+        timeout_s: float,
+        attempt_dir: Path,
+    ) -> tuple[list[str], list[dict[str, object]], str]:
+        sockets: list[str] = []
+        frames: list[dict[str, object]] = []
+        error = ""
+        try:
+            from playwright.sync_api import sync_playwright
+
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch(headless=True)
+                context = browser.new_context()
+                page = context.new_page()
+
+                def on_websocket(ws) -> None:
+                    url = str(ws.url)
+                    if url not in sockets:
+                        sockets.append(url)
+
+                    def capture(direction: str):
+                        def handler(payload) -> None:
+                            if len(frames) >= 80:
+                                return
+                            frames.append(
+                                {
+                                    "direction": direction,
+                                    "websocket_url": url,
+                                    "payload": self._frame_preview(payload),
+                                }
+                            )
+                        return handler
+
+                    ws.on("framesent", capture("sent"))
+                    ws.on("framereceived", capture("received"))
+
+                page.on("websocket", on_websocket)
+                page.goto(
+                    demo_url,
+                    wait_until="domcontentloaded",
+                    timeout=max(1_000, int(timeout_s * 1000)),
+                )
+                page.wait_for_timeout(int(min(max(timeout_s, 2.0), 8.0) * 1000))
+                context.close()
+                browser.close()
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"
+
+        payload = {
+            "demo_url": demo_url,
+            "transport": "websocket",
+            "websocket_urls": sockets,
+            "initial_frames": frames,
+            "error": error,
+            "note": (
+                "Passive runtime observation only: no bet/spin action is sent by this observer."
+            ),
+        }
+        (attempt_dir / "runtime-websocket.json").write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        return sockets, frames, error
+
     def _discover_demo_protocol(
         self,
         game: Game,
@@ -331,6 +417,19 @@ class OneSpin4WinProvider(ProviderAdapter):
             except Exception:
                 continue
 
+        runtime_ws: list[str] = []
+        runtime_frames: list[dict[str, object]] = []
+        runtime_error = ""
+        if not websocket_candidates:
+            runtime_ws, runtime_frames, runtime_error = self._observe_websockets_runtime(
+                demo.url,
+                timeout_s=timeout_s,
+                attempt_dir=attempt_dir,
+            )
+            for candidate in runtime_ws:
+                if candidate not in websocket_candidates:
+                    websocket_candidates.append(candidate)
+
         (attempt_dir / "bootstrap-discovery.json").write_text(
             json.dumps(
                 {
@@ -350,6 +449,12 @@ class OneSpin4WinProvider(ProviderAdapter):
                     "scripts_scanned": scanned_scripts,
                     "websocket_candidates": websocket_candidates,
                     "http_bootstrap_candidates": http_candidates,
+                    "runtime_websocket_observation": {
+                        "used": bool(runtime_ws or runtime_error),
+                        "urls": runtime_ws,
+                        "initial_frame_count": len(runtime_frames),
+                        "error": runtime_error,
+                    },
                     "note": (
                         "1spin4win/D1 uses WebSocket transport for bets/spins. HTTP is "
                         "bootstrap/configuration only. WS frame schema and state transitions "
