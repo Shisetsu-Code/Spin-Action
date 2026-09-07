@@ -4,7 +4,7 @@ GUI extensible en Python para catalogar juegos por proveedor y probar automátic
 
 ## Primera versión
 
-Proveedor implementado: **Pragmatic Play**.
+Proveedores disponibles: **Pragmatic Play** y **Belatra Games**.
 
 - Recorre `https://www.pragmaticplay.com/en/games/` y su paginación.
 - Guarda nombre humano, URL de ficha, slug e ID interno del proveedor cuando se resuelve.
@@ -12,14 +12,14 @@ Proveedor implementado: **Pragmatic Play**.
 - Cada juego vive en su propia carpeta con el mismo nombre humano del juego.
 - Cada carpeta contiene `game.json` con links, IDs, endpoint, cver, campos `doInit`, modos detectados y metadata reutilizable.
 - Conserva respuestas `.raw` además de JSON derivados para diagnóstico.
-- Catálogo persistente en SQLite.
+- Persistencia seleccionable: SQLite local o Cloudflare D1.
 - Selección múltiple de juegos.
 - Prueba todos los juegos o sólo los seleccionados.
 - `Juegos simultáneos` configurable.
 - `Repeticiones por modo` configurable.
 - `Delay entre juegos` configurable.
 - Timeout configurable.
-- Arquitectura por adaptadores: agregar RubyPlay, BGaming u otros proveedores no requiere modificar el scheduler ni la GUI.
+- Arquitectura por adaptadores: agregar RubyPlay, BGaming u otros proveedores no requiere modificar el scheduler ni la GUI.\n\n### Belatra Games\n\n- Recorre el catálogo público oficial de Belatra por páginas.\n- Guarda nombre, slug, ficha, miniatura y URL demo.\n- Usa `https://free-slot.belatragames.com/play/<slug>` como fallback de demo cuando la ficha no expone el enlace directamente.\n- En cada prueba realiza bootstrap HTTP de ficha+demo, guarda HTML, scripts y candidatos de endpoints en `bootstrap-discovery.json`.\n- Hasta disponer de una captura HAR/runtime que demuestre el contrato real de tirada/bonus/buy, Belatra se marca `PARCIAL` y nunca `OK` por un simple HTTP 200.\n\n### Cloudflare D1\n\nLa GUI permite elegir `SQLite local` o `Cloudflare D1`. Para D1 se usan las mismas tablas lógicas (`games` y `test_results`) y la API REST parametrizada de Cloudflare. El token no se guarda en archivos.\n\nVariables necesarias:\n\n```powershell\n$env:TESTER_SPIN_D1_ACCOUNT_ID = \"<account-id>\"\n$env:TESTER_SPIN_D1_DATABASE_ID = \"<database-uuid>\"\n$env:TESTER_SPIN_D1_API_TOKEN = \"<token con D1 Read/Write>\"\n```\n\nTambién se acepta `CLOUDFLARE_API_TOKEN` como fallback. Los artefactos grandes (RAW, HTML, capturas) continúan en disco local; D1 almacena catálogo, estado y resultados. Para despliegues distribuidos de alto volumen se recomienda interponer un Worker con binding D1 en lugar de usar la REST administrativa directamente.
 
 ## Modos Pragmatic
 
@@ -126,4 +126,4 @@ Cada proveedor implementa el contrato `ProviderAdapter`:
 1. `crawl_catalog(...)` -> catálogo neutral `Game`.
 2. `test_game(...)` -> `GameTestResult` con todos los modos propios del proveedor.
 
-La GUI, SQLite y el scheduler no conocen `openGame`, `doInit`, `doSpin`, `bl`, `pur` ni ninguna particularidad de Pragmatic. Para BGaming/RubyPlay se agrega otro adaptador y se registra en `ProviderRegistry`.
+La GUI, los backends de persistencia y el scheduler no conocen `openGame`, `doInit`, `doSpin`, `bl`, `pur` ni ninguna particularidad de Pragmatic. Para BGaming/RubyPlay se agrega otro adaptador y se registra en `ProviderRegistry`. Belatra ya sigue este mismo contrato.
