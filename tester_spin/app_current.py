@@ -270,9 +270,17 @@ class CurrentTesterSpinApp(LiveTesterSpinApp):
                     )
 
                     # record_result() already committed in the orchestrator thread.
-                    # Refresh only this row instead of rebuilding the full index.
-                    game = self.storage.get_game(result.provider, result.slug)
+                    # Apply the authoritative result to the cached row instead of
+                    # issuing a read-back query. This matters for remote D1.
+                    iid = f"{result.provider}::{result.slug}"
+                    game = self._games.get(iid)
                     if game is not None:
+                        game.symbol = result.symbol or game.symbol
+                        game.last_status = result.status
+                        game.last_error = result.error
+                        game.last_test_at = result.finished_at
+                        game.last_latency_ms = result.elapsed_ms
+                        game.updated_at = result.finished_at
                         LiveTesterSpinApp._upsert_catalog_game(self, game)
                         table_dirty = True
             elif kind == "tests_done":
