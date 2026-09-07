@@ -58,6 +58,20 @@ class OneSpin4WinCatalogTests(unittest.TestCase):
             "https://gs.1spin4win.com/demo/session/abc?lang=en",
         )
 
+    def test_websocket_candidates_are_separated_from_http_bootstrap(self) -> None:
+        text = """
+        const socket = new WebSocket("wss://games.example/ws/session/abc");
+        const api = "https://games.example/api/bootstrap";
+        """
+        self.assertEqual(
+            self.provider._websocket_candidates(text, "https://gs.1spin4win.com/demo"),
+            ["wss://games.example/ws/session/abc"],
+        )
+        self.assertEqual(
+            self.provider._http_bootstrap_candidates(text, "https://gs.1spin4win.com/demo"),
+            ["https://games.example/api/bootstrap"],
+        )
+
     def test_successful_bootstrap_remains_partial_not_spin_ok(self) -> None:
         game = self.provider._extract_catalog_page(
             '<a href="/games/lucky-1spin4win-hold-and-win">'
@@ -72,7 +86,8 @@ class OneSpin4WinCatalogTests(unittest.TestCase):
                 200,
                 12.5,
                 ["https://example.test/runtime.js"],
-                ["https://example.test/spin"],
+                ["wss://games.example/ws/session/abc"],
+                ["https://example.test/bootstrap"],
             )
 
         self.provider._discover_demo_protocol = fake_discovery  # type: ignore[method-assign]
@@ -87,6 +102,13 @@ class OneSpin4WinCatalogTests(unittest.TestCase):
         self.assertEqual(result.successful_spins, 0)
         self.assertEqual(result.symbol, "Lucky1Spin4WinHoldAndWin")
         self.assertEqual(result.attempts[0].status_code, 200)
+        self.assertEqual(result.attempts[0].mode_kind, "DISCOVERY_WS")
+        self.assertEqual(
+            result.attempts[0].endpoint,
+            "wss://games.example/ws/session/abc",
+        )
+        self.assertEqual(result.discovered_modes[0]["transport"], "websocket")
+        self.assertEqual(result.discovered_modes[0]["http_role"], "bootstrap_only")
         self.assertTrue(result.attempts[0].ok)
         self.assertFalse(result.attempts[0].terminal)
 
