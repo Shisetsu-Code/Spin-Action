@@ -93,7 +93,7 @@ class BelatraCatalogTests(unittest.TestCase):
         )
 
     def test_resolve_demo_url_has_safe_slug_fallback(self) -> None:
-        provider = BelatraProvider(Path("."))
+        provider = self.provider
         game = provider._extract_catalog_page(
             '<a href="/en/games/game/just-a-bingo"><img alt="Just a Bingo"></a>',
             "https://belatragames.com/en/games",
