@@ -46,8 +46,15 @@ class D1StorageConfigTests(unittest.TestCase):
 
 
 class BelatraCatalogTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.provider = BelatraProvider(Path(self._tmp.name))
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
     def test_extract_catalog_page_uses_game_links_and_image_alt(self) -> None:
-        provider = BelatraProvider(Path("."))
+        provider = self.provider
         html = """
         <html><body>
           <article>
