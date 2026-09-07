@@ -93,6 +93,16 @@ class LiveTesterSpinApp(TesterSpinApp):
 
     def _upsert_catalog_game(self, game: Game) -> None:
         iid = f"{game.provider}::{game.slug}"
+        current = self._games.get(iid)
+        if current is not None and not game.last_test_at:
+            # Fresh catalogue objects do not carry historical test state. Preserve
+            # the row state already loaded from SQLite/D1 while streaming a recrawl.
+            game.last_status = current.last_status
+            game.last_error = current.last_error
+            game.last_test_at = current.last_test_at
+            game.last_latency_ms = current.last_latency_ms
+            if not game.symbol:
+                game.symbol = current.symbol
         self._games[iid] = game
         image = self._load_tree_thumbnail(game.thumbnail_path)
         values = (
