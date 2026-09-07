@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -104,8 +105,29 @@ class D1Storage:
         return value
 
     def _request(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
-        response = self._session().post(self.endpoint, json=payload, timeout=30.0)
-        response.raise_for_status()
+        response = None
+        last_error: Exception | None = None
+        for attempt in range(1, 5):
+            try:
+                response = self._session().post(self.endpoint, json=payload, timeout=30.0)
+                if response.status_code == 429 or 500 <= response.status_code <= 504:
+                    retry_after = response.headers.get("Retry-After", "").strip()
+                    try:
+                        delay = max(0.1, min(5.0, float(retry_after)))
+                    except ValueError:
+                        delay = min(3.0, 0.25 * (2 ** (attempt - 1)))
+                    if attempt < 4:
+                        time.sleep(delay)
+                        continue
+                response.raise_for_status()
+                break
+            except requests.RequestException as exc:
+                last_error = exc
+                if attempt >= 4:
+                    raise
+                time.sleep(min(3.0, 0.25 * (2 ** (attempt - 1))))
+        if response is None:
+            raise RuntimeError(f"D1 request no produjo respuesta: {last_error}")
         data = response.json()
         if not isinstance(data, dict):
             raise RuntimeError("D1 devolvió una respuesta JSON inválida")
