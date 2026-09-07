@@ -12,9 +12,8 @@ from tkinter import messagebox, ttk
 
 from PIL import Image, ImageTk
 
-from tester_spin.d1_storage import D1Storage
 from tester_spin.models import Game, GameTestResult
-from tester_spin.providers import BelatraProvider, PragmaticProvider, ProviderRegistry
+from tester_spin.providers import BelatraProvider, OneSpin4WinProvider, PragmaticProvider, ProviderRegistry
 from tester_spin.scheduler import run_game_tests
 from tester_spin.storage import Storage
 
@@ -29,12 +28,11 @@ class TesterSpinApp(tk.Tk):
         self.root_dir = Path.cwd()
         self.data_root = self.root_dir / "data"
         self.data_root.mkdir(parents=True, exist_ok=True)
-        self._local_storage = Storage(self.data_root / "tester-spin.sqlite3")
-        self.storage = self._local_storage
-        self._d1_storage: D1Storage | None = None
+        self.storage = Storage(self.data_root / "tester-spin.sqlite3")
 
         self.registry = ProviderRegistry()
         self.registry.register(PragmaticProvider(self.data_root))
+        self.registry.register(OneSpin4WinProvider(self.data_root))
         self.registry.register(BelatraProvider(self.data_root))
         self._display_to_key = {provider.display_name: provider.key for provider in self.registry.all()}
 
@@ -49,8 +47,6 @@ class TesterSpinApp(tk.Tk):
 
         providers = list(self._display_to_key)
         self.provider_var = tk.StringVar(value=providers[0] if providers else "")
-        self.storage_var = tk.StringVar(value="SQLite local")
-        self.storage_info_var = tk.StringVar(value=f"SQLite: {self.data_root / 'tester-spin.sqlite3'}")
         self.catalog_url_var = tk.StringVar()
         self.max_pages_var = tk.StringVar(value="100")
         self.concurrency_var = tk.StringVar(value="3")
@@ -93,23 +89,6 @@ class TesterSpinApp(tk.Tk):
         self.crawl_btn = ttk.Button(row, text="CARGAR / ACTUALIZAR CATÁLOGO", command=self._start_crawl)
         self.crawl_btn.pack(side="left")
 
-        storage_row = ttk.Frame(top)
-        storage_row.pack(fill="x", pady=(8, 0))
-        ttk.Label(storage_row, text="Persistencia:").pack(side="left")
-        self.storage_combo = ttk.Combobox(
-            storage_row,
-            textvariable=self.storage_var,
-            values=("SQLite local", "Cloudflare D1"),
-            state="readonly",
-            width=20,
-        )
-        self.storage_combo.pack(side="left", padx=(6, 10))
-        self.storage_combo.bind(
-            "<<ComboboxSelected>>",
-            lambda _event: self._on_storage_changed(),
-        )
-        ttk.Label(storage_row, textvariable=self.storage_info_var).pack(side="left")
-
         opts = ttk.LabelFrame(outer, text="Prueba de juegos", padding=10)
         opts.pack(fill="x", pady=(10, 0))
         row2 = ttk.Frame(opts)
@@ -134,9 +113,9 @@ class TesterSpinApp(tk.Tk):
         ttk.Label(
             opts,
             text=(
-                "El adaptador de cada proveedor descubre y prueba sus modos soportados. Pragmatic recorre "
-                "SPIN/ante-bet/compras y Belatra, hasta incorporar su protocolo de tirada observado, realiza "
-                "bootstrap y descubrimiento de endpoints conservando evidencia para automatizar los estados pendientes."
+                "Cada adaptador de proveedor ejecuta únicamente los modos cuyo protocolo fue observado. Pragmatic prueba "
+                "SPIN/ante-bet/compras; 1spin4win y Belatra conservan bootstrap, scripts y candidatos de endpoint "
+                "hasta incorporar sus transiciones de spin/bonus/buy desde evidencia HAR/runtime."
             ),
             wraplength=1400,
         ).pack(anchor="w", pady=(8, 0))
@@ -206,43 +185,12 @@ class TesterSpinApp(tk.Tk):
         self.catalog_url_var.set(provider.catalog_url)
         self._refresh_games()
 
-    def _on_storage_changed(self) -> None:
-        selected = self.storage_var.get().strip()
-        if selected == "SQLite local":
-            self.storage = self._local_storage
-            self.storage_info_var.set(f"SQLite: {self.data_root / 'tester-spin.sqlite3'}")
-            self._refresh_games()
-            return
-
-        try:
-            if self._d1_storage is None:
-                self._d1_storage = D1Storage.from_environment()
-            self.storage = self._d1_storage
-            self.storage_info_var.set(f"D1: {self._d1_storage.config.database_id}")
-            self._refresh_games()
-        except Exception as exc:
-            self.storage = self._local_storage
-            self.storage_var.set("SQLite local")
-            self.storage_info_var.set("D1 no configurado")
-            messagebox.showerror(
-                "Tester-Spin - Cloudflare D1",
-                (
-                    f"No se pudo activar D1: {type(exc).__name__}: {exc}\n\n"
-                    "Configurá estas variables de entorno y reiniciá Tester-Spin:\n"
-                    "TESTER_SPIN_D1_ACCOUNT_ID\n"
-                    "TESTER_SPIN_D1_DATABASE_ID\n"
-                    "TESTER_SPIN_D1_API_TOKEN\n\n"
-                    "También se acepta CLOUDFLARE_API_TOKEN para el token."
-                ),
-            )
-
     def _set_busy(self, busy: bool) -> None:
         state = "disabled" if busy else "normal"
         self.crawl_btn.configure(state=state)
         self.test_selected_btn.configure(state=state)
         self.test_all_btn.configure(state=state)
         self.provider_combo.configure(state="disabled" if busy else "readonly")
-        self.storage_combo.configure(state="disabled" if busy else "readonly")
         self.stop_btn.configure(state="normal" if busy else "disabled")
 
     def _start_crawl(self) -> None:
