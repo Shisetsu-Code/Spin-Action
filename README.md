@@ -31,12 +31,12 @@ Proveedores disponibles: **Pragmatic Play**, **1spin4win (D1)** y **Belatra Game
 
 ### 1spin4win (D1)
 
-- Recorre el portfolio oficial de `https://www.1spin4win.com/games`.
-- Guarda nombre, slug, ficha, miniatura y el `Game ID` expuesto por la ficha oficial cuando está disponible.
-- Resuelve la URL demo real publicada bajo `gs.1spin4win.com`; no inventa una URL si la ficha no la expone.
-- El bootstrap/configuración inicial se descubre por HTTP, pero las apuestas/tiradas se modelan explícitamente como **WebSocket**.
-- Se separan `websocket_candidates` de `http_bootstrap_candidates`; si el socket se construye dinámicamente, Playwright observa pasivamente `page.on("websocket")` y guarda `runtime-websocket.json` con URL y frames iniciales.
-- Hasta disponer de capturas runtime que demuestren el handshake y los frames reales de tirada/bonus/buy, el resultado queda `PARCIAL` y nunca `OK` sólo por recibir HTTP 200.
+- D1 se trata como un proveedor **WebSocket-native**: catálogo, sesión y estado de juego se obtienen de frames WS.
+- La URL configurable de catálogo es sólo una URL de entrada/lobby para que el navegador cargue el shell y establezca los sockets. El HTML/HTTP no se usa como fuente autoritativa de datos D1.
+- El catálogo se construye desde objetos observados en frames WS y se guarda junto con `catalog-websocket-capture.jsonl` y `catalog-websocket-summary.json`.
+- Se filtran sockets/payloads de telemetría. En particular, frames WebVisor/Yandex con `wv-type`, `wv-check`, `wv-hit`, `wstoken` o `sessionStart` no se consideran datos de catálogo.
+- Las miniaturas pueden descargarse como assets HTTP/CDN una vez que su URL fue obtenida del catálogo WS; esto no convierte HTTP en fuente de datos del proveedor.
+- Las pruebas de juego observan exclusivamente los WS funcionales y guardan `runtime-websocket.json`. Hasta clasificar handshake y frames reales de spin/bet/bonus/buy, el resultado queda `PARCIAL`.
 
 ## Modos Pragmatic
 
