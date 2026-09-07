@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -102,6 +103,36 @@ class BelatraCatalogTests(unittest.TestCase):
             provider._resolve_demo_url(game, "<html></html>"),
             "https://free-slot.belatragames.com/play/just-a-bingo",
         )
+
+    def test_successful_bootstrap_remains_partial_not_spin_ok(self) -> None:
+        provider = self.provider
+        game = provider._extract_catalog_page(
+            '<a href="/en/games/game/just-a-bingo"><img alt="Just a Bingo"></a>',
+            "https://belatragames.com/en/games",
+        )[0]
+
+        def fake_discovery(*_args, **_kwargs):
+            return (
+                "https://free-slot.belatragames.com/play/just-a-bingo",
+                200,
+                12.5,
+                ["https://example.test/runtime.js"],
+                ["https://example.test/spin"],
+            )
+
+        provider._discover_demo_protocol = fake_discovery  # type: ignore[method-assign]
+        result = provider.test_game(
+            game,
+            spins=1,
+            timeout_s=5.0,
+            stop_event=threading.Event(),
+            progress=lambda _message: None,
+        )
+        self.assertEqual(result.status, "PARCIAL")
+        self.assertEqual(result.successful_spins, 0)
+        self.assertEqual(result.attempts[0].status_code, 200)
+        self.assertFalse(result.attempts[0].terminal)
+        self.assertTrue(result.attempts[0].ok)
 
 
 if __name__ == "__main__":
