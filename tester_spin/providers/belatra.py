@@ -255,7 +255,7 @@ class BelatraProvider(ProviderAdapter):
         *,
         timeout_s: float,
         attempt_dir: Path,
-    ) -> tuple[str, float, list[str], list[str]]:
+    ) -> tuple[str, int, float, list[str], list[str]]:
         started = time.monotonic()
         session = self._worker_session()
         detail = session.get(game.url, timeout=timeout_s, allow_redirects=True)
@@ -317,7 +317,7 @@ class BelatraProvider(ProviderAdapter):
             ),
             encoding="utf-8",
         )
-        return demo.url, elapsed_ms, scripts, endpoints
+        return demo.url, int(demo.status_code), elapsed_ms, scripts, endpoints
 
     def test_game(
         self,
@@ -346,7 +346,7 @@ class BelatraProvider(ProviderAdapter):
                 break
             attempt_dir = run_dir / f"attempt-{number:03d}"
             try:
-                demo_url, elapsed_ms, _scripts, endpoints = self._discover_demo_protocol(
+                demo_url, demo_status, elapsed_ms, _scripts, endpoints = self._discover_demo_protocol(
                     game,
                     timeout_s=timeout_s,
                     attempt_dir=attempt_dir,
@@ -362,7 +362,7 @@ class BelatraProvider(ProviderAdapter):
                         ok=True,
                         mode_id="BOOTSTRAP_DISCOVERY",
                         mode_kind="DISCOVERY",
-                        status_code=200,
+                        status_code=demo_status,
                         elapsed_ms=elapsed_ms,
                         symbol=game.slug,
                         endpoint=demo_url,
