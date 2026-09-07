@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import re
 import threading
@@ -243,19 +244,121 @@ class OneSpin4WinProvider(ProviderAdapter):
         return match.group(0).rstrip(".,);]}") if match else ""
 
     @staticmethod
-    def _endpoint_candidates(text: str, base_url: str) -> list[str]:
+    def _network_candidates(text: str, base_url: str) -> list[str]:
+        normalized_text = (text or "").replace("\\/", "/")
         seen: set[str] = set()
         out: list[str] = []
-        for match in _ENDPOINT_HINT_RE.finditer(text or ""):
+        for match in _ENDPOINT_HINT_RE.finditer(normalized_text):
             value = match.group(0).rstrip(".,);]}")
             if value.startswith("/"):
                 value = urljoin(base_url, value)
             if value not in seen:
                 seen.add(value)
                 out.append(value)
-            if len(out) >= 500:
+            if len(out) >= 800:
                 break
         return out
+
+    @classmethod
+    def _websocket_candidates(cls, text: str, base_url: str) -> list[str]:
+        return [
+            value
+            for value in cls._network_candidates(text, base_url)
+            if value.lower().startswith(("ws://", "wss://"))
+        ]
+
+    @classmethod
+    def _http_bootstrap_candidates(cls, text: str, base_url: str) -> list[str]:
+        return [
+            value
+            for value in cls._network_candidates(text, base_url)
+            if value.lower().startswith(("http://", "https://"))
+        ]
+
+    @staticmethod
+    def _frame_preview(payload: object, *, limit: int = 8192) -> dict[str, object]:
+        if isinstance(payload, bytes):
+            raw = payload[:limit]
+            return {
+                "kind": "binary",
+                "size": len(payload),
+                "base64": base64.b64encode(raw).decode("ascii"),
+                "truncated": len(payload) > limit,
+            }
+        text = str(payload)
+        return {
+            "kind": "text",
+            "size": len(text),
+            "text": text[:limit],
+            "truncated": len(text) > limit,
+        }
+
+    def _observe_websockets_runtime(
+        self,
+        demo_url: str,
+        *,
+        timeout_s: float,
+        attempt_dir: Path,
+    ) -> tuple[list[str], list[dict[str, object]], str]:
+        sockets: list[str] = []
+        frames: list[dict[str, object]] = []
+        error = ""
+        try:
+            from playwright.sync_api import sync_playwright
+
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch(headless=True)
+                context = browser.new_context()
+                page = context.new_page()
+
+                def on_websocket(ws) -> None:
+                    url = str(ws.url)
+                    if url not in sockets:
+                        sockets.append(url)
+
+                    def capture(direction: str):
+                        def handler(payload) -> None:
+                            if len(frames) >= 80:
+                                return
+                            frames.append(
+                                {
+                                    "direction": direction,
+                                    "websocket_url": url,
+                                    "payload": self._frame_preview(payload),
+                                }
+                            )
+                        return handler
+
+                    ws.on("framesent", capture("sent"))
+                    ws.on("framereceived", capture("received"))
+
+                page.on("websocket", on_websocket)
+                page.goto(
+                    demo_url,
+                    wait_until="domcontentloaded",
+                    timeout=max(1_000, int(timeout_s * 1000)),
+                )
+                page.wait_for_timeout(int(min(max(timeout_s, 2.0), 8.0) * 1000))
+                context.close()
+                browser.close()
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"
+
+        payload = {
+            "demo_url": demo_url,
+            "transport": "websocket",
+            "websocket_urls": sockets,
+            "initial_frames": frames,
+            "error": error,
+            "note": (
+                "Passive runtime observation only: no bet/spin action is sent by this observer."
+            ),
+        }
+        (attempt_dir / "runtime-websocket.json").write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        return sockets, frames, error
 
     def _discover_demo_protocol(
         self,
@@ -263,7 +366,7 @@ class OneSpin4WinProvider(ProviderAdapter):
         *,
         timeout_s: float,
         attempt_dir: Path,
-    ) -> tuple[str, str, int, float, list[str], list[str]]:
+    ) -> tuple[str, str, int, float, list[str], list[str], list[str]]:
         started = time.monotonic()
         session = self._worker_session()
         detail = session.get(game.url, timeout=timeout_s, allow_redirects=True)
@@ -284,7 +387,8 @@ class OneSpin4WinProvider(ProviderAdapter):
 
         soup = BeautifulSoup(demo.text or "", "html.parser")
         scripts: list[str] = []
-        endpoints = self._endpoint_candidates(demo.text, demo.url)
+        websocket_candidates = self._websocket_candidates(demo.text, demo.url)
+        http_candidates = self._http_bootstrap_candidates(demo.text, demo.url)
         for node in soup.find_all("script", src=True):
             src = urljoin(demo.url, str(node.get("src") or ""))
             if src and src not in scripts:
@@ -300,13 +404,31 @@ class OneSpin4WinProvider(ProviderAdapter):
                 if len(response.content) > 5 * 1024 * 1024:
                     continue
                 scanned_scripts.append(src)
-                for candidate in self._endpoint_candidates(response.text, response.url):
-                    if candidate not in endpoints:
-                        endpoints.append(candidate)
-                        if len(endpoints) >= 800:
+                for candidate in self._websocket_candidates(response.text, response.url):
+                    if candidate not in websocket_candidates:
+                        websocket_candidates.append(candidate)
+                        if len(websocket_candidates) >= 200:
+                            break
+                for candidate in self._http_bootstrap_candidates(response.text, response.url):
+                    if candidate not in http_candidates:
+                        http_candidates.append(candidate)
+                        if len(http_candidates) >= 400:
                             break
             except Exception:
                 continue
+
+        runtime_ws: list[str] = []
+        runtime_frames: list[dict[str, object]] = []
+        runtime_error = ""
+        if not websocket_candidates:
+            runtime_ws, runtime_frames, runtime_error = self._observe_websockets_runtime(
+                demo.url,
+                timeout_s=timeout_s,
+                attempt_dir=attempt_dir,
+            )
+            for candidate in runtime_ws:
+                if candidate not in websocket_candidates:
+                    websocket_candidates.append(candidate)
 
         (attempt_dir / "bootstrap-discovery.json").write_text(
             json.dumps(
@@ -319,12 +441,24 @@ class OneSpin4WinProvider(ProviderAdapter):
                     "detail_status": detail.status_code,
                     "demo_status": demo.status_code,
                     "elapsed_ms": round(elapsed_ms, 2),
+                    "transport": {
+                        "bootstrap": "http",
+                        "bets_and_spins": "websocket",
+                    },
                     "scripts": scripts,
                     "scripts_scanned": scanned_scripts,
-                    "endpoint_candidates": endpoints,
+                    "websocket_candidates": websocket_candidates,
+                    "http_bootstrap_candidates": http_candidates,
+                    "runtime_websocket_observation": {
+                        "used": bool(runtime_ws or runtime_error),
+                        "urls": runtime_ws,
+                        "initial_frame_count": len(runtime_frames),
+                        "error": runtime_error,
+                    },
                     "note": (
-                        "Bootstrap/discovery only. Spin/bonus/buy remains unvalidated "
-                        "until implemented from observed HAR/runtime transitions."
+                        "1spin4win/D1 uses WebSocket transport for bets/spins. HTTP is "
+                        "bootstrap/configuration only. WS frame schema and state transitions "
+                        "remain unvalidated until implemented from observed runtime capture."
                     ),
                 },
                 ensure_ascii=False,
@@ -332,7 +466,15 @@ class OneSpin4WinProvider(ProviderAdapter):
             ),
             encoding="utf-8",
         )
-        return demo.url, game_id, int(demo.status_code), elapsed_ms, scripts, endpoints
+        return (
+            demo.url,
+            game_id,
+            int(demo.status_code),
+            elapsed_ms,
+            scripts,
+            websocket_candidates,
+            http_candidates,
+        )
 
     def test_game(
         self,
@@ -354,15 +496,23 @@ class OneSpin4WinProvider(ProviderAdapter):
         errors: list[str] = []
 
         progress(
-            f"[{game.name}] 1spin4win: bootstrap + descubrimiento; "
-            "spin aún no se marca OK sin protocolo observado."
+            f"[{game.name}] 1spin4win/D1: HTTP sólo para bootstrap; "
+            "apuestas/tiradas se descubren como transporte WebSocket."
         )
         for number in range(1, repetitions + 1):
             if stop_event.is_set():
                 break
             attempt_dir = run_dir / f"attempt-{number:03d}"
             try:
-                demo_url, game_id, demo_status, elapsed_ms, _scripts, endpoints = (
+                (
+                    demo_url,
+                    game_id,
+                    demo_status,
+                    elapsed_ms,
+                    _scripts,
+                    websocket_candidates,
+                    http_candidates,
+                ) = (
                     self._discover_demo_protocol(
                         game,
                         timeout_s=timeout_s,
@@ -373,21 +523,25 @@ class OneSpin4WinProvider(ProviderAdapter):
                 resolved_id = game_id or resolved_id
                 progress(
                     f"[{game.name}] bootstrap {number}/{repetitions}: "
-                    f"{elapsed_ms:.0f} ms, gameId={resolved_id or '—'}, candidatos={len(endpoints)}"
+                    f"{elapsed_ms:.0f} ms, gameId={resolved_id or '—'}, "
+                    f"WS={len(websocket_candidates)}, HTTP-bootstrap={len(http_candidates)}"
                 )
                 attempts.append(
                     SpinAttempt(
                         number=number,
                         ok=True,
                         mode_id="BOOTSTRAP_DISCOVERY",
-                        mode_kind="DISCOVERY",
+                        mode_kind="DISCOVERY_WS",
                         status_code=demo_status,
                         elapsed_ms=elapsed_ms,
                         symbol=resolved_id,
-                        endpoint=demo_url,
+                        endpoint=(websocket_candidates[0] if websocket_candidates else demo_url),
                         terminal=False,
                         wire_steps=1,
-                        warning="1spin4win spin protocol pendiente de captura/automatización.",
+                        warning=(
+                            "1spin4win/D1 usa WebSocket para apuestas/tiradas; "
+                            "falta automatizar handshake y frames de acción/respuesta."
+                        ),
                         artifact_dir=str(attempt_dir),
                     )
                 )
@@ -412,8 +566,9 @@ class OneSpin4WinProvider(ProviderAdapter):
         if bootstrap_ok:
             status = "PARCIAL"
             error = (
-                "Demo 1spin4win accesible y protocolo candidato recolectado; "
-                "falta automatizar spin/bonus/buy desde evidencia HAR/runtime."
+                "Bootstrap HTTP de 1spin4win accesible; apuestas/tiradas son WebSocket. "
+                "Falta automatizar handshake, frames spin/bet/bonus/buy y transiciones "
+                "desde evidencia runtime."
             )
         else:
             status = "ERROR"
@@ -432,7 +587,9 @@ class OneSpin4WinProvider(ProviderAdapter):
             discovered_modes=[
                 {
                     "id": "BOOTSTRAP_DISCOVERY",
-                    "kind": "DISCOVERY",
+                    "kind": "DISCOVERY_WS",
+                    "transport": "websocket",
+                    "http_role": "bootstrap_only",
                     "automated": True,
                     "spin_validated": False,
                 }
