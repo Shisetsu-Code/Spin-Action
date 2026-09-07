@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -78,7 +79,7 @@ class BelatraCatalogTests(unittest.TestCase):
         )
 
     def test_resolve_demo_url_uses_observed_free_slot_url(self) -> None:
-        provider = BelatraProvider(Path("."))
+        provider = self.provider
         game = provider._extract_catalog_page(
             '<a href="/en/games/game/just-a-bingo"><img alt="Just a Bingo"></a>',
             "https://belatragames.com/en/games",
