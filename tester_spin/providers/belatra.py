@@ -20,6 +20,8 @@ _DEMO_URL_RE = re.compile(
     r"https?://free-slot\.belatragames\.com/(?:[a-z]{2}/)?play/[A-Za-z0-9._~%+-]+",
     re.I,
 )
+_BELATRA_LOCAL = threading.local()
+
 _ENDPOINT_HINT_RE = re.compile(
     r"""(?:
         wss?://[^\s"'<>]+|
@@ -78,6 +80,18 @@ class BelatraProvider(ProviderAdapter):
         path = self.provider_root / _safe_folder(game.name)
         path.mkdir(parents=True, exist_ok=True)
         return path
+
+    def _worker_session(self) -> requests.Session:
+        session = getattr(_BELATRA_LOCAL, "session", None)
+        if session is None:
+            session = requests.Session()
+            session.headers.update(dict(self.http.headers))
+            try:
+                session.cookies.update(self.http.cookies.get_dict())
+            except Exception:
+                pass
+            _BELATRA_LOCAL.session = session
+        return session
 
     def _page_url(self, page: int) -> str:
         return self.catalog_url.rstrip("/") if page <= 1 else f"{self.catalog_url.rstrip('/')}/{page}"
@@ -243,10 +257,11 @@ class BelatraProvider(ProviderAdapter):
         attempt_dir: Path,
     ) -> tuple[str, float, list[str], list[str]]:
         started = time.monotonic()
-        detail = self.http.get(game.url, timeout=timeout_s, allow_redirects=True)
+        session = self._worker_session()
+        detail = session.get(game.url, timeout=timeout_s, allow_redirects=True)
         detail.raise_for_status()
         demo_url = self._resolve_demo_url(game, detail.text)
-        demo = self.http.get(demo_url, timeout=timeout_s, allow_redirects=True)
+        demo = session.get(demo_url, timeout=timeout_s, allow_redirects=True)
         demo.raise_for_status()
         elapsed_ms = (time.monotonic() - started) * 1000.0
 
@@ -267,7 +282,7 @@ class BelatraProvider(ProviderAdapter):
         scanned_scripts: list[str] = []
         for src in scripts:
             try:
-                response = self.http.get(src, timeout=min(timeout_s, 20.0))
+                response = session.get(src, timeout=min(timeout_s, 20.0))
                 response.raise_for_status()
                 if len(response.content) > 4 * 1024 * 1024:
                     continue
