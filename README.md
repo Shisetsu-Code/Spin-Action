@@ -19,7 +19,29 @@ Proveedores disponibles: **Pragmatic Play** y **Belatra Games**.
 - `Repeticiones por modo` configurable.
 - `Delay entre juegos` configurable.
 - Timeout configurable.
-- Arquitectura por adaptadores: agregar RubyPlay, BGaming u otros proveedores no requiere modificar el scheduler ni la GUI.\n\n### Belatra Games\n\n- Recorre el catálogo público oficial de Belatra por páginas.\n- Guarda nombre, slug, ficha, miniatura y URL demo.\n- Usa `https://free-slot.belatragames.com/play/<slug>` como fallback de demo cuando la ficha no expone el enlace directamente.\n- En cada prueba realiza bootstrap HTTP de ficha+demo, guarda HTML, scripts y candidatos de endpoints en `bootstrap-discovery.json`.\n- Hasta disponer de una captura HAR/runtime que demuestre el contrato real de tirada/bonus/buy, Belatra se marca `PARCIAL` y nunca `OK` por un simple HTTP 200.\n\n### Cloudflare D1\n\nLa GUI permite elegir `SQLite local` o `Cloudflare D1`. Para D1 se usan las mismas tablas lógicas (`games` y `test_results`) y la API REST parametrizada de Cloudflare. El token no se guarda en archivos.\n\nVariables necesarias:\n\n```powershell\n$env:TESTER_SPIN_D1_ACCOUNT_ID = \"<account-id>\"\n$env:TESTER_SPIN_D1_DATABASE_ID = \"<database-uuid>\"\n$env:TESTER_SPIN_D1_API_TOKEN = \"<token con D1 Read/Write>\"\n```\n\nTambién se acepta `CLOUDFLARE_API_TOKEN` como fallback. Los artefactos grandes (RAW, HTML, capturas) continúan en disco local; D1 almacena catálogo, estado y resultados. Para despliegues distribuidos de alto volumen se recomienda interponer un Worker con binding D1 en lugar de usar la REST administrativa directamente.
+- Arquitectura por adaptadores: agregar RubyPlay, BGaming u otros proveedores no requiere modificar el scheduler ni la GUI.
+
+### Belatra Games
+
+- Recorre el catálogo público oficial de Belatra por páginas.
+- Guarda nombre, slug, ficha, miniatura y URL demo.
+- Usa `https://free-slot.belatragames.com/play/<slug>` como fallback de demo cuando la ficha no expone el enlace directamente.
+- En cada prueba realiza bootstrap HTTP de ficha+demo, guarda HTML, scripts y candidatos de endpoints en `bootstrap-discovery.json`.
+- Hasta disponer de una captura HAR/runtime que demuestre el contrato real de tirada/bonus/buy, Belatra se marca `PARCIAL` y nunca `OK` por un simple HTTP 200.
+
+### Cloudflare D1
+
+La GUI permite elegir `SQLite local` o `Cloudflare D1`. Para D1 se usan las mismas tablas lógicas (`games` y `test_results`) y la API REST parametrizada de Cloudflare. El token no se guarda en archivos.
+
+Variables necesarias:
+
+```powershell
+$env:TESTER_SPIN_D1_ACCOUNT_ID = \"<account-id>\"
+$env:TESTER_SPIN_D1_DATABASE_ID = \"<database-uuid>\"
+$env:TESTER_SPIN_D1_API_TOKEN = \"<token con D1 Read/Write>\"
+```
+
+También se acepta `CLOUDFLARE_API_TOKEN` como fallback. Los artefactos grandes (RAW, HTML, capturas) continúan en disco local; D1 almacena catálogo, estado y resultados. Para despliegues distribuidos de alto volumen se recomienda interponer un Worker con binding D1 en lugar de usar la REST administrativa directamente.
 
 ## Modos Pragmatic
 
