@@ -203,8 +203,8 @@ class CurrentTesterSpinApp(LiveTesterSpinApp):
         self._update_sort_headings()
         self._update_count_summary()
 
-    def _upsert_catalog_row(self, provider_key: str, slug: str) -> None:
-        super()._upsert_catalog_row(provider_key, slug)
+    def _upsert_catalog_game(self, game: Game) -> None:
+        super()._upsert_catalog_game(game)
         self._apply_current_sort()
         self._update_count_summary()
 
@@ -231,11 +231,17 @@ class CurrentTesterSpinApp(LiveTesterSpinApp):
             processed += 1
 
             if kind == "catalog_game":
-                provider_key, slug = value  # type: ignore[misc]
-                # Do the single-row update, but postpone sort/count until the end
-                # of this UI slice rather than doing O(n) work per catalog event.
-                LiveTesterSpinApp._upsert_catalog_row(self, str(provider_key), str(slug))
-                table_dirty = True
+                # Stream the discovered Game directly. This avoids a storage round
+                # trip per catalogue item, which is especially important for D1.
+                if isinstance(value, Game):
+                    LiveTesterSpinApp._upsert_catalog_game(self, value)
+                    table_dirty = True
+                else:
+                    provider_key, slug = value  # type: ignore[misc]
+                    game = self.storage.get_game(str(provider_key), str(slug))
+                    if game is not None:
+                        LiveTesterSpinApp._upsert_catalog_game(self, game)
+                        table_dirty = True
             elif kind == "log":
                 log_lines.append(str(value))
             elif kind == "catalog_done":
@@ -264,9 +270,11 @@ class CurrentTesterSpinApp(LiveTesterSpinApp):
                     )
 
                     # record_result() already committed in the orchestrator thread.
-                    # Refresh only this row instead of rebuilding all ~642 rows.
-                    LiveTesterSpinApp._upsert_catalog_row(self, result.provider, result.slug)
-                    table_dirty = True
+                    # Refresh only this row instead of rebuilding the full index.
+                    game = self.storage.get_game(result.provider, result.slug)
+                    if game is not None:
+                        LiveTesterSpinApp._upsert_catalog_game(self, game)
+                        table_dirty = True
             elif kind == "tests_done":
                 self._set_busy(False)
                 self.status_var.set(f"Pruebas terminadas: {self._test_done}/{self._test_total}")
