@@ -34,8 +34,9 @@ Proveedores disponibles: **Pragmatic Play**, **1spin4win (D1)** y **Belatra Game
 - Recorre el portfolio oficial de `https://www.1spin4win.com/games`.
 - Guarda nombre, slug, ficha, miniatura y el `Game ID` expuesto por la ficha oficial cuando está disponible.
 - Resuelve la URL demo real publicada bajo `gs.1spin4win.com`; no inventa una URL si la ficha no la expone.
-- En cada prueba realiza bootstrap HTTP de ficha+demo, guarda HTML, scripts y candidatos de endpoints en `bootstrap-discovery.json`.
-- Hasta disponer de capturas HAR/runtime que demuestren el contrato real de tirada/bonus/buy, el resultado queda `PARCIAL` y nunca `OK` sólo por recibir HTTP 200.
+- El bootstrap/configuración inicial se descubre por HTTP, pero las apuestas/tiradas se modelan explícitamente como **WebSocket**.
+- Se separan `websocket_candidates` de `http_bootstrap_candidates`; si el socket se construye dinámicamente, Playwright observa pasivamente `page.on("websocket")` y guarda `runtime-websocket.json` con URL y frames iniciales.
+- Hasta disponer de capturas runtime que demuestren el handshake y los frames reales de tirada/bonus/buy, el resultado queda `PARCIAL` y nunca `OK` sólo por recibir HTTP 200.
 
 ## Modos Pragmatic
 
