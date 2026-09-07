@@ -134,8 +134,9 @@ class TesterSpinApp(tk.Tk):
         ttk.Label(
             opts,
             text=(
-                "Cada juego descubre automáticamente SPIN base, todos los ante-bet/variantes declarados por bls, "
-                "todas las compras declaradas por purInit/purInit_e y conserva evidencia RAW de estados/modos aún no automatizados."
+                "El adaptador de cada proveedor descubre y prueba sus modos soportados. Pragmatic recorre "
+                "SPIN/ante-bet/compras y Belatra, hasta incorporar su protocolo de tirada observado, realiza "
+                "bootstrap y descubrimiento de endpoints conservando evidencia para automatizar los estados pendientes."
             ),
             wraplength=1400,
         ).pack(anchor="w", pady=(8, 0))
