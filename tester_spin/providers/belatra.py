@@ -498,7 +498,7 @@ class BelatraProvider(ProviderAdapter):
                         mode_kind="DISCOVERY",
                         status_code=demo_status,
                         elapsed_ms=elapsed_ms,
-                        symbol=game.slug,
+                        symbol=game.symbol or game.slug,
                         endpoint=demo_url,
                         na="",
                         terminal=False,
@@ -516,7 +516,7 @@ class BelatraProvider(ProviderAdapter):
                         ok=False,
                         mode_id="BOOTSTRAP_DISCOVERY",
                         mode_kind="DISCOVERY",
-                        symbol=game.slug,
+                        symbol=game.symbol or game.slug,
                         terminal=False,
                         error=message,
                         artifact_dir=str(attempt_dir),
@@ -544,7 +544,7 @@ class BelatraProvider(ProviderAdapter):
             successful_spins=0,
             failed_spins=sum(1 for attempt in attempts if not attempt.ok),
             status=status,
-            symbol=game.slug,
+            symbol=game.symbol or game.slug,
             discovered_modes=[
                 {
                     "id": "BOOTSTRAP_DISCOVERY",
