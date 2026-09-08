@@ -573,6 +573,74 @@ class BelatraCatalogTests(unittest.TestCase):
             "https://free-slot.belatragames.com/play/legacy-internal",
         )
 
+    def test_runtime_signal_summary_counts_only_action_protocol_activity(self) -> None:
+        events = [
+            {
+                "kind": "request",
+                "phase": "bootstrap",
+                "method": "POST",
+                "resource_type": "xhr",
+                "noise": False,
+            },
+            {
+                "kind": "request",
+                "phase": "action",
+                "method": "GET",
+                "resource_type": "image",
+                "noise": False,
+            },
+            {
+                "kind": "request",
+                "phase": "action",
+                "method": "POST",
+                "resource_type": "xhr",
+                "noise": False,
+            },
+            {
+                "kind": "request",
+                "phase": "action",
+                "method": "POST",
+                "resource_type": "fetch",
+                "noise": True,
+            },
+            {
+                "kind": "ws_frame",
+                "phase": "action",
+                "direction": "sent",
+                "noise": False,
+            },
+            {
+                "kind": "ws_frame",
+                "phase": "action",
+                "direction": "received",
+                "noise": False,
+            },
+        ]
+        summary = self.provider._runtime_signal_summary(events)
+        self.assertEqual(summary["action_requests"], 2)
+        self.assertEqual(summary["action_non_get"], 1)
+        self.assertEqual(summary["action_xhr_fetch"], 1)
+        self.assertEqual(summary["action_ws_sent"], 1)
+        self.assertEqual(summary["action_ws_received"], 1)
+        self.assertEqual(summary["action_signals"], 3)
+
+    def test_runtime_noise_filters_analytics_hosts(self) -> None:
+        self.assertTrue(
+            self.provider._runtime_noise_url(
+                "https://mc.yandex.ru/webvisor/123"
+            )
+        )
+        self.assertTrue(
+            self.provider._runtime_noise_url(
+                "https://www.google-analytics.com/g/collect"
+            )
+        )
+        self.assertFalse(
+            self.provider._runtime_noise_url(
+                "https://free-slot.belatragames.com/api/game"
+            )
+        )
+
     def test_successful_bootstrap_remains_partial_not_spin_ok(self) -> None:
         game = self._game()
 
