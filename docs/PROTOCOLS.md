@@ -685,3 +685,43 @@ Antes de añadir un handler nuevo, responder:
 10. ¿Existe un fixture/test que reproduzca la evidencia?
 
 Si cualquiera de los puntos críticos no está resuelto, preservar como `PARCIAL`.
+
+## 4.10 Runtime action correlation
+
+El discovery Belatra tiene ahora dos fases temporales:
+
+```text
+bootstrap
+→ diagnostic input
+→ action
+```
+
+Se registran:
+
+- request URL/método/resource type/post data;
+- response status;
+- WebSocket open;
+- WebSocket frames sent/received;
+- timestamp relativo;
+- fase;
+- flag de telemetría.
+
+La entrada de diagnóstico sólo intenta provocar actividad reproducible en la demo. No se usa como criterio de `OK`.
+
+Se consideran señales candidatas de protocolo:
+
+```text
+POST/PUT/PATCH/DELETE después de action
+XHR/fetch después de action
+WebSocket frame sent después de action
+```
+
+La siguiente etapa de ingeniería es comparar varias capturas y encontrar una firma estable:
+
+```text
+input
+→ request/frame
+→ response/frame
+→ actualización de estado
+→ terminal/continuation
+```

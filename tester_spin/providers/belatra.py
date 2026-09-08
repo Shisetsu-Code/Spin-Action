@@ -613,6 +613,283 @@ class BelatraProvider(ProviderAdapter):
                 break
         return out
 
+    @staticmethod
+    def _runtime_noise_url(url: str) -> bool:
+        host = (urlparse(url).hostname or "").casefold()
+        return (
+            host.endswith("yandex.ru")
+            or host.endswith("yandex.net")
+            or "metrika" in host
+            or host.endswith("google-analytics.com")
+            or host.endswith("googletagmanager.com")
+            or host.endswith("doubleclick.net")
+        )
+
+    @staticmethod
+    def _runtime_payload_preview(payload: object, limit: int = 16384) -> dict[str, Any]:
+        if isinstance(payload, bytes):
+            raw = payload[:limit]
+            return {
+                "kind": "binary",
+                "size": len(payload),
+                "hex": raw.hex(),
+                "truncated": len(payload) > limit,
+            }
+        text = str(payload)
+        return {
+            "kind": "text",
+            "size": len(text),
+            "text": text[:limit],
+            "truncated": len(text) > limit,
+        }
+
+    @staticmethod
+    def _runtime_signal_summary(events: list[dict[str, Any]]) -> dict[str, int]:
+        action_requests = 0
+        action_non_get = 0
+        action_xhr_fetch = 0
+        action_ws_sent = 0
+        action_ws_received = 0
+        for event in events:
+            if event.get("phase") != "action" or event.get("noise"):
+                continue
+            kind = str(event.get("kind") or "")
+            if kind == "request":
+                action_requests += 1
+                if str(event.get("method") or "GET").upper() != "GET":
+                    action_non_get += 1
+                if str(event.get("resource_type") or "") in {"xhr", "fetch"}:
+                    action_xhr_fetch += 1
+            elif kind == "ws_frame":
+                if event.get("direction") == "sent":
+                    action_ws_sent += 1
+                elif event.get("direction") == "received":
+                    action_ws_received += 1
+        unique_request_signals = 0
+        for event in events:
+            if event.get("phase") != "action" or event.get("noise"):
+                continue
+            if event.get("kind") != "request":
+                continue
+            method = str(event.get("method") or "GET").upper()
+            resource_type = str(event.get("resource_type") or "")
+            if method != "GET" or resource_type in {"xhr", "fetch"}:
+                unique_request_signals += 1
+
+        return {
+            "action_requests": action_requests,
+            "action_non_get": action_non_get,
+            "action_xhr_fetch": action_xhr_fetch,
+            "action_ws_sent": action_ws_sent,
+            "action_ws_received": action_ws_received,
+            "action_signals": unique_request_signals + action_ws_sent,
+        }
+
+    @staticmethod
+    def _try_runtime_action(page) -> dict[str, Any]:
+        """Try a conservative demo-only spin input and report exactly what was attempted.
+
+        This does not prove a spin. The runtime capture later decides only whether
+        network activity changed after the input. No result is marked OK here.
+        """
+        labels = re.compile(r"^(?:spin|start|girar|tirar)$", re.I)
+        frames = list(page.frames)
+
+        # Prefer an explicit DOM control if a game exposes one outside its canvas.
+        for frame in reversed(frames):
+            try:
+                locator = frame.get_by_text(labels, exact=True)
+                count = min(locator.count(), 8)
+                for index in range(count):
+                    item = locator.nth(index)
+                    if not item.is_visible():
+                        continue
+                    item.click(timeout=1200)
+                    return {
+                        "kind": "dom_control",
+                        "frame_url": frame.url,
+                        "selector": "exact visible text: spin/start/girar/tirar",
+                    }
+            except Exception:
+                continue
+
+        # Most Belatra HTML5 titles render controls inside canvas. Focus the
+        # largest visible canvas and send Space, a common keyboard spin binding.
+        best: tuple[float, Any, Any, dict[str, float]] | None = None
+        for frame in reversed(frames):
+            try:
+                canvases = frame.locator("canvas")
+                for index in range(min(canvases.count(), 12)):
+                    canvas = canvases.nth(index)
+                    if not canvas.is_visible():
+                        continue
+                    box = canvas.bounding_box()
+                    if not box:
+                        continue
+                    area = float(box["width"]) * float(box["height"])
+                    if best is None or area > best[0]:
+                        best = (area, frame, canvas, box)
+            except Exception:
+                continue
+
+        if best is not None:
+            _area, frame, canvas, box = best
+            try:
+                canvas.click(
+                    position={
+                        "x": max(1.0, float(box["width"]) / 2.0),
+                        "y": max(1.0, float(box["height"]) / 2.0),
+                    },
+                    timeout=1200,
+                )
+            except Exception:
+                pass
+            page.keyboard.press("Space")
+            return {
+                "kind": "canvas_focus_plus_space",
+                "frame_url": frame.url,
+                "canvas_width": round(float(box["width"]), 2),
+                "canvas_height": round(float(box["height"]), 2),
+            }
+
+        # Last diagnostic fallback. This can merely scroll the page; therefore the
+        # action remains unvalidated until correlated traffic is observed.
+        page.keyboard.press("Space")
+        return {"kind": "page_space", "frame_url": page.url}
+
+    def _capture_runtime_action(
+        self,
+        demo_url: str,
+        *,
+        timeout_s: float,
+        attempt_dir: Path,
+    ) -> dict[str, Any]:
+        events: list[dict[str, Any]] = []
+        sockets: list[str] = []
+        report: dict[str, Any] = {
+            "demo_url": demo_url,
+            "action": {},
+            "summary": {},
+            "websocket_urls": sockets,
+            "events": events,
+            "error": "",
+            "note": (
+                "Diagnostic runtime correlation only. An input is attempted on the "
+                "public free-play demo, but no Belatra spin is considered validated "
+                "until the resulting protocol signature is classified."
+            ),
+        }
+        started = time.monotonic()
+        phase = {"value": "bootstrap"}
+
+        def elapsed_ms() -> float:
+            return round((time.monotonic() - started) * 1000.0, 2)
+
+        def append(event: dict[str, Any]) -> None:
+            if len(events) >= 1600:
+                return
+            event.setdefault("t_ms", elapsed_ms())
+            event.setdefault("phase", phase["value"])
+            events.append(event)
+
+        try:
+            from playwright.sync_api import sync_playwright
+
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch(headless=True)
+                context = browser.new_context(
+                    viewport={"width": 1280, "height": 900},
+                    ignore_https_errors=True,
+                )
+                page = context.new_page()
+
+                def on_request(request) -> None:
+                    url = str(request.url)
+                    append(
+                        {
+                            "kind": "request",
+                            "url": url,
+                            "method": str(request.method),
+                            "resource_type": str(request.resource_type),
+                            "post_data": (request.post_data or "")[:32768],
+                            "noise": self._runtime_noise_url(url),
+                        }
+                    )
+
+                def on_response(response) -> None:
+                    url = str(response.url)
+                    request = response.request
+                    append(
+                        {
+                            "kind": "response",
+                            "url": url,
+                            "status": int(response.status),
+                            "method": str(request.method),
+                            "resource_type": str(request.resource_type),
+                            "noise": self._runtime_noise_url(url),
+                        }
+                    )
+
+                def on_websocket(ws) -> None:
+                    url = str(ws.url)
+                    noise = self._runtime_noise_url(url)
+                    if not noise and url not in sockets:
+                        sockets.append(url)
+                    append(
+                        {
+                            "kind": "websocket_open",
+                            "url": url,
+                            "noise": noise,
+                        }
+                    )
+
+                    def capture(direction: str):
+                        def handler(payload) -> None:
+                            append(
+                                {
+                                    "kind": "ws_frame",
+                                    "direction": direction,
+                                    "url": url,
+                                    "noise": noise,
+                                    "payload": self._runtime_payload_preview(payload),
+                                }
+                            )
+                        return handler
+
+                    ws.on("framesent", capture("sent"))
+                    ws.on("framereceived", capture("received"))
+
+                page.on("request", on_request)
+                page.on("response", on_response)
+                page.on("websocket", on_websocket)
+
+                navigation_timeout_ms = max(3_000, int(min(timeout_s, 30.0) * 1000))
+                page.goto(
+                    demo_url,
+                    wait_until="domcontentloaded",
+                    timeout=navigation_timeout_ms,
+                )
+
+                # Let bootstrap/session traffic settle before changing phase.
+                page.wait_for_timeout(2500)
+                phase["value"] = "action"
+                report["action"] = self._try_runtime_action(page)
+
+                # Capture the immediate protocol delta caused by the diagnostic input.
+                page.wait_for_timeout(3000)
+                context.close()
+                browser.close()
+        except Exception as exc:
+            report["error"] = f"{type(exc).__name__}: {exc}"
+
+        report["summary"] = self._runtime_signal_summary(events)
+        attempt_dir.mkdir(parents=True, exist_ok=True)
+        (attempt_dir / "runtime-activity.json").write_text(
+            json.dumps(report, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        return report
+
     def _discover_demo_protocol(
         self,
         game: Game,
@@ -664,6 +941,12 @@ class BelatraProvider(ProviderAdapter):
             except Exception:
                 continue
 
+        runtime = self._capture_runtime_action(
+            demo.url,
+            timeout_s=timeout_s,
+            attempt_dir=attempt_dir,
+        )
+
         (attempt_dir / "bootstrap-discovery.json").write_text(
             json.dumps(
                 {
@@ -676,6 +959,13 @@ class BelatraProvider(ProviderAdapter):
                     "scripts": scripts,
                     "scripts_scanned": scanned_scripts,
                     "endpoint_candidates": endpoints,
+                    "runtime_activity": {
+                        "action": runtime.get("action") or {},
+                        "summary": runtime.get("summary") or {},
+                        "websocket_urls": runtime.get("websocket_urls") or [],
+                        "error": runtime.get("error") or "",
+                        "artifact": str(attempt_dir / "runtime-activity.json"),
+                    },
                     "note": (
                         "Bootstrap/discovery only. A spin is not considered validated until "
                         "the observable Belatra action protocol is implemented from capture evidence."
@@ -721,9 +1011,27 @@ class BelatraProvider(ProviderAdapter):
                     attempt_dir=attempt_dir,
                 )
                 bootstrap_ok += 1
+                runtime_summary: dict[str, Any] = {}
+                runtime_error = ""
+                runtime_path = attempt_dir / "runtime-activity.json"
+                if runtime_path.exists():
+                    try:
+                        runtime_doc = json.loads(runtime_path.read_text(encoding="utf-8"))
+                        runtime_summary = dict(runtime_doc.get("summary") or {})
+                        runtime_error = str(runtime_doc.get("error") or "")
+                    except Exception:
+                        runtime_summary = {}
+                action_signals = int(runtime_summary.get("action_signals") or 0)
                 progress(
                     f"[{game.name}] bootstrap {number}/{repetitions}: "
-                    f"{elapsed_ms:.0f} ms, candidatos={len(endpoints)}"
+                    f"{elapsed_ms:.0f} ms, candidatos={len(endpoints)}, "
+                    f"runtime_signals={action_signals}"
+                    + (f", runtime_error={runtime_error}" if runtime_error else "")
+                )
+                warning = (
+                    "Belatra runtime capturado; falta clasificar la firma del spin."
+                    if action_signals
+                    else "Belatra runtime capturado sin firma de acción concluyente."
                 )
                 attempts.append(
                     SpinAttempt(
@@ -738,7 +1046,7 @@ class BelatraProvider(ProviderAdapter):
                         na="",
                         terminal=False,
                         wire_steps=1,
-                        warning="Belatra spin protocol pendiente de captura/automatización.",
+                        warning=warning,
                         artifact_dir=str(attempt_dir),
                     )
                 )
@@ -763,8 +1071,9 @@ class BelatraProvider(ProviderAdapter):
         if bootstrap_ok:
             status = "PARCIAL"
             error = (
-                "Demo Belatra accesible y protocolo candidato recolectado; "
-                "falta automatizar la acción de spin/bonus/buy desde evidencia HAR/runtime."
+                "Demo Belatra accesible; se capturó tráfico runtime y se intentó una "
+                "entrada de diagnóstico. Falta clasificar la firma de spin/bonus/buy "
+                "antes de considerar la acción terminal."
             )
         else:
             status = "ERROR"
@@ -782,9 +1091,11 @@ class BelatraProvider(ProviderAdapter):
             symbol=game.symbol or game.slug,
             discovered_modes=[
                 {
-                    "id": "BOOTSTRAP_DISCOVERY",
-                    "kind": "DISCOVERY",
+                    "id": "RUNTIME_ACTION_DISCOVERY",
+                    "kind": "DISCOVERY_RUNTIME",
                     "automated": True,
+                    "runtime_capture": True,
+                    "diagnostic_input": True,
                     "spin_validated": False,
                 }
             ],

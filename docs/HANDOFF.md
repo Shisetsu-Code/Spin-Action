@@ -952,3 +952,40 @@ Pedirle que:
 8. corra/espere CI antes de mergear.
 
 Este archivo es la fuente de continuidad humana del proyecto; el código y los tests siguen siendo la autoridad final.
+
+## 9.5 Runtime action capture
+
+Belatra ya no se limita a escanear strings JS. Después de resolver la demo:
+
+1. abre la demo con Playwright;
+2. registra requests/responses y WebSockets;
+3. espera que termine el bootstrap;
+4. cambia de fase a `action`;
+5. intenta una entrada de diagnóstico:
+   - control DOM visible con texto exacto Spin/Start/Girar/Tirar;
+   - si no existe, enfoca el canvas visible más grande y envía Space;
+   - último fallback: Space a nivel de página;
+6. captura el delta de red posterior;
+7. guarda `runtime-activity.json`.
+
+La captura clasifica como señales de acción:
+
+- requests no-GET;
+- XHR/fetch;
+- frames WebSocket enviados.
+
+Analytics conocidos (Yandex, Google Analytics, GTM, DoubleClick) se marcan como ruido.
+
+IMPORTANTE: una señal posterior al input todavía NO equivale a una tirada validada. Hasta identificar el request/frame y la respuesta terminal, el resultado permanece `PARCIAL`.
+
+Artefactos Belatra por intento:
+
+```text
+demo-resolution.json
+detail-page.html
+demo-page.html
+bootstrap-discovery.json
+runtime-activity.json
+```
+
+El archivo `runtime-activity.json` es el siguiente artefacto prioritario para reconstruir el protocolo directo.
