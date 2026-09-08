@@ -573,6 +573,125 @@ class BelatraCatalogTests(unittest.TestCase):
             "https://free-slot.belatragames.com/play/legacy-internal",
         )
 
+    def test_extract_official_demo_url_from_current_belatra_frame(self) -> None:
+        html = (
+            'frame":"<iframe src=\\\"https://demo.bltr-static.com/belatra/demo?'
+            'game=fortune_mummy\\\" allow=\\\"fullscreen\\\" />"'
+        )
+        self.assertEqual(
+            self.provider._extract_official_demo_url(
+                html,
+                "https://belatragames.com/es/games/game/fortune-mummy",
+            ),
+            "https://demo.bltr-static.com/belatra/demo?game=fortune_mummy&language=es",
+        )
+
+    def test_parse_demo_config_matches_current_provider_shape(self) -> None:
+        html = (
+            '<script>var config = '
+            '{"request_crypt":true,"sc":"synthetic","modification":148,'
+            '"nickname":"fortune_mummy","user":{"sid":"session-1","userCurrency":"FUN"}};'
+            'var next = 1;</script>'
+        )
+        config = self.provider._parse_demo_config(html)
+        self.assertTrue(config["request_crypt"])
+        self.assertEqual(config["sc"], "synthetic")
+        self.assertEqual(config["modification"], 148)
+        self.assertEqual(config["nickname"], "fortune_mummy")
+        self.assertEqual(config["user"]["sid"], "session-1")
+
+    def test_belatra_aes_ctr_matches_fixed_synthetic_vector(self) -> None:
+        encoded = "AQIDBAUGBwjtK2jLglhsL2bCUI0hftyGfVMV"
+        self.assertEqual(
+            self.provider._decrypt_payload(encoded, "testkey"),
+            '{"q":"start","c":1}',
+        )
+
+    def test_base_spin_request_uses_enter_parameters(self) -> None:
+        request = self.provider._base_spin_request(
+            {
+                "gs": {
+                    "betPerLine": 10,
+                    "nlines": 10,
+                    "linesAssortment": [5, 10],
+                    "gdenom": 1,
+                    "betAssortment": [1, 2, 5, 8, 10],
+                    "vipMode": {"on": 1},
+                    "dop": {"curModeID": 0},
+                    "other": {"showingInMoney": 0},
+                    "buyBonus": None,
+                }
+            }
+        )
+        self.assertEqual(
+            request,
+            {
+                "q": "start",
+                "betPerLine": 10,
+                "nlines": 5,
+                "denom": 1,
+                "buyBonus": None,
+                "selectId": None,
+                "hideInsideInHistory": 0,
+                "showingInMoney": 0,
+                "vipOn": 1,
+                "curModeID": 0,
+            },
+        )
+
+    def test_direct_spin_start_finish_reaches_terminal(self) -> None:
+        state = {
+            "enter": {
+                "gs": {
+                    "betPerLine": 10,
+                    "nlines": 10,
+                    "linesAssortment": [5, 10],
+                    "gdenom": 1,
+                    "vipMode": {"on": 1},
+                    "dop": {"curModeID": 0},
+                    "other": {"showingInMoney": 0},
+                }
+            },
+            "history_id": None,
+        }
+        calls: list[dict] = []
+
+        def fake_post(_state, payload, **_kwargs):
+            calls.append(dict(payload))
+            if payload["q"] == "start":
+                state["history_id"] = 174419267
+                return {
+                    "gs": {
+                        "phaseCur": "basedeal",
+                        "phaseNext": "toPaid",
+                        "historyId": 174419267,
+                    }
+                }
+            if payload["q"] == "finish":
+                return {
+                    "gs": {
+                        "phaseCur": "finished",
+                        "phaseNext": "toIdle",
+                        "historyId": 174419267,
+                    }
+                }
+            raise AssertionError(payload)
+
+        self.provider._post_direct_game = fake_post  # type: ignore[method-assign]
+        with tempfile.TemporaryDirectory() as attempt:
+            ok, terminal, steps, phase_cur, phase_next = self.provider._execute_direct_spin(
+                state,
+                timeout_s=5.0,
+                attempt_dir=Path(attempt),
+            )
+
+        self.assertTrue(ok)
+        self.assertTrue(terminal)
+        self.assertEqual(steps, 2)
+        self.assertEqual((phase_cur, phase_next), ("finished", "toIdle"))
+        self.assertEqual(calls[0]["q"], "start")
+        self.assertEqual(calls[1], {"q": "finish", "ghistId": 174419267})
+
     def test_runtime_signal_summary_counts_only_action_protocol_activity(self) -> None:
         events = [
             {
@@ -641,19 +760,21 @@ class BelatraCatalogTests(unittest.TestCase):
             )
         )
 
-    def test_successful_bootstrap_remains_partial_not_spin_ok(self) -> None:
+    def test_direct_http_game_is_ok_when_spin_finishes_to_idle(self) -> None:
         game = self._game()
+        state = {
+            "nickname": "just_a_bingo",
+            "endpoint": "https://demo.bltr-static.com/game",
+            "enter": {"gs": {"phaseCur": "finished", "phaseNext": "toIdle"}},
+        }
 
-        def fake_discovery(*_args, **_kwargs):
-            return (
-                "https://free-slot.belatragames.com/play/just-a-bingo",
-                200,
-                12.5,
-                ["https://example.test/runtime.js"],
-                ["https://example.test/spin"],
-            )
+        self.provider._open_direct_game = (  # type: ignore[method-assign]
+            lambda *_args, **_kwargs: state
+        )
+        self.provider._execute_direct_spin = (  # type: ignore[method-assign]
+            lambda *_args, **_kwargs: (True, True, 2, "finished", "toIdle")
+        )
 
-        self.provider._discover_demo_protocol = fake_discovery  # type: ignore[method-assign]
         result = self.provider.test_game(
             game,
             spins=1,
@@ -661,13 +782,15 @@ class BelatraCatalogTests(unittest.TestCase):
             stop_event=threading.Event(),
             progress=lambda _message: None,
         )
-        self.assertEqual(result.status, "PARCIAL")
-        self.assertEqual(result.successful_spins, 0)
+        self.assertEqual(result.status, "OK")
+        self.assertEqual(result.successful_spins, 1)
+        self.assertEqual(result.failed_spins, 0)
         self.assertEqual(result.symbol, "77")
         self.assertEqual(result.attempts[0].symbol, "77")
         self.assertEqual(result.attempts[0].status_code, 200)
-        self.assertFalse(result.attempts[0].terminal)
-        self.assertTrue(result.attempts[0].ok)
+        self.assertTrue(result.attempts[0].terminal)
+        self.assertEqual(result.attempts[0].wire_steps, 2)
+        self.assertEqual(result.discovered_modes[0]["transport"], "encrypted_http")
 
 
 if __name__ == "__main__":
