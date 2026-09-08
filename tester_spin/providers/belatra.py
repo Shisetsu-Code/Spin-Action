@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import base64
 import json
 import re
+import secrets
+import string
 import threading
 import time
 from pathlib import Path
@@ -10,6 +13,7 @@ from urllib.parse import urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup, Tag
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 from tester_spin.models import Game, GameTestResult, SpinAttempt, utc_now_iso
 from tester_spin.providers.base import GameCallback, Progress, ProviderAdapter
@@ -614,6 +618,382 @@ class BelatraProvider(ProviderAdapter):
         return out
 
     @staticmethod
+    def _extract_official_demo_url(detail_html: str, game_url: str) -> str:
+        match = re.search(
+            r"""https://demo\.bltr-static\.com/belatra/demo\?game=([A-Za-z0-9._~-]+)""",
+            detail_html or "",
+            re.I,
+        )
+        if not match:
+            return ""
+        language = BelatraProvider._catalog_language(game_url)
+        return (
+            "https://demo.bltr-static.com/belatra/demo?"
+            f"game={match.group(1)}&language={language}"
+        )
+
+    @staticmethod
+    def _parse_demo_config(html: str) -> dict[str, Any]:
+        marker = "var config = "
+        index = (html or "").find(marker)
+        if index < 0:
+            return {}
+        source = html[index + len(marker) :].lstrip()
+        try:
+            value, _end = json.JSONDecoder().raw_decode(source)
+        except json.JSONDecodeError:
+            return {}
+        return value if isinstance(value, dict) else {}
+
+    @staticmethod
+    def _session_uid() -> str:
+        alphabet = string.ascii_lowercase + string.digits
+        return "_" + "".join(secrets.choice(alphabet) for _ in range(9))
+
+    @staticmethod
+    def _working_aes_key(secret: str) -> bytes:
+        material = (str(secret).encode("utf-8") + bytes(16))[:16]
+        encryptor = Cipher(algorithms.AES(material), modes.ECB()).encryptor()
+        return encryptor.update(material) + encryptor.finalize()
+
+    @classmethod
+    def _crypt_bytes(cls, data: bytes, secret: str, prefix: bytes) -> bytes:
+        if len(prefix) != 8:
+            raise ValueError("Belatra AES-CTR prefix must contain exactly 8 bytes.")
+        key = cls._working_aes_key(secret)
+        out = bytearray()
+        counter = 0
+        for offset in range(0, len(data), 16):
+            block_counter = prefix + counter.to_bytes(8, "big")
+            encryptor = Cipher(algorithms.AES(key), modes.ECB()).encryptor()
+            stream = encryptor.update(block_counter) + encryptor.finalize()
+            block = data[offset : offset + 16]
+            out.extend(left ^ right for left, right in zip(block, stream))
+            counter = (counter + 1) & ((1 << 64) - 1)
+        return bytes(out)
+
+    @classmethod
+    def _encrypt_payload(cls, plaintext: str, secret: str) -> str:
+        now_ms = int(time.time() * 1000)
+        millis = now_ms % 1000
+        seconds = now_ms // 1000
+        random16 = secrets.randbelow(65536)
+        prefix = (
+            millis.to_bytes(2, "little")
+            + random16.to_bytes(2, "little")
+            + seconds.to_bytes(4, "little")
+        )
+        encrypted = cls._crypt_bytes(
+            str(plaintext).encode("utf-8"),
+            secret,
+            prefix,
+        )
+        return base64.b64encode(prefix + encrypted).decode("ascii")
+
+    @classmethod
+    def _decrypt_payload(cls, encoded: str, secret: str) -> str:
+        raw = base64.b64decode(str(encoded))
+        if len(raw) < 8:
+            raise ValueError("Belatra encrypted payload is shorter than its prefix.")
+        prefix, encrypted = raw[:8], raw[8:]
+        plaintext = cls._crypt_bytes(encrypted, secret, prefix)
+        return plaintext.decode("utf-8")
+
+    @classmethod
+    def _decrypt_envelope(cls, value: Any, secret: str) -> dict[str, Any]:
+        if not isinstance(value, dict) or not isinstance(value.get("d"), str):
+            raise RuntimeError("Belatra encrypted response does not contain d.")
+        decoded = json.loads(cls._decrypt_payload(value["d"], secret))
+        if not isinstance(decoded, dict):
+            raise RuntimeError("Belatra decrypted response is not an object.")
+        return decoded
+
+    @staticmethod
+    def _redacted_session(value: str) -> str:
+        value = str(value or "")
+        if len(value) <= 8:
+            return "***" if value else ""
+        return value[:4] + "…" + value[-4:]
+
+    def _open_direct_game(
+        self,
+        game: Game,
+        *,
+        timeout_s: float,
+        run_dir: Path,
+    ) -> dict[str, Any]:
+        session = requests.Session()
+        session.headers.update(dict(self.http.headers))
+        detail = session.get(game.url, timeout=timeout_s, allow_redirects=True)
+        detail.raise_for_status()
+
+        launch_url = self._extract_official_demo_url(detail.text, detail.url)
+        source = "corporate_iframe"
+        if launch_url:
+            demo = session.get(launch_url, timeout=timeout_s, allow_redirects=True)
+        else:
+            source = "legacy_resolver"
+            demo = self._resolve_demo_response(
+                session,
+                game,
+                detail.text,
+                timeout_s=timeout_s,
+                attempt_dir=run_dir / "bootstrap",
+            )
+            if (urlparse(demo.url).hostname or "").casefold() != "demo.bltr-static.com":
+                nested = self._extract_official_demo_url(demo.text, game.url)
+                if nested:
+                    demo = session.get(nested, timeout=timeout_s, allow_redirects=True)
+
+        demo.raise_for_status()
+        config = self._parse_demo_config(demo.text)
+        if not config:
+            raise RuntimeError("Belatra: no se encontró var config en la demo oficial.")
+
+        request_crypt = bool(config.get("request_crypt"))
+        secret = str(config.get("sc") or "")
+        sid = str((config.get("user") or {}).get("sid") or "")
+        modification = config.get("modification")
+        nickname = str(config.get("nickname") or "")
+
+        if not request_crypt:
+            raise RuntimeError("Belatra: la demo no declaró request_crypt=true.")
+        if not secret or not sid or modification is None:
+            raise RuntimeError(
+                "Belatra: config incompleta; faltan sc/sid/modification."
+            )
+
+        parsed = urlparse(demo.url)
+        origin = f"{parsed.scheme}://{parsed.netloc}"
+        state: dict[str, Any] = {
+            "session": session,
+            "endpoint": urljoin(origin + "/", "game"),
+            "referer": demo.url,
+            "origin": origin,
+            "secret": secret,
+            "sid": sid,
+            "modification": modification,
+            "nickname": nickname,
+            "uid": self._session_uid(),
+            "counter": 0,
+            "history_id": None,
+            "config": config,
+            "source": source,
+        }
+
+        run_dir.mkdir(parents=True, exist_ok=True)
+        (run_dir / "direct-bootstrap.json").write_text(
+            json.dumps(
+                {
+                    "game": game.name,
+                    "catalog_url": game.url,
+                    "launch_source": source,
+                    "launch_url": launch_url,
+                    "final_demo_url": demo.url,
+                    "endpoint": state["endpoint"],
+                    "request_crypt": request_crypt,
+                    "secret_present": bool(secret),
+                    "sid": self._redacted_session(sid),
+                    "modification": modification,
+                    "nickname": nickname,
+                    "currency": (config.get("user") or {}).get("userCurrency"),
+                    "strategy": config.get("strategy"),
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
+        enter = {
+            "q": "enter",
+            "curFloor": 1,
+            "userAgent": session.headers.get("User-Agent", ""),
+        }
+        enter_response = self._post_direct_game(
+            state,
+            enter,
+            timeout_s=timeout_s,
+            artifact_dir=run_dir / "bootstrap",
+            label="enter",
+        )
+        state["enter"] = enter_response
+        return state
+
+    def _post_direct_game(
+        self,
+        state: dict[str, Any],
+        payload: dict[str, Any],
+        *,
+        timeout_s: float,
+        artifact_dir: Path,
+        label: str,
+    ) -> dict[str, Any]:
+        request_payload = dict(payload)
+        history_id = state.get("history_id")
+        if (
+            history_id is not None
+            and "ghistId" not in request_payload
+            and request_payload.get("q") not in {"enter"}
+        ):
+            request_payload["ghistId"] = history_id
+
+        request_payload["uid"] = state["uid"]
+        request_payload["c"] = int(state["counter"]) % 1000
+        request_payload["modification"] = state["modification"]
+        state["counter"] = (int(state["counter"]) + 1) % 1000
+
+        plaintext = json.dumps(
+            request_payload,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        encrypted = self._encrypt_payload(plaintext, str(state["secret"]))
+        response = state["session"].post(
+            str(state["endpoint"]),
+            data={"d": encrypted, "sid": state["sid"]},
+            headers={
+                "Accept": "*/*",
+                "Origin": str(state["origin"]),
+                "Referer": str(state["referer"]),
+            },
+            timeout=timeout_s,
+        )
+        response.raise_for_status()
+        envelope = response.json()
+        decoded = self._decrypt_envelope(envelope, str(state["secret"]))
+
+        gs = decoded.get("gs")
+        if isinstance(gs, dict) and gs.get("historyId") is not None:
+            state["history_id"] = gs.get("historyId")
+
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        (artifact_dir / f"{label}.request.json").write_text(
+            json.dumps(request_payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        (artifact_dir / f"{label}.response.json").write_text(
+            json.dumps(decoded, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        (artifact_dir / f"{label}.wire.json").write_text(
+            json.dumps(
+                {
+                    "endpoint": state["endpoint"],
+                    "status": int(response.status_code),
+                    "content_type": response.headers.get("Content-Type", ""),
+                    "encrypted_request_size": len(encrypted),
+                    "encrypted_response_size": len(str(envelope.get("d") or "")),
+                    "sid": self._redacted_session(str(state["sid"])),
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        return decoded
+
+    @staticmethod
+    def _base_spin_request(enter_response: dict[str, Any]) -> dict[str, Any]:
+        gs = enter_response.get("gs")
+        if not isinstance(gs, dict):
+            raise RuntimeError("Belatra enter response does not contain gs.")
+
+        lines_assortment = gs.get("linesAssortment")
+        if isinstance(lines_assortment, list) and lines_assortment:
+            valid_lines = [
+                int(value)
+                for value in lines_assortment
+                if isinstance(value, (int, float)) and int(value) > 0
+            ]
+            nlines = min(valid_lines) if valid_lines else int(gs.get("nlines") or 0)
+        else:
+            nlines = int(gs.get("nlines") or 0)
+
+        bet_per_line = int(gs.get("betPerLine") or 0)
+        denom = int(gs.get("gdenom") or 0)
+        if bet_per_line <= 0:
+            assortment = gs.get("betAssortment")
+            if isinstance(assortment, list) and assortment:
+                bet_per_line = int(assortment[0])
+        if denom <= 0:
+            assortment = gs.get("denomAssortment_cents")
+            if isinstance(assortment, list) and assortment:
+                denom = int(assortment[0])
+        if nlines <= 0 or bet_per_line <= 0 or denom <= 0:
+            raise RuntimeError(
+                "Belatra enter response did not provide valid bet/lines/denom."
+            )
+
+        vip = gs.get("vipMode")
+        dop = gs.get("dop")
+        other = gs.get("other")
+        return {
+            "q": "start",
+            "betPerLine": bet_per_line,
+            "nlines": nlines,
+            "denom": denom,
+            "buyBonus": None,
+            "selectId": None,
+            "hideInsideInHistory": 0,
+            "showingInMoney": (
+                int(other.get("showingInMoney") or 0)
+                if isinstance(other, dict)
+                else 0
+            ),
+            "vipOn": int(vip.get("on") or 0) if isinstance(vip, dict) else 0,
+            "curModeID": (
+                int(dop.get("curModeID") or 0)
+                if isinstance(dop, dict)
+                else 0
+            ),
+        }
+
+    def _execute_direct_spin(
+        self,
+        state: dict[str, Any],
+        *,
+        timeout_s: float,
+        attempt_dir: Path,
+    ) -> tuple[bool, bool, int, str, str]:
+        spin_request = self._base_spin_request(state["enter"])
+        start_response = self._post_direct_game(
+            state,
+            spin_request,
+            timeout_s=timeout_s,
+            artifact_dir=attempt_dir,
+            label="start",
+        )
+        start_gs = start_response.get("gs")
+        if not isinstance(start_gs, dict):
+            raise RuntimeError("Belatra start response does not contain gs.")
+
+        phase_cur = str(start_gs.get("phaseCur") or "")
+        phase_next = str(start_gs.get("phaseNext") or "")
+        history_id = start_gs.get("historyId")
+        if history_id is None:
+            raise RuntimeError("Belatra start response does not contain historyId.")
+
+        if phase_next != "toPaid":
+            return True, False, 1, phase_cur, phase_next
+
+        finish_response = self._post_direct_game(
+            state,
+            {"q": "finish", "ghistId": history_id},
+            timeout_s=timeout_s,
+            artifact_dir=attempt_dir,
+            label="finish",
+        )
+        finish_gs = finish_response.get("gs")
+        if not isinstance(finish_gs, dict):
+            raise RuntimeError("Belatra finish response does not contain gs.")
+
+        finish_cur = str(finish_gs.get("phaseCur") or "")
+        finish_next = str(finish_gs.get("phaseNext") or "")
+        terminal = finish_cur == "finished" and finish_next == "toIdle"
+        return True, terminal, 2, finish_cur, finish_next
+
+    @staticmethod
     def _runtime_noise_url(url: str) -> bool:
         host = (urlparse(url).hostname or "").casefold()
         return (
@@ -991,93 +1371,128 @@ class BelatraProvider(ProviderAdapter):
         started_iso = utc_now_iso()
         started = time.monotonic()
         stamp = time.strftime("%Y-%m-%d_%H-%M-%S")
-        run_dir = self.game_dir(game) / "tests" / f"{stamp}-belatra-discovery"
+        run_dir = self.game_dir(game) / "tests" / f"{stamp}-belatra-direct-http"
         attempts: list[SpinAttempt] = []
-        bootstrap_ok = 0
+        successes = 0
+        responded = 0
         errors: list[str] = []
+        state: dict[str, Any] | None = None
 
         progress(
-            f"[{game.name}] Belatra: bootstrap + descubrimiento de protocolo; "
-            "spin aún no se marca OK sin captura observable."
+            f"[{game.name}] Belatra: resolviendo demo oficial y ejecutando "
+            f"{repetitions} tirada(s) por POST /game cifrado."
         )
+
+        try:
+            state = self._open_direct_game(
+                game,
+                timeout_s=timeout_s,
+                run_dir=run_dir,
+            )
+            enter_gs = state["enter"].get("gs") or {}
+            progress(
+                f"[{game.name}] ENTER OK: nickname={state.get('nickname') or '—'}, "
+                f"phase={enter_gs.get('phaseCur') or '—'}→{enter_gs.get('phaseNext') or '—'}, "
+                f"endpoint={state.get('endpoint')}"
+            )
+        except Exception as exc:
+            message = f"{type(exc).__name__}: {exc}"
+            errors.append(message)
+            progress(f"[{game.name}] ENTER ERROR: {message}")
+
         for number in range(1, repetitions + 1):
             if stop_event.is_set():
                 break
             attempt_dir = run_dir / f"attempt-{number:03d}"
-            try:
-                demo_url, demo_status, elapsed_ms, _scripts, endpoints = self._discover_demo_protocol(
-                    game,
-                    timeout_s=timeout_s,
-                    attempt_dir=attempt_dir,
-                )
-                bootstrap_ok += 1
-                runtime_summary: dict[str, Any] = {}
-                runtime_error = ""
-                runtime_path = attempt_dir / "runtime-activity.json"
-                if runtime_path.exists():
-                    try:
-                        runtime_doc = json.loads(runtime_path.read_text(encoding="utf-8"))
-                        runtime_summary = dict(runtime_doc.get("summary") or {})
-                        runtime_error = str(runtime_doc.get("error") or "")
-                    except Exception:
-                        runtime_summary = {}
-                action_signals = int(runtime_summary.get("action_signals") or 0)
-                progress(
-                    f"[{game.name}] bootstrap {number}/{repetitions}: "
-                    f"{elapsed_ms:.0f} ms, candidatos={len(endpoints)}, "
-                    f"runtime_signals={action_signals}"
-                    + (f", runtime_error={runtime_error}" if runtime_error else "")
-                )
-                warning = (
-                    "Belatra runtime capturado; falta clasificar la firma del spin."
-                    if action_signals
-                    else "Belatra runtime capturado sin firma de acción concluyente."
-                )
-                attempts.append(
-                    SpinAttempt(
-                        number=number,
-                        ok=True,
-                        mode_id="BOOTSTRAP_DISCOVERY",
-                        mode_kind="DISCOVERY",
-                        status_code=demo_status,
-                        elapsed_ms=elapsed_ms,
-                        symbol=game.symbol or game.slug,
-                        endpoint=demo_url,
-                        na="",
-                        terminal=False,
-                        wire_steps=1,
-                        warning=warning,
-                        artifact_dir=str(attempt_dir),
-                    )
-                )
-            except Exception as exc:
-                message = f"{type(exc).__name__}: {exc}"
-                errors.append(message)
+            attempt_started = time.monotonic()
+
+            if state is None:
+                message = errors[0] if errors else "Belatra bootstrap directo no disponible."
                 attempts.append(
                     SpinAttempt(
                         number=number,
                         ok=False,
-                        mode_id="BOOTSTRAP_DISCOVERY",
-                        mode_kind="DISCOVERY",
+                        mode_id="SPIN",
+                        mode_kind="SPIN",
                         symbol=game.symbol or game.slug,
                         terminal=False,
                         error=message,
                         artifact_dir=str(attempt_dir),
                     )
                 )
-                progress(f"[{game.name}] bootstrap {number}/{repetitions}: ERROR {message}")
+                continue
+
+            try:
+                ok, terminal, wire_steps, phase_cur, phase_next = self._execute_direct_spin(
+                    state,
+                    timeout_s=timeout_s,
+                    attempt_dir=attempt_dir,
+                )
+                elapsed_ms = (time.monotonic() - attempt_started) * 1000.0
+                responded += int(ok)
+                successes += int(ok and terminal)
+                warning = (
+                    ""
+                    if terminal
+                    else f"Estado Belatra no terminal: {phase_cur}→{phase_next}; RAW preservado."
+                )
+                attempts.append(
+                    SpinAttempt(
+                        number=number,
+                        ok=ok,
+                        mode_id="SPIN",
+                        mode_kind="SPIN",
+                        status_code=200,
+                        elapsed_ms=elapsed_ms,
+                        symbol=game.symbol or game.slug,
+                        endpoint=str(state["endpoint"]),
+                        na=phase_next,
+                        terminal=terminal,
+                        wire_steps=wire_steps,
+                        warning=warning,
+                        artifact_dir=str(attempt_dir),
+                    )
+                )
+                progress(
+                    f"[{game.name}] SPIN {number}/{repetitions}: "
+                    f"{'OK' if terminal else 'PARCIAL'} {elapsed_ms:.0f} ms, "
+                    f"phase={phase_cur}→{phase_next}, steps={wire_steps}"
+                )
+            except Exception as exc:
+                elapsed_ms = (time.monotonic() - attempt_started) * 1000.0
+                message = f"{type(exc).__name__}: {exc}"
+                errors.append(message)
+                attempts.append(
+                    SpinAttempt(
+                        number=number,
+                        ok=False,
+                        mode_id="SPIN",
+                        mode_kind="SPIN",
+                        elapsed_ms=elapsed_ms,
+                        symbol=game.symbol or game.slug,
+                        endpoint=str(state.get("endpoint") or ""),
+                        terminal=False,
+                        error=message,
+                        artifact_dir=str(attempt_dir),
+                    )
+                )
+                progress(f"[{game.name}] SPIN {number}/{repetitions}: ERROR {message}")
 
         elapsed_total = (time.monotonic() - started) * 1000.0
-        if bootstrap_ok:
+        attempted = len(attempts)
+        if attempted and successes == attempted:
+            status = "OK"
+            error = ""
+        elif responded:
             status = "PARCIAL"
             error = (
-                "Demo Belatra accesible; se capturó tráfico runtime y se intentó una "
-                "entrada de diagnóstico. Falta clasificar la firma de spin/bonus/buy "
-                "antes de considerar la acción terminal."
+                f"Belatra respondió {responded}/{attempted}; "
+                f"tiradas terminales={successes}/{attempted}. "
+                "Estados no terminales se preservaron para clasificación."
             )
         else:
             status = "ERROR"
-            error = errors[0] if errors else "No se pudo completar bootstrap Belatra."
+            error = errors[0] if errors else "No se completó ninguna tirada Belatra."
 
         result = GameTestResult(
             provider=self.key,
@@ -1085,18 +1500,19 @@ class BelatraProvider(ProviderAdapter):
             game_name=game.name,
             game_url=game.url,
             requested_spins=repetitions,
-            successful_spins=0,
+            successful_spins=successes,
             failed_spins=sum(1 for attempt in attempts if not attempt.ok),
             status=status,
             symbol=game.symbol or game.slug,
             discovered_modes=[
                 {
-                    "id": "RUNTIME_ACTION_DISCOVERY",
-                    "kind": "DISCOVERY_RUNTIME",
+                    "id": "SPIN",
+                    "kind": "SPIN",
+                    "transport": "encrypted_http",
+                    "endpoint": "/game",
                     "automated": True,
-                    "runtime_capture": True,
-                    "diagnostic_input": True,
-                    "spin_validated": False,
+                    "spin_validated": successes > 0,
+                    "state_machine": ["enter", "start", "finish"],
                 }
             ],
             started_at=started_iso,
