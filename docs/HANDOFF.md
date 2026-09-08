@@ -989,3 +989,58 @@ runtime-activity.json
 ```
 
 El archivo `runtime-activity.json` es el siguiente artefacto prioritario para reconstruir el protocolo directo.
+
+## 9.6 Belatra: spin base confirmado por HAR 2026-09-08
+
+Nuevo estado autoritativo:
+
+```text
+catálogo: Next.js/RSC
+demo: demo.bltr-static.com
+runtime: encrypted HTTP POST /game
+base spin: enter → start → finish
+```
+
+El iframe actual se obtiene de la ficha corporativa, por ejemplo:
+
+```text
+https://demo.bltr-static.com/belatra/demo?game=fortune_mummy
+```
+
+La demo crea una sesión, redirige a `/?modification=...&sid=...` y expone `var config` con:
+
+- `request_crypt`;
+- `sc`;
+- `modification`;
+- `nickname`;
+- `user.sid`;
+- moneda demo.
+
+El protocolo de juego es `POST /game` cifrado. El HAR permitió descifrar y validar repetidamente:
+
+```text
+q=enter
+q=start
+q=finish
+```
+
+Terminal base:
+
+```text
+start:  basedeal → toPaid
+finish: finished → toIdle
+```
+
+Tester-Spin debe ejecutar ese flujo directamente por requests y sólo conservar Playwright/runtime-action-capture como herramienta diagnóstica/fallback para formatos no cubiertos.
+
+No persistir los valores reales de `sc`, `sid` o cookies. Guardar respuestas descifradas y metadata sanitizada.
+
+Pendiente Belatra después de este HAR:
+
+1. features cuyo `phaseNext` no sea `toPaid`;
+2. buy bonus;
+3. free spins;
+4. selecciones `selectId`;
+5. cualquier otra q específica observada en futuros HAR.
+
+El spin base ya no debe quedar `PARCIAL` si termina en `finished→toIdle`.
