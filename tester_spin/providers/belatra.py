@@ -665,13 +665,24 @@ class BelatraProvider(ProviderAdapter):
                     action_ws_sent += 1
                 elif event.get("direction") == "received":
                     action_ws_received += 1
+        unique_request_signals = 0
+        for event in events:
+            if event.get("phase") != "action" or event.get("noise"):
+                continue
+            if event.get("kind") != "request":
+                continue
+            method = str(event.get("method") or "GET").upper()
+            resource_type = str(event.get("resource_type") or "")
+            if method != "GET" or resource_type in {"xhr", "fetch"}:
+                unique_request_signals += 1
+
         return {
             "action_requests": action_requests,
             "action_non_get": action_non_get,
             "action_xhr_fetch": action_xhr_fetch,
             "action_ws_sent": action_ws_sent,
             "action_ws_received": action_ws_received,
-            "action_signals": action_non_get + action_xhr_fetch + action_ws_sent,
+            "action_signals": unique_request_signals + action_ws_sent,
         }
 
     @staticmethod
