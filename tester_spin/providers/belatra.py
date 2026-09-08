@@ -492,6 +492,39 @@ class BelatraProvider(ProviderAdapter):
             offset = index + len(needle)
 
     @staticmethod
+    def _game_objects(stream: str) -> list[dict[str, Any]]:
+        """Find the actual Belatra catalogue array among multiple fields named games.
+
+        The Next/RSC stream contains other values named "games" before the
+        AllGamesSection payload. Accept only arrays that contain game-shaped
+        objects with both slug and title, and prefer the largest valid array.
+        """
+        needle = '"games":'
+        offset = 0
+        decoder = json.JSONDecoder()
+        best: list[dict[str, Any]] = []
+        while True:
+            index = stream.find(needle, offset)
+            if index < 0:
+                return best
+            try:
+                value, _end = decoder.raw_decode(stream[index + len(needle) :])
+            except json.JSONDecodeError:
+                offset = index + len(needle)
+                continue
+            if isinstance(value, list):
+                candidates = [
+                    item
+                    for item in value
+                    if isinstance(item, dict)
+                    and str(item.get("slug") or "").strip()
+                    and str(item.get("title") or "").strip()
+                ]
+                if len(candidates) > len(best):
+                    best = candidates
+            offset = index + len(needle)
+
+    @staticmethod
     def _pagination_meta(stream: str) -> dict[str, Any]:
         needle = '"meta":'
         offset = 0
@@ -542,7 +575,7 @@ class BelatraProvider(ProviderAdapter):
         base_url: str,
     ) -> tuple[list[Game], dict[str, Any]]:
         stream = self._next_stream(payload)
-        raw_games = self._decode_field(stream, "games", list) or []
+        raw_games = self._game_objects(stream)
         meta = self._pagination_meta(stream)
         origin = f"{urlparse(base_url).scheme}://{urlparse(base_url).netloc}"
         language = self._catalog_language(base_url)
