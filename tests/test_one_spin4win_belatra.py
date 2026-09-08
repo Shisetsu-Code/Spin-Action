@@ -361,7 +361,8 @@ class BelatraCatalogTests(unittest.TestCase):
             "total": 104,
         }
         return (
-            'b:["$","Games",null,{"games":'
+            'a:["$","Navigation",null,{"games":["home","slots","bingo"]}]\n'
+            + 'b:["$","Games",null,{"games":'
             + json.dumps(games, separators=(",", ":"))
             + '}]\n'
             + 'c:["$","Pagination",null,{"meta":'
