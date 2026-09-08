@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import threading
 import unittest
@@ -8,6 +9,24 @@ from pathlib import Path
 from tester_spin.models import Game
 from tester_spin.providers.belatra import BelatraProvider
 from tester_spin.providers.one_spin4win import OneSpin4WinProvider
+
+
+class FakeWebSocket:
+    def __init__(self, incoming: list[str]) -> None:
+        self.incoming = list(incoming)
+        self.sent: list[str] = []
+        self.closed = False
+
+    def send(self, value: str) -> None:
+        self.sent.append(value)
+
+    def recv(self) -> str:
+        if not self.incoming:
+            raise TimeoutError("fake socket exhausted")
+        return self.incoming.pop(0)
+
+    def close(self) -> None:
+        self.closed = True
 
 
 class OneSpin4WinCatalogTests(unittest.TestCase):
@@ -70,65 +89,102 @@ class OneSpin4WinCatalogTests(unittest.TestCase):
             "https://www.1spin4win.com/es/games?ae0c3ebe_page=2",
         )
 
-    def test_demo_symbol_supports_filename_style_seen_in_har(self) -> None:
+    def test_runtime_source_matches_observed_game_har(self) -> None:
+        config_js = 'this.gameURL = "wss://gs.1spin4win.com:443/games";'
+        game_js = (
+            'this.gameController.connect('
+            '"VeryLucky1024","testuser2","debug","","01","","")'
+        )
+        ws_url, no_args = self.provider._parse_runtime_source(config_js)
+        _no_ws, args = self.provider._parse_runtime_source(game_js)
+        self.assertEqual(ws_url, "wss://gs.1spin4win.com:443/games")
+        self.assertEqual(no_args, [])
         self.assertEqual(
-            self.provider._demo_symbol(
-                "https://gs.1spin4win.com:10443/gmh5/"
-                "luckyfoxilianholdandwin.html?currency=EUR&freeplay=true"
-            ),
-            "luckyfoxilianholdandwin",
+            args,
+            ["VeryLucky1024", "testuser2", "debug", "", "01", "", ""],
         )
 
-    def test_demo_symbol_prefers_game_query_parameter(self) -> None:
+    def test_wire_messages_match_observed_client_protocol(self) -> None:
         self.assertEqual(
-            self.provider._demo_symbol(
-                "https://gs.1spin4win.com:10443/gmh5/games.html?"
-                "game=WishAndSpinFortune&currency=EUR"
+            self.provider._wire_message(
+                "0",
+                ",,freeplay,VeryLucky1024,01,1,EUR,test",
             ),
-            "WishAndSpinFortune",
+            'A/u2{"key":"","type":"0","data":",,freeplay,VeryLucky1024,01,1,EUR,test"}',
+        )
+        self.assertEqual(
+            self.provider._wire_message("1", "5,2,0"),
+            'A/u2{"key":"","type":"1","data":"5,2,0"}',
         )
 
-    def test_webvisor_frame_is_still_ignored_during_game_ws_capture(self) -> None:
-        frame = {
-            "reconnects": 0,
-            "resource": "events/96775560",
-            "wstoken": "token",
-            "query": {
-                "wv-type": "6",
-                "wv-check": "15827",
-                "wv-hit": "788235634",
-            },
-            "body": [{"event": "sessionStart"}],
-        }
-        self.assertTrue(self.provider._is_webvisor_payload(frame))
-
-    def test_game_discovery_remains_partial_until_action_frames_are_known(self) -> None:
+    def test_direct_ws_spin_reaches_ok_on_type3_result(self) -> None:
         game = Game(
             provider=self.provider.key,
-            slug="lucky",
-            name="Lucky",
+            slug="very-lucky-1024",
+            name="Very Lucky 1024",
             url=(
-                "https://gs.1spin4win.com:10443/gmh5/games.html?"
-                "game=LuckyGame&freeplay=true"
+                "https://gs.1spin4win.com:10443/gmh5/verylucky1024.html?"
+                "currency=EUR&config=1&freeplay=true&language=en&exit=none"
             ),
-            symbol="LuckyGame",
+            symbol="verylucky1024",
+        )
+        fake_ws = FakeWebSocket(
+            [
+                json.dumps({"type": 0, "id": "client-1"}),
+                json.dumps(
+                    {
+                        "type": 1,
+                        "g": 10,
+                        "b": 10000,
+                        "w": 0,
+                        "bs": "1,2,5,10",
+                        "b1": 1,
+                        "b2": 100,
+                        "b3": 2,
+                        "l": 5,
+                        "cp": "EUR",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": 3,
+                        "g": 11,
+                        "b": 9995,
+                        "w": 0,
+                        "b3": 2,
+                        "l": 5,
+                        "k2": "",
+                        "k3": "",
+                        "wm": 1,
+                    }
+                ),
+            ]
         )
 
-        def fake_observe(*_args, **_kwargs):
-            return (
-                ["wss://games.example/session/abc"],
-                [
-                    {
-                        "direction": "received",
-                        "websocket_url": "wss://games.example/session/abc",
-                        "classification": "provider_or_unknown",
-                        "payload": {"kind": "text", "text": "{}"},
-                    }
-                ],
-                "",
+        def fake_spec(*_args, **_kwargs):
+            attempt_dir = Path(_kwargs["attempt_dir"])
+            spec = {
+                "ws_url": "wss://gs.1spin4win.com:443/games",
+                "origin": "https://gs.1spin4win.com:10443",
+                "game_name": "VeryLucky1024",
+                "version": "01",
+                "wallet": "1",
+                "currency": "EUR",
+                "freeplay": True,
+                "demo_url": game.url,
+                "scripts_scanned": [],
+            }
+            (attempt_dir / "runtime-spec.json").write_text(
+                json.dumps(spec),
+                encoding="utf-8",
             )
+            return spec
 
-        self.provider._observe_game_websockets = fake_observe  # type: ignore[method-assign]
+        self.provider._discover_runtime_spec = fake_spec  # type: ignore[method-assign]
+        self.provider._open_websocket = (  # type: ignore[method-assign]
+            lambda *_args, **_kwargs: fake_ws
+        )
+
         result = self.provider.test_game(
             game,
             spins=1,
@@ -136,17 +192,48 @@ class OneSpin4WinCatalogTests(unittest.TestCase):
             stop_event=threading.Event(),
             progress=lambda _message: None,
         )
-        self.assertEqual(result.status, "PARCIAL")
-        self.assertEqual(result.successful_spins, 0)
-        self.assertEqual(result.attempts[0].mode_kind, "DISCOVERY_WS")
+
+        self.assertEqual(result.status, "OK")
+        self.assertEqual(result.successful_spins, 1)
+        self.assertEqual(result.failed_spins, 0)
+        self.assertEqual(result.symbol, "VeryLucky1024")
+        self.assertTrue(result.attempts[0].terminal)
+        self.assertEqual(result.attempts[0].mode_kind, "SPIN")
         self.assertEqual(
             result.attempts[0].endpoint,
-            "wss://games.example/session/abc",
+            "wss://gs.1spin4win.com:443/games",
         )
-        self.assertEqual(
-            result.discovered_modes[0]["catalog_transport"],
-            "webflow_html",
+        self.assertEqual(result.attempts[0].wire_steps, 1)
+        self.assertTrue(
+            any(
+                message
+                == 'A/u2{"key":"","type":"0","data":",,freeplay,VeryLucky1024,01,1,EUR,test"}'
+                for message in fake_ws.sent
+            )
         )
+        self.assertTrue(
+            any(
+                message == 'A/u2{"key":"","type":"1","data":"5,2,0"}'
+                for message in fake_ws.sent
+            )
+        )
+
+    def test_pns_keepalive_is_answered(self) -> None:
+        frames: list[dict] = []
+        ws = FakeWebSocket(["pns", json.dumps({"type": 1, "l": 5, "b3": 0})])
+        payload = self.provider._recv_protocol_json(
+            ws,
+            deadline=10**12,
+            frames=frames,
+        )
+        self.assertEqual(payload["type"], 1)
+        self.assertIn("A/pns", ws.sent)
+
+    def test_bonus_state_is_not_terminal(self) -> None:
+        self.assertTrue(self.provider._d1_feature_active({"st": 5}))
+        self.assertTrue(self.provider._d1_feature_active({"st": 12}))
+        self.assertFalse(self.provider._d1_feature_active({"st": 0}))
+        self.assertFalse(self.provider._d1_feature_active({}))
 
 
 class BelatraCatalogTests(unittest.TestCase):

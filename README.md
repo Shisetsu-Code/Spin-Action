@@ -31,13 +31,15 @@ Proveedores disponibles: **Pragmatic Play**, **1spin4win (D1)** y **Belatra Game
 
 ### 1spin4win (D1)
 
-- El HAR de catálogo aportado muestra que el portfolio público de `1spin4win.com/games` es Webflow CMS renderizado en HTML; no contiene tráfico WebSocket.
-- Cada página se parsea desde `div.item_portfolio`: nombre `fs-list-field="name"`, slug `fs-list-field="slug"`, miniatura `img.image_portfolio-game` y URL demo publicada en `gs.1spin4win.com:10443`.
-- El botón “cargar más” es la paginación real de Webflow: `a.w-pagination-next`, por ejemplo `?ae0c3ebe_page=2`. Tester-Spin sigue ese `href` directamente y no depende de hacer clic ni de scroll.
-- Los HTML observados se guardan en `catalog-pages/page-NNN.html` y el índice final en `catalog.json`.
-- El identificador de runtime se obtiene del parámetro `game=` cuando existe o del nombre del archivo demo cuando el juego usa una URL `/gmh5/<game>.html`.
-- El runtime del juego sigue tratándose como WebSocket: la demo se abre con Playwright, se capturan sockets/frames en `runtime-websocket.json` y una tirada no se marca `OK` hasta implementar los frames reales de spin/bet/bonus/buy.
-- WebVisor/Yandex y otros sockets de analítica se siguen filtrando durante la captura WS.
+- El HAR de catálogo aportado muestra que el portfolio público de `1spin4win.com/games` es Webflow CMS renderizado en HTML; cada página se parsea desde `div.item_portfolio` y el “cargar más” se sigue directamente mediante `a.w-pagination-next[href]`.
+- La URL demo publicada en `gs.1spin4win.com:10443` se usa para resolver los assets reales del juego. El loader expone `GameConfig.js` y el JS principal; Tester-Spin obtiene de allí `gameURL`, el nombre interno y la versión.
+- En la captura de `VeryLucky1024`, el protocolo observado es `wss://gs.1spin4win.com:443/games` con prefijo de salida `A/u2`.
+- Al abrir el socket se envía un mensaje tipo `0`: `A/u2{"key":"","type":"0","data":",,freeplay,<GameName>,<version>,<config>,<currency>,test"}`.
+- La respuesta `type=1` inicializa líneas y apuesta (`l`, `b3`, `bs`, etc.). La tirada se envía como tipo `1` con `data="<lines>,<betIndex>,0"`; una respuesta `type=3` valida el resultado. `type=2` se trata como error.
+- El keepalive observado por el cliente es `pns`; Tester-Spin responde `A/pns`.
+- Estados de bonus/free-spins con `st in {5,6,11,12}` se continúan por el mismo mensaje de juego tipo `1`, con guard de 128 pasos para evitar loops.
+- Las pruebas D1 ya son endpoint-first sobre WebSocket: no necesitan hacer clic en la interfaz para una tirada normal. Cada intento guarda `runtime-spec.json`, `ws-attempt.json` y `result.json`.
+- Un juego pasa a `OK` sólo si cada tirada solicitada recibe un resultado terminal `type=3`; si responde pero queda en un estado no terminal se conserva como `PARCIAL`.
 
 ## Modos Pragmatic
 
