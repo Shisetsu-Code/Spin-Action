@@ -473,6 +473,8 @@ class BelatraCatalogTests(unittest.TestCase):
         )
         self.assertEqual(result.status, "PARCIAL")
         self.assertEqual(result.successful_spins, 0)
+        self.assertEqual(result.symbol, "77")
+        self.assertEqual(result.attempts[0].symbol, "77")
         self.assertEqual(result.attempts[0].status_code, 200)
         self.assertFalse(result.attempts[0].terminal)
         self.assertTrue(result.attempts[0].ok)
