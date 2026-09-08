@@ -18,7 +18,77 @@ class OneSpin4WinCatalogTests(unittest.TestCase):
     def tearDown(self) -> None:
         self._tmp.cleanup()
 
-    def test_webvisor_frame_is_ignored_as_telemetry(self) -> None:
+    def test_extract_catalog_page_matches_observed_webflow_har(self) -> None:
+        html = """
+        <html><body>
+          <div class="item_portfolio is-gallery game-card-hover">
+            <img
+              alt="Lucky 1spin4win Hold And Win"
+              class="image_portfolio-game"
+              src="https://cdn.example/lucky.webp">
+            <div class="hover_portfolio">
+              <div class="wrap_portfolio-hover">
+                <a class="link_portfolio-game w-inline-block"
+                   href="/es/games/lucky-1spin4win-hold-and-win">
+                  <div fs-list-field="name">Lucky 1spin4win Hold And Win</div>
+                  <div class="hide" fs-list-field="slug">lucky-1spin4win-hold-and-win</div>
+                </a>
+                <a class="button is-small game w-button"
+                   href="https://gs.1spin4win.com:10443/gmh5/games.html?game=Lucky1Spin4WinHoldAndWin&amp;currency=EUR&amp;config=1&amp;freeplay=true&amp;language=en&amp;exit=none">
+                   demo
+                </a>
+              </div>
+            </div>
+          </div>
+          <div role="navigation" class="w-pagination-wrapper">
+            <a href="?ae0c3ebe_page=2"
+               aria-label="Next Page"
+               class="w-pagination-next button is-ghost">
+               cargar más
+            </a>
+          </div>
+        </body></html>
+        """
+        games, next_url = self.provider._extract_catalog_page(
+            html,
+            "https://www.1spin4win.com/es/games",
+        )
+        self.assertEqual(len(games), 1)
+        game = games[0]
+        self.assertEqual(game.slug, "lucky-1spin4win-hold-and-win")
+        self.assertEqual(game.name, "Lucky 1spin4win Hold And Win")
+        self.assertEqual(game.symbol, "Lucky1Spin4WinHoldAndWin")
+        self.assertEqual(
+            game.url,
+            "https://gs.1spin4win.com:10443/gmh5/games.html?"
+            "game=Lucky1Spin4WinHoldAndWin&currency=EUR&config=1&"
+            "freeplay=true&language=en&exit=none",
+        )
+        self.assertEqual(game.thumbnail_url, "https://cdn.example/lucky.webp")
+        self.assertEqual(
+            next_url,
+            "https://www.1spin4win.com/es/games?ae0c3ebe_page=2",
+        )
+
+    def test_demo_symbol_supports_filename_style_seen_in_har(self) -> None:
+        self.assertEqual(
+            self.provider._demo_symbol(
+                "https://gs.1spin4win.com:10443/gmh5/"
+                "luckyfoxilianholdandwin.html?currency=EUR&freeplay=true"
+            ),
+            "luckyfoxilianholdandwin",
+        )
+
+    def test_demo_symbol_prefers_game_query_parameter(self) -> None:
+        self.assertEqual(
+            self.provider._demo_symbol(
+                "https://gs.1spin4win.com:10443/gmh5/games.html?"
+                "game=WishAndSpinFortune&currency=EUR"
+            ),
+            "WishAndSpinFortune",
+        )
+
+    def test_webvisor_frame_is_still_ignored_during_game_ws_capture(self) -> None:
         frame = {
             "reconnects": 0,
             "resource": "events/96775560",
@@ -26,86 +96,21 @@ class OneSpin4WinCatalogTests(unittest.TestCase):
             "query": {
                 "wv-type": "6",
                 "wv-check": "15827",
-                "wmode": "0",
                 "wv-hit": "788235634",
-                "page-url": "https://belatragames.com/es/games/category/2",
             },
-            "seq": 1,
-            "body": [
-                {
-                    "type": "event",
-                    "event": "sessionStart",
-                    "stamp": 1,
-                    "frameId": 0,
-                    "data": {"recordStamp": 1788819863520, "dpr": 1},
-                }
-            ],
+            "body": [{"event": "sessionStart"}],
         }
         self.assertTrue(self.provider._is_webvisor_payload(frame))
-        self.assertEqual(
-            self.provider._extract_games_from_ws_object(
-                frame,
-                source_url="https://www.1spin4win.com/games",
-            ),
-            [],
-        )
-
-    def test_extracts_catalog_games_from_ws_payload(self) -> None:
-        payload = {
-            "type": "catalog",
-            "data": {
-                "games": [
-                    {
-                        "gameId": "Lucky1Spin4WinHoldAndWin",
-                        "gameName": "Lucky 1spin4win Hold And Win",
-                        "launchUrl": "/launch/lucky",
-                        "thumbnailUrl": "/img/lucky.webp",
-                    },
-                    {
-                        "gameId": "RetroMegaFruits",
-                        "gameName": "Retro Mega Fruits",
-                        "launchUrl": "https://games.example/launch/retro",
-                    },
-                ]
-            },
-        }
-        games = self.provider._extract_games_from_ws_object(
-            payload,
-            source_url="https://casino.example/lobby",
-        )
-        self.assertEqual(len(games), 2)
-        self.assertEqual(games[0].symbol, "Lucky1Spin4WinHoldAndWin")
-        self.assertEqual(games[0].url, "https://casino.example/launch/lucky")
-        self.assertEqual(games[0].thumbnail_url, "https://casino.example/img/lucky.webp")
-        self.assertEqual(games[1].url, "https://games.example/launch/retro")
-
-    def test_generic_analytics_object_is_not_mistaken_for_game(self) -> None:
-        payload = {
-            "event": {
-                "id": "123",
-                "name": "sessionStart",
-                "url": "https://example.test/collect",
-            }
-        }
-        games = self.provider._extract_games_from_ws_object(
-            payload,
-            source_url="https://casino.example/lobby",
-        )
-        self.assertEqual(games, [])
-
-    def test_socketio_prefixed_json_is_decoded(self) -> None:
-        decoded = self.provider._decode_ws_json(
-            '42["catalog",{"games":[{"gameId":"ABC123","gameName":"Example"}]}]'
-        )
-        self.assertIsInstance(decoded, list)
-        self.assertEqual(decoded[0], "catalog")
 
     def test_game_discovery_remains_partial_until_action_frames_are_known(self) -> None:
         game = Game(
             provider=self.provider.key,
             slug="lucky",
             name="Lucky",
-            url="https://casino.example/launch/lucky",
+            url=(
+                "https://gs.1spin4win.com:10443/gmh5/games.html?"
+                "game=LuckyGame&freeplay=true"
+            ),
             symbol="LuckyGame",
         )
 
@@ -134,13 +139,14 @@ class OneSpin4WinCatalogTests(unittest.TestCase):
         self.assertEqual(result.status, "PARCIAL")
         self.assertEqual(result.successful_spins, 0)
         self.assertEqual(result.attempts[0].mode_kind, "DISCOVERY_WS")
-        self.assertEqual(result.attempts[0].status_code, None)
         self.assertEqual(
             result.attempts[0].endpoint,
             "wss://games.example/session/abc",
         )
-        self.assertEqual(result.discovered_modes[0]["catalog_transport"], "websocket")
-        self.assertFalse(result.discovered_modes[0]["provider_data_http"])
+        self.assertEqual(
+            result.discovered_modes[0]["catalog_transport"],
+            "webflow_html",
+        )
 
 
 class BelatraCatalogTests(unittest.TestCase):

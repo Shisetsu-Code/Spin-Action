@@ -31,12 +31,13 @@ Proveedores disponibles: **Pragmatic Play**, **1spin4win (D1)** y **Belatra Game
 
 ### 1spin4win (D1)
 
-- D1 se trata como un proveedor **WebSocket-native**: catálogo, sesión y estado de juego se obtienen de frames WS.
-- La URL configurable de catálogo es sólo una URL de entrada/lobby para que el navegador cargue el shell y establezca los sockets. El HTML/HTTP no se usa como fuente autoritativa de datos D1.
-- El catálogo se construye desde objetos observados en frames WS y se guarda junto con `catalog-websocket-capture.jsonl` y `catalog-websocket-summary.json`.
-- Se filtran sockets/payloads de telemetría. En particular, frames WebVisor/Yandex con `wv-type`, `wv-check`, `wv-hit`, `wstoken` o `sessionStart` no se consideran datos de catálogo.
-- Las miniaturas pueden descargarse como assets HTTP/CDN una vez que su URL fue obtenida del catálogo WS; esto no convierte HTTP en fuente de datos del proveedor.
-- Las pruebas de juego observan exclusivamente los WS funcionales y guardan `runtime-websocket.json`. Hasta clasificar handshake y frames reales de spin/bet/bonus/buy, el resultado queda `PARCIAL`.
+- El HAR de catálogo aportado muestra que el portfolio público de `1spin4win.com/games` es Webflow CMS renderizado en HTML; no contiene tráfico WebSocket.
+- Cada página se parsea desde `div.item_portfolio`: nombre `fs-list-field="name"`, slug `fs-list-field="slug"`, miniatura `img.image_portfolio-game` y URL demo publicada en `gs.1spin4win.com:10443`.
+- El botón “cargar más” es la paginación real de Webflow: `a.w-pagination-next`, por ejemplo `?ae0c3ebe_page=2`. Tester-Spin sigue ese `href` directamente y no depende de hacer clic ni de scroll.
+- Los HTML observados se guardan en `catalog-pages/page-NNN.html` y el índice final en `catalog.json`.
+- El identificador de runtime se obtiene del parámetro `game=` cuando existe o del nombre del archivo demo cuando el juego usa una URL `/gmh5/<game>.html`.
+- El runtime del juego sigue tratándose como WebSocket: la demo se abre con Playwright, se capturan sockets/frames en `runtime-websocket.json` y una tirada no se marca `OK` hasta implementar los frames reales de spin/bet/bonus/buy.
+- WebVisor/Yandex y otros sockets de analítica se siguen filtrando durante la captura WS.
 
 ## Modos Pragmatic
 
