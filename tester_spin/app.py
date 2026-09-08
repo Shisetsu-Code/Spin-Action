@@ -114,8 +114,8 @@ class TesterSpinApp(tk.Tk):
             opts,
             text=(
                 "Cada adaptador ejecuta sólo protocolos observados. Pragmatic prueba SPIN/ante-bet/compras; "
-                "1spin4win (D1) ejecuta SPIN directamente por WebSocket y continúa features conocidas; "
-                "Belatra tiene catálogo Next/RSC resuelto pero su runtime sigue en discovery hasta capturar spin/bonus/buy."
+                "1spin4win (D1) ejecuta SPIN directamente por WebSocket; Belatra ejecuta SPIN base por HTTP cifrado "
+                "(enter/start/finish) y conserva features no clasificadas como PARCIAL."
             ),
             wraplength=1400,
         ).pack(anchor="w", pady=(8, 0))
