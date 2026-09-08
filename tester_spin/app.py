@@ -113,9 +113,9 @@ class TesterSpinApp(tk.Tk):
         ttk.Label(
             opts,
             text=(
-                "Cada adaptador de proveedor ejecuta únicamente los modos cuyo protocolo fue observado. Pragmatic prueba "
-                "SPIN/ante-bet/compras; 1spin4win y Belatra conservan bootstrap, scripts y candidatos de endpoint "
-                "hasta incorporar sus transiciones de spin/bonus/buy desde evidencia HAR/runtime."
+                "Cada adaptador ejecuta sólo protocolos observados. Pragmatic prueba SPIN/ante-bet/compras; "
+                "1spin4win (D1) ejecuta SPIN directamente por WebSocket y continúa features conocidas; "
+                "Belatra tiene catálogo Next/RSC resuelto pero su runtime sigue en discovery hasta capturar spin/bonus/buy."
             ),
             wraplength=1400,
         ).pack(anchor="w", pady=(8, 0))
