@@ -15,7 +15,7 @@ from tester_spin.models import Game, GameTestResult, SpinAttempt, utc_now_iso
 from tester_spin.providers.base import GameCallback, Progress, ProviderAdapter
 
 
-_GAME_PATH_RE = re.compile(r"^/(?:en/)?games/game/([^/?#]+)/?$", re.I)
+_GAME_PATH_RE = re.compile(r"^/(?:[a-z]{2}/)?games/game/([^/?#]+)/?$", re.I)
 _DEMO_URL_RE = re.compile(
     r"https?://free-slot\.belatragames\.com/(?:[a-z]{2}/)?play/[A-Za-z0-9._~%+-]+",
     re.I,
@@ -58,7 +58,8 @@ def _best_image(img: Tag | None, base_url: str) -> str:
 class BelatraProvider(ProviderAdapter):
     key = "belatra"
     display_name = "Belatra Games"
-    catalog_url = "https://belatragames.com/en/games"
+    # Slot category observed in the supplied Belatra HAR.
+    catalog_url = "https://belatragames.com/es/games/category/2"
 
     def __init__(self, data_root: Path) -> None:
         self.data_root = data_root
@@ -94,57 +95,137 @@ class BelatraProvider(ProviderAdapter):
         return session
 
     def _page_url(self, page: int) -> str:
-        return self.catalog_url.rstrip("/") if page <= 1 else f"{self.catalog_url.rstrip('/')}/{page}"
+        root = self.catalog_url.rstrip("/")
+        return root if page <= 1 else f"{root}/{page}"
 
-    def _extract_catalog_page(self, html: str, base_url: str) -> list[Game]:
-        soup = BeautifulSoup(html or "", "html.parser")
-        found: dict[str, Game] = {}
-        for anchor in soup.find_all("a", href=True):
-            href = urljoin(base_url, str(anchor.get("href") or ""))
-            match = _GAME_PATH_RE.match(urlparse(href).path)
+    @staticmethod
+    def _next_stream(payload: str) -> str:
+        """Decode and concatenate Next.js RSC chunks from a full HTML response."""
+        text = payload or ""
+        if "self.__next_f.push" not in text:
+            return text
+
+        soup = BeautifulSoup(text, "html.parser")
+        chunks: list[str] = []
+        for node in soup.find_all("script"):
+            script = node.string or node.get_text() or ""
+            if "self.__next_f.push" not in script:
+                continue
+            match = re.search(
+                r'self\.__next_f\.push\(\[1,"(.*)"\]\)\s*$',
+                script,
+                re.S,
+            )
             if not match:
                 continue
-            slug = match.group(1).strip().lower()
+            try:
+                chunks.append(json.loads('"' + match.group(1) + '"'))
+            except json.JSONDecodeError:
+                continue
+        return "".join(chunks) if chunks else text
+
+    @staticmethod
+    def _game_objects(stream: str) -> list[dict[str, Any]]:
+        """Return the actual catalogue games[] array, ignoring homonymous fields."""
+        needle = '"games":'
+        offset = 0
+        decoder = json.JSONDecoder()
+        best: list[dict[str, Any]] = []
+        while True:
+            index = stream.find(needle, offset)
+            if index < 0:
+                return best
+            try:
+                value, _end = decoder.raw_decode(stream[index + len(needle) :])
+            except json.JSONDecodeError:
+                offset = index + len(needle)
+                continue
+            if isinstance(value, list):
+                candidates = [
+                    item
+                    for item in value
+                    if isinstance(item, dict)
+                    and str(item.get("slug") or "").strip()
+                    and str(item.get("title") or "").strip()
+                ]
+                if len(candidates) > len(best):
+                    best = candidates
+            offset = index + len(needle)
+
+    @staticmethod
+    def _pagination_meta(stream: str) -> dict[str, Any]:
+        needle = '"meta":'
+        offset = 0
+        decoder = json.JSONDecoder()
+        while True:
+            index = stream.find(needle, offset)
+            if index < 0:
+                return {}
+            try:
+                value, _end = decoder.raw_decode(stream[index + len(needle) :])
+            except json.JSONDecodeError:
+                offset = index + len(needle)
+                continue
+            if (
+                isinstance(value, dict)
+                and "current_page" in value
+                and "last_page" in value
+                and "per_page" in value
+            ):
+                return value
+            offset = index + len(needle)
+
+    @staticmethod
+    def _best_api_image(item: dict[str, Any]) -> str:
+        image = item.get("image")
+        if not isinstance(image, dict):
+            return ""
+        for viewport in ("desktop", "tablet", "mobile"):
+            variants = image.get(viewport)
+            if not isinstance(variants, dict):
+                continue
+            for key in ("webp_x2", "x2", "webp_x1", "x1"):
+                value = str(variants.get(key) or "").strip()
+                if value:
+                    return value
+        return ""
+
+    @staticmethod
+    def _catalog_language(base_url: str) -> str:
+        parts = [part for part in urlparse(base_url).path.split("/") if part]
+        if parts and re.fullmatch(r"[a-z]{2}", parts[0], re.I):
+            return parts[0].lower()
+        return "en"
+
+    def _extract_catalog_page(
+        self,
+        payload: str,
+        base_url: str,
+    ) -> tuple[list[Game], dict[str, Any]]:
+        stream = self._next_stream(payload)
+        raw_games = self._game_objects(stream)
+        meta = self._pagination_meta(stream)
+        parsed = urlparse(base_url)
+        origin = f"{parsed.scheme}://{parsed.netloc}"
+        language = self._catalog_language(base_url)
+
+        found: dict[str, Game] = {}
+        for item in raw_games:
+            slug = str(item.get("slug") or "").strip().lower()
             if not slug or slug in found:
                 continue
-
-            container: Tag | None = anchor if isinstance(anchor, Tag) else None
-            for parent in anchor.parents:
-                if isinstance(parent, Tag) and parent.name in {"article", "li", "div"}:
-                    container = parent
-                    if parent.find("img") is not None:
-                        break
-
-            img = container.find("img") if isinstance(container, Tag) else anchor.find("img")
-            name = ""
-            if img is not None:
-                for key in ("alt", "title"):
-                    candidate = str(img.get(key) or "").strip()
-                    if candidate and candidate.casefold() not in {"play", "game", "slot"}:
-                        name = candidate
-                        break
-            if not name:
-                text = " ".join(anchor.stripped_strings).strip()
-                if text and text.casefold() not in {"play", "play now"}:
-                    name = text
-            if not name and isinstance(container, Tag):
-                heading = container.find(["h2", "h3", "h4", "h5"])
-                if heading is not None:
-                    candidate = " ".join(heading.stripped_strings).strip()
-                    if candidate and candidate.casefold() not in {"play", "play now"}:
-                        name = candidate
-            if not name:
-                name = _slug_title(slug)
-
+            name = str(item.get("title") or "").strip() or _slug_title(slug)
+            provider_id = str(item.get("id") or "").strip()
             found[slug] = Game(
                 provider=self.key,
                 slug=slug,
                 name=name,
-                url=href,
-                thumbnail_url=_best_image(img, base_url),
-                symbol=slug,
+                url=f"{origin}/{language}/games/game/{slug}",
+                thumbnail_url=self._best_api_image(item),
+                symbol=provider_id or slug,
             )
-        return list(found.values())
+
+        return list(found.values()), meta
 
     def _persist_thumbnail(self, game: Game, progress: Progress) -> None:
         if not game.thumbnail_url:
@@ -176,56 +257,109 @@ class BelatraProvider(ProviderAdapter):
         limit = max(1, int(max_pages))
         by_slug: dict[str, Game] = {}
         duplicate_pages = 0
+        expected_last_page: int | None = None
+        expected_total: int | None = None
 
-        progress("Catálogo Belatra: enumerando páginas públicas oficiales.")
+        progress(
+            "Catálogo Belatra Next.js: categoría 2 (slots), leyendo objects games[] "
+            "del stream RSC y siguiendo current_page/last_page."
+        )
+
         for page in range(1, limit + 1):
             if stop_event.is_set():
                 break
+
             url = self._page_url(page)
-            progress(f"Belatra página {page}: {url}")
+            progress(f"Belatra categoría 2 página {page}: {url}")
             response = self.http.get(url, timeout=30.0, allow_redirects=True)
             if response.status_code == 404:
                 break
             response.raise_for_status()
-            page_games = self._extract_catalog_page(response.text, response.url)
+
+            page_games, meta = self._extract_catalog_page(response.text, response.url)
+            if meta:
+                try:
+                    expected_last_page = int(meta.get("last_page") or 0) or expected_last_page
+                except (TypeError, ValueError):
+                    pass
+                try:
+                    expected_total = int(meta.get("total") or 0) or expected_total
+                except (TypeError, ValueError):
+                    pass
+
             new_count = 0
             for game in page_games:
                 existing = by_slug.get(game.slug)
                 if existing is not None:
                     if not existing.thumbnail_url and game.thumbnail_url:
                         existing.thumbnail_url = game.thumbnail_url
+                    if (not existing.symbol or existing.symbol == existing.slug) and game.symbol:
+                        existing.symbol = game.symbol
                     continue
+
                 self._persist_thumbnail(game, progress)
                 by_slug[game.slug] = game
                 new_count += 1
                 if on_game is not None:
                     on_game(game)
-                progress(f"  + {game.name} — {game.url}")
+                progress(f"  + {game.name} [id={game.symbol}] — {game.url}")
 
+            current_page = meta.get("current_page") if meta else page
+            last_page = meta.get("last_page") if meta else expected_last_page
+            total = meta.get("total") if meta else expected_total
             progress(
-                f"Belatra página {page}: juegos={len(page_games)}, nuevos={new_count}, total={len(by_slug)}"
+                f"Belatra página {page}: juegos={len(page_games)}, nuevos={new_count}, "
+                f"total_local={len(by_slug)}, current={current_page}, "
+                f"last={last_page or '—'}, total_remoto={total or '—'}"
             )
+
             if not page_games:
                 break
+
             duplicate_pages = duplicate_pages + 1 if new_count == 0 else 0
             if duplicate_pages >= 2:
+                progress("Belatra: dos páginas consecutivas sin juegos nuevos; fin defensivo.")
+                break
+
+            if expected_last_page is not None and page >= expected_last_page:
+                break
+
+            per_page = 0
+            if meta:
+                try:
+                    per_page = int(meta.get("per_page") or 0)
+                except (TypeError, ValueError):
+                    per_page = 0
+            if per_page > 0 and len(page_games) < per_page:
                 break
 
         games = sorted(by_slug.values(), key=lambda game: game.name.casefold())
-        index = self.provider_root / "catalog.json"
-        index.write_text(
-            json.dumps([game.__dict__ if hasattr(game, "__dict__") else {
-                "provider": game.provider,
-                "slug": game.slug,
-                "name": game.name,
-                "url": game.url,
-                "thumbnail_url": game.thumbnail_url,
-                "thumbnail_path": game.thumbnail_path,
-                "symbol": game.symbol,
-            } for game in games], ensure_ascii=False, indent=2),
+        (self.provider_root / "catalog.json").write_text(
+            json.dumps(
+                [
+                    {
+                        "provider": game.provider,
+                        "slug": game.slug,
+                        "name": game.name,
+                        "url": game.url,
+                        "thumbnail_url": game.thumbnail_url,
+                        "thumbnail_path": game.thumbnail_path,
+                        "symbol": game.symbol,
+                        "catalog_transport": "nextjs_rsc",
+                        "category_id": 2,
+                    }
+                    for game in games
+                ],
+                ensure_ascii=False,
+                indent=2,
+            ),
             encoding="utf-8",
         )
-        progress(f"Catálogo Belatra terminado: {len(games)} juegos únicos.")
+        progress(
+            f"Catálogo Belatra terminado: {len(games)} juegos únicos"
+            + (f" / remoto={expected_total}" if expected_total is not None else "")
+            + "."
+        )
         return games
 
     def _resolve_demo_url(self, game: Game, detail_html: str) -> str:
@@ -364,7 +498,7 @@ class BelatraProvider(ProviderAdapter):
                         mode_kind="DISCOVERY",
                         status_code=demo_status,
                         elapsed_ms=elapsed_ms,
-                        symbol=game.slug,
+                        symbol=game.symbol or game.slug,
                         endpoint=demo_url,
                         na="",
                         terminal=False,
@@ -382,7 +516,7 @@ class BelatraProvider(ProviderAdapter):
                         ok=False,
                         mode_id="BOOTSTRAP_DISCOVERY",
                         mode_kind="DISCOVERY",
-                        symbol=game.slug,
+                        symbol=game.symbol or game.slug,
                         terminal=False,
                         error=message,
                         artifact_dir=str(attempt_dir),
@@ -410,7 +544,7 @@ class BelatraProvider(ProviderAdapter):
             successful_spins=0,
             failed_spins=sum(1 for attempt in attempts if not attempt.ok),
             status=status,
-            symbol=game.slug,
+            symbol=game.symbol or game.slug,
             discovered_modes=[
                 {
                     "id": "BOOTSTRAP_DISCOVERY",

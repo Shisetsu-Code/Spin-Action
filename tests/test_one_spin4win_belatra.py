@@ -323,34 +323,119 @@ class BelatraCatalogTests(unittest.TestCase):
     def tearDown(self) -> None:
         self._tmp.cleanup()
 
-    def test_extract_catalog_page_uses_game_links_and_image_alt(self) -> None:
-        html = """
-        <html><body>
-          <article>
-            <a href="/en/games/game/big-wild-buffalo-2">
-              <img alt="Big Wild Buffalo 2" src="/media/buffalo.webp">
-            </a>
-          </article>
-          <article>
-            <a href="https://belatragames.com/en/games/game/just-a-bingo">
-              <img alt="Just a Bingo" data-src="/media/bingo.png">
-            </a>
-          </article>
-        </body></html>
-        """
-        games = self.provider._extract_catalog_page(html, "https://belatragames.com/en/games")
-        self.assertEqual([game.slug for game in games], ["big-wild-buffalo-2", "just-a-bingo"])
-        self.assertEqual(games[0].name, "Big Wild Buffalo 2")
+    @staticmethod
+    def _game_payload() -> str:
+        games = [
+            {
+                "id": 109,
+                "title": "Princess Suki",
+                "slug": "princess-suki",
+                "image": {
+                    "desktop": {
+                        "x1": "https://imgproxy.example/princess-300.jpg",
+                        "x2": "https://imgproxy.example/princess-600.jpg",
+                        "webp_x1": "https://imgproxy.example/princess-300.webp",
+                        "webp_x2": "https://imgproxy.example/princess-600.webp",
+                    }
+                },
+                "category": {"id": 2, "title": "Ranura"},
+            },
+            {
+                "id": 108,
+                "title": "Yo-ho-ho 2048",
+                "slug": "yo-ho-ho-2048",
+                "image": {
+                    "desktop": {
+                        "webp_x2": "https://imgproxy.example/yo-ho-ho-600.webp",
+                    }
+                },
+                "category": {"id": 2, "title": "Ranura"},
+            },
+        ]
+        meta = {
+            "current_page": 1,
+            "from": 1,
+            "last_page": 5,
+            "per_page": 25,
+            "to": 25,
+            "total": 104,
+        }
+        return (
+            'a:["$","Navigation",null,{"games":["home","slots","bingo"]}]\n'
+            + 'b:["$","Games",null,{"games":'
+            + json.dumps(games, separators=(",", ":"))
+            + '}]\n'
+            + 'c:["$","Pagination",null,{"meta":'
+            + json.dumps(meta, separators=(",", ":"))
+            + '}]'
+        )
+
+    def test_extract_catalog_page_uses_next_rsc_game_objects(self) -> None:
+        games, meta = self.provider._extract_catalog_page(
+            self._game_payload(),
+            "https://belatragames.com/es/games/category/2",
+        )
+        self.assertEqual([game.slug for game in games], ["princess-suki", "yo-ho-ho-2048"])
+        self.assertEqual(games[0].name, "Princess Suki")
+        self.assertEqual(games[0].symbol, "109")
+        self.assertEqual(
+            games[0].url,
+            "https://belatragames.com/es/games/game/princess-suki",
+        )
         self.assertEqual(
             games[0].thumbnail_url,
-            "https://belatragames.com/media/buffalo.webp",
+            "https://imgproxy.example/princess-600.webp",
+        )
+        self.assertEqual(meta["current_page"], 1)
+        self.assertEqual(meta["last_page"], 5)
+        self.assertEqual(meta["per_page"], 25)
+        self.assertEqual(meta["total"], 104)
+
+    def test_next_stream_decodes_split_next_push_chunks(self) -> None:
+        first = 'c:["$","Pagination",null,{"meta":{"current_page":1,"last_page":'
+        second = '5,"per_page":25,"total":104}}]\n'
+        html = (
+            "<html><body>"
+            "<script>self.__next_f.push([1,"
+            + json.dumps(first)
+            + "])</script>"
+            "<script>self.__next_f.push([1,"
+            + json.dumps(second)
+            + "])</script>"
+            "</body></html>"
+        )
+        stream = self.provider._next_stream(html)
+        meta = self.provider._pagination_meta(stream)
+        self.assertEqual(meta["current_page"], 1)
+        self.assertEqual(meta["last_page"], 5)
+        self.assertEqual(meta["total"], 104)
+
+    def test_page_urls_match_observed_spanish_category_pagination(self) -> None:
+        self.assertEqual(
+            self.provider._page_url(1),
+            "https://belatragames.com/es/games/category/2",
+        )
+        self.assertEqual(
+            self.provider._page_url(2),
+            "https://belatragames.com/es/games/category/2/2",
+        )
+        self.assertEqual(
+            self.provider._page_url(5),
+            "https://belatragames.com/es/games/category/2/5",
+        )
+
+    def _game(self) -> Game:
+        return Game(
+            provider=self.provider.key,
+            slug="just-a-bingo",
+            name="Just a Bingo",
+            url="https://belatragames.com/es/games/game/just-a-bingo",
+            thumbnail_url="https://imgproxy.example/bingo.webp",
+            symbol="77",
         )
 
     def test_resolve_demo_url_uses_observed_free_slot_url(self) -> None:
-        game = self.provider._extract_catalog_page(
-            '<a href="/en/games/game/just-a-bingo"><img alt="Just a Bingo"></a>',
-            "https://belatragames.com/en/games",
-        )[0]
+        game = self._game()
         html = (
             '<script>window.demo="https://free-slot.belatragames.com/play/just-a-bingo";</script>'
         )
@@ -360,20 +445,14 @@ class BelatraCatalogTests(unittest.TestCase):
         )
 
     def test_resolve_demo_url_has_safe_slug_fallback(self) -> None:
-        game = self.provider._extract_catalog_page(
-            '<a href="/en/games/game/just-a-bingo"><img alt="Just a Bingo"></a>',
-            "https://belatragames.com/en/games",
-        )[0]
+        game = self._game()
         self.assertEqual(
             self.provider._resolve_demo_url(game, "<html></html>"),
             "https://free-slot.belatragames.com/play/just-a-bingo",
         )
 
     def test_successful_bootstrap_remains_partial_not_spin_ok(self) -> None:
-        game = self.provider._extract_catalog_page(
-            '<a href="/en/games/game/just-a-bingo"><img alt="Just a Bingo"></a>',
-            "https://belatragames.com/en/games",
-        )[0]
+        game = self._game()
 
         def fake_discovery(*_args, **_kwargs):
             return (
@@ -394,6 +473,8 @@ class BelatraCatalogTests(unittest.TestCase):
         )
         self.assertEqual(result.status, "PARCIAL")
         self.assertEqual(result.successful_spins, 0)
+        self.assertEqual(result.symbol, "77")
+        self.assertEqual(result.attempts[0].symbol, "77")
         self.assertEqual(result.attempts[0].status_code, 200)
         self.assertFalse(result.attempts[0].terminal)
         self.assertTrue(result.attempts[0].ok)
