@@ -725,3 +725,240 @@ input
 → actualización de estado
 → terminal/continuation
 ```
+
+# 4. Belatra — protocolo actual confirmado por HAR
+
+## 4.11 Demo oficial actual
+
+El detalle corporativo publica directamente un iframe:
+
+```text
+https://demo.bltr-static.com/belatra/demo?game=<nickname>
+```
+
+El frontend localizado añade:
+
+```text
+language=<locale>
+```
+
+Ejemplo observado:
+
+```text
+https://demo.bltr-static.com/belatra/demo?game=fortune_mummy&language=es
+```
+
+Ese GET responde con redirect a una URL de sesión:
+
+```text
+https://demo.bltr-static.com/?modification=<N>&sid=<SESSION>
+```
+
+y establece la cookie `connect.sid`.
+
+La página final contiene:
+
+```javascript
+var config = {
+  request_crypt: true,
+  sc: "...",
+  modification: 148,
+  nickname: "fortune_mummy",
+  user: {
+    sid: "...",
+    userCurrency: "FUN"
+  }
+}
+```
+
+`sc` y `sid` son datos efímeros de sesión: usarlos en memoria y no documentar valores reales.
+
+## 4.12 Transporte de juego
+
+El HAR confirma que el runtime funcional es HTTP, no WebSocket:
+
+```text
+POST https://demo.bltr-static.com/game
+Content-Type: application/x-www-form-urlencoded
+```
+
+El único WebSocket observado en la captura fue telemetría Yandex/WebVisor y no pertenece al protocolo del juego.
+
+Body wire:
+
+```text
+d=<encrypted-base64>&sid=<session-id>
+```
+
+Respuesta:
+
+```json
+{"d":"<encrypted-base64>"}
+```
+
+## 4.13 Cifrado
+
+El cliente usa el valor `config.sc`.
+
+Derivación para 128 bits:
+
+1. UTF-8 de `sc`;
+2. truncar/pad a 16 bytes;
+3. cifrar ese bloque con AES-128 usando el mismo bloque como key;
+4. el resultado de 16 bytes es la key de stream.
+
+Payload:
+
+1. JSON UTF-8;
+2. prefix de 8 bytes:
+   - milliseconds dentro del segundo, uint16 little-endian;
+   - random uint16 little-endian;
+   - epoch seconds uint32 little-endian;
+3. counter block = prefix + uint64 big-endian empezando en 0;
+4. AES-ECB(key derivada, counter block);
+5. XOR con plaintext por bloques;
+6. salida = Base64(prefix + ciphertext).
+
+Es AES-CTR/NIST compatible con la implementación del cliente, con contador en los últimos 8 bytes.
+
+## 4.14 Campos automáticos de AjaxQueue
+
+Antes de cifrar cada request el cliente agrega:
+
+```text
+uid
+c
+modification
+```
+
+- `uid`: identificador aleatorio de la instancia;
+- `c`: contador secuencial, wrap en 1000;
+- `modification`: valor de config.
+
+Después de cifrar agrega `sid` fuera del blob `d`.
+
+Cuando existe un historyId vigente, el cliente añade:
+
+```text
+ghistId
+```
+
+a requests posteriores.
+
+## 4.15 Máquina de estados base observada
+
+### Enter
+
+Request descifrado:
+
+```json
+{
+  "q": "enter",
+  "curFloor": 1,
+  "userAgent": "...",
+  "uid": "...",
+  "c": 0,
+  "modification": 148
+}
+```
+
+La respuesta expone parámetros autoritativos de apuesta y juego:
+
+```text
+gs.betPerLine
+gs.nlines
+gs.linesAssortment
+gs.betAssortment
+gs.gdenom
+gs.denomAssortment_cents
+gs.vipMode
+gs.dop.curModeID
+gs.phaseCur
+gs.phaseNext
+```
+
+### Start / spin
+
+Request base observado:
+
+```json
+{
+  "q": "start",
+  "betPerLine": 10,
+  "nlines": 5,
+  "denom": 1,
+  "buyBonus": null,
+  "selectId": null,
+  "hideInsideInHistory": 0,
+  "showingInMoney": 0,
+  "vipOn": 1,
+  "curModeID": 0
+}
+```
+
+Más `ghistId` cuando ya existe un histórico anterior, y los campos automáticos.
+
+Respuesta típica:
+
+```text
+gs.phaseCur  = basedeal
+gs.phaseNext = toPaid
+gs.historyId = <new history>
+```
+
+También contiene el resultado:
+
+```text
+curWin
+placedbet
+startBox
+stopBox
+linesInfo
+wildMask
+wereFeatures
+...
+```
+
+### Finish
+
+Request:
+
+```json
+{
+  "q": "finish",
+  "ghistId": "<historyId del start>"
+}
+```
+
+Respuesta terminal observada:
+
+```text
+gs.phaseCur  = finished
+gs.phaseNext = toIdle
+```
+
+Por lo tanto, para un spin base confirmado:
+
+```text
+enter
+→ start
+→ phaseNext=toPaid
+→ finish
+→ phaseCur=finished + phaseNext=toIdle
+→ OK
+```
+
+Si `start` devuelve otra transición, NO inventar la continuación. Guardar respuesta descifrada y marcar `PARCIAL` hasta clasificar bonus/free-spins/buy.
+
+## 4.16 HAR de referencia 2026-09-08
+
+Juego:
+
+```text
+Fortune Mummy
+nickname=fortune_mummy
+```
+
+La captura contiene múltiples pares `start/finish` válidos y una variación de apuesta de `betPerLine=10` a `12`, confirmando que los parámetros se transmiten explícitamente y no están hardcodeados en el endpoint.
+
+Este HAR reemplaza la hipótesis anterior de “runtime Belatra todavía desconocido”: el spin base está suficientemente documentado para ejecución HTTP directa.
