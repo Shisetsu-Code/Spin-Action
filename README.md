@@ -6,6 +6,11 @@ GUI extensible en Python para catalogar juegos por proveedor y probar automátic
 
 Proveedores disponibles: **Pragmatic Play**, **1spin4win (D1)** y **Belatra Games**.
 
+> Para retomar el proyecto en otro chat o después de perder contexto, leer primero:
+> - [docs/HANDOFF.md](docs/HANDOFF.md) — estado completo, arquitectura, decisiones y próximos pasos.
+> - [docs/PROTOCOLS.md](docs/PROTOCOLS.md) — contratos observados por proveedor.
+> - [docs/OPERATIONS.md](docs/OPERATIONS.md) — ejecución, updater, debugging y checklist de desarrollo.
+
 - Recorre `https://www.pragmaticplay.com/en/games/` y su paginación.
 - Guarda nombre humano, URL de ficha, slug e ID interno del proveedor cuando se resuelve.
 - Descarga la miniatura exactamente desde la URL de mayor resolución/original expuesta por el catálogo y conserva sus bytes sin reescalar ni re-encodear.
@@ -23,8 +28,11 @@ Proveedores disponibles: **Pragmatic Play**, **1spin4win (D1)** y **Belatra Game
 
 ### Belatra Games
 
-- Recorre el catálogo público oficial de Belatra por páginas.
-- Guarda nombre, slug, ficha, miniatura y URL demo.
+- El catálogo de slots usa la ruta observada `https://belatragames.com/es/games/category/2`.
+- La aplicación oficial es Next.js: los juegos no se obtienen de anchors HTML sino de los objetos `games[]` embebidos en el stream RSC de `self.__next_f.push(...)`.
+- Los chunks Next se decodifican y concatenan antes de aplicar `json.JSONDecoder.raw_decode()`, porque un objeto grande puede quedar partido entre varios `<script>`.
+- La paginación usa rutas `/es/games/category/2/N` y metadata `current_page`, `last_page`, `per_page` y `total`. En el HAR de referencia se observaron 25 juegos/página, 5 páginas y 104 slots.
+- Cada juego conserva `id`, `title`, `slug`, URL de ficha y la mejor miniatura disponible (preferencia desktop `webp_x2`/alta resolución).
 - Usa `https://free-slot.belatragames.com/play/<slug>` como fallback de demo cuando la ficha no expone el enlace directamente.
 - En cada prueba realiza bootstrap HTTP de ficha+demo, guarda HTML, scripts y candidatos de endpoints en `bootstrap-discovery.json`.
 - Hasta disponer de una captura HAR/runtime que demuestre el contrato real de tirada/bonus/buy, Belatra se marca `PARCIAL` y nunca `OK` por un simple HTTP 200.
