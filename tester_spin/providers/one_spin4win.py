@@ -7,53 +7,17 @@ import threading
 import time
 from pathlib import Path
 from typing import Any
-from urllib.parse import urljoin, urlparse
+from urllib.parse import parse_qs, urljoin, urlparse
 
 import requests
+from bs4 import BeautifulSoup, Tag
 
 from tester_spin.models import Game, GameTestResult, SpinAttempt, utc_now_iso
 from tester_spin.providers.base import GameCallback, Progress, ProviderAdapter
 
 
 _ONE_SPIN_LOCAL = threading.local()
-
-_GAME_CONTEXT_KEYS = {
-    "games",
-    "game",
-    "catalog",
-    "catalogue",
-    "portfolio",
-    "items",
-    "titles",
-    "slots",
-    "content",
-}
-_NAME_KEYS = ("gameName", "game_name", "name", "title", "displayName", "display_name")
-_ID_KEYS = ("gameId", "game_id", "gameID", "symbol", "code", "identifier", "slug")
-_URL_KEYS = (
-    "launchUrl",
-    "launch_url",
-    "gameUrl",
-    "game_url",
-    "demoUrl",
-    "demo_url",
-    "playUrl",
-    "play_url",
-    "url",
-    "href",
-)
-_IMAGE_KEYS = (
-    "thumbnailUrl",
-    "thumbnail_url",
-    "thumbnail",
-    "imageUrl",
-    "image_url",
-    "image",
-    "iconUrl",
-    "icon_url",
-    "icon",
-    "preview",
-)
+_DEMO_HOST = "gs.1spin4win.com"
 
 
 def _safe_folder(name: str) -> str:
@@ -61,59 +25,26 @@ def _safe_folder(name: str) -> str:
     return value[:160] or "Unnamed Game"
 
 
-def _slugify(value: str) -> str:
-    normalized = re.sub(r"[^a-z0-9]+", "-", str(value).casefold()).strip("-")
-    return normalized[:180] or "unknown-game"
-
-
 def _slug_title(slug: str) -> str:
     return re.sub(r"[-_]+", " ", slug).strip().title()
-
-
-def _first_scalar(value: Any) -> str:
-    if isinstance(value, (str, int, float)):
-        return str(value).strip()
-    if isinstance(value, dict):
-        for key in ("url", "src", "href", "value", "desktop", "mobile", "default"):
-            if key in value:
-                candidate = _first_scalar(value[key])
-                if candidate:
-                    return candidate
-    if isinstance(value, list):
-        for item in value:
-            candidate = _first_scalar(item)
-            if candidate:
-                return candidate
-    return ""
-
-
-def _pick(data: dict[str, Any], keys: tuple[str, ...]) -> str:
-    for key in keys:
-        if key in data:
-            value = _first_scalar(data[key])
-            if value:
-                return value
-    return ""
 
 
 class OneSpin4WinProvider(ProviderAdapter):
     """1spin4win/D1 adapter.
 
-    D1 provider data is treated as WebSocket-native: catalogue, session/game
-    state and future wager actions are discovered from WS frames. HTTP navigation
-    is only used to load the browser shell/static assets required to establish
-    those sockets. It is never used as an authoritative source of D1 catalogue or
-    wager state.
+    The official public portfolio observed in the supplied Firefox HAR is a
+    Webflow CMS catalogue rendered as HTML. Pagination is exposed through the
+    real Webflow next-page link (e.g. ?ae0c3ebe_page=2), so catalogue crawling
+    is direct HTTP and does not click the UI.
+
+    Game runtime remains WebSocket-oriented: the demo shell is opened only to
+    observe the functional sockets/frames. No HTTP response is treated as a
+    validated wager/spin result.
     """
 
     key = "1spin4win"
     display_name = "1spin4win (D1)"
-    # This is an entry/lobby URL, not an HTTP catalogue API.
     catalog_url = "https://www.1spin4win.com/games"
-
-    _CATALOG_OBSERVE_MAX_S = 15.0
-    _CATALOG_QUIET_AFTER_DATA_S = 3.0
-    _MAX_CAPTURED_FRAMES = 1200
 
     def __init__(self, data_root: Path) -> None:
         self.data_root = data_root
@@ -149,6 +80,214 @@ class OneSpin4WinProvider(ProviderAdapter):
         return session
 
     @staticmethod
+    def _demo_symbol(demo_url: str) -> str:
+        parsed = urlparse(demo_url)
+        query = parse_qs(parsed.query)
+        explicit = (query.get("game") or [""])[0].strip()
+        if explicit:
+            return explicit
+        stem = Path(parsed.path).stem.strip()
+        return "" if stem.casefold() == "games" else stem
+
+    @staticmethod
+    def _best_card_image(card: Tag, base_url: str) -> str:
+        img = card.select_one("img.image_portfolio-game")
+        if img is None:
+            img = card.find("img")
+        if img is None:
+            return ""
+        for key in ("src", "data-src", "data-lazy-src"):
+            value = str(img.get(key) or "").strip()
+            if value and not value.startswith("data:"):
+                return urljoin(base_url, value)
+        srcset = str(img.get("srcset") or img.get("data-srcset") or "")
+        choices = [part.strip().split()[0] for part in srcset.split(",") if part.strip()]
+        return urljoin(base_url, choices[-1]) if choices else ""
+
+    def _extract_catalog_page(
+        self,
+        html: str,
+        base_url: str,
+    ) -> tuple[list[Game], str]:
+        """Parse the exact Webflow catalogue structure observed in the D1 HAR."""
+        soup = BeautifulSoup(html or "", "html.parser")
+        found: dict[str, Game] = {}
+
+        for card in soup.select("div.item_portfolio"):
+            if not isinstance(card, Tag):
+                continue
+
+            detail = card.select_one("a.link_portfolio-game[href]")
+            name_node = card.select_one('[fs-list-field="name"]')
+            slug_node = card.select_one('[fs-list-field="slug"]')
+            demo_link: Tag | None = None
+            for anchor in card.find_all("a", href=True):
+                href = str(anchor.get("href") or "")
+                if (urlparse(urljoin(base_url, href)).hostname or "").casefold() == _DEMO_HOST:
+                    demo_link = anchor
+                    break
+
+            detail_url = (
+                urljoin(base_url, str(detail.get("href") or ""))
+                if isinstance(detail, Tag)
+                else ""
+            )
+            slug = (
+                " ".join(slug_node.stripped_strings).strip().casefold()
+                if isinstance(slug_node, Tag)
+                else ""
+            )
+            if not slug and detail_url:
+                path = urlparse(detail_url).path.rstrip("/")
+                slug = path.rsplit("/", 1)[-1].casefold()
+            if not slug:
+                continue
+
+            name = (
+                " ".join(name_node.stripped_strings).strip()
+                if isinstance(name_node, Tag)
+                else ""
+            )
+            if not name:
+                image = card.select_one("img.image_portfolio-game")
+                name = str(image.get("alt") or "").strip() if isinstance(image, Tag) else ""
+            if not name:
+                name = _slug_title(slug)
+
+            demo_url = (
+                urljoin(base_url, str(demo_link.get("href") or ""))
+                if isinstance(demo_link, Tag)
+                else ""
+            )
+            # Tester-Spin must open the actual demo runtime for protocol discovery.
+            # If a demo is unavailable, keep the detail page as a diagnostic fallback.
+            launch_url = demo_url or detail_url
+            symbol = self._demo_symbol(demo_url) if demo_url else ""
+
+            found[slug] = Game(
+                provider=self.key,
+                slug=slug,
+                name=name,
+                url=launch_url,
+                thumbnail_url=self._best_card_image(card, base_url),
+                symbol=symbol,
+            )
+
+        next_link = soup.select_one("a.w-pagination-next[href]")
+        next_url = ""
+        if isinstance(next_link, Tag):
+            next_url = urljoin(base_url, str(next_link.get("href") or "").strip())
+
+        return list(found.values()), next_url
+
+    def _persist_thumbnail(self, game: Game, progress: Progress) -> None:
+        if not game.thumbnail_url:
+            return
+        root = self.game_dir(game)
+        suffix = Path(urlparse(game.thumbnail_url).path).suffix.lower()
+        if suffix not in {".png", ".jpg", ".jpeg", ".webp", ".gif"}:
+            suffix = ".img"
+        target = root / f"thumbnail{suffix}"
+        if target.exists() and target.stat().st_size > 0:
+            game.thumbnail_path = str(target)
+            return
+        try:
+            response = self._worker_session().get(game.thumbnail_url, timeout=20.0)
+            response.raise_for_status()
+            target.write_bytes(response.content)
+            game.thumbnail_path = str(target)
+        except Exception as exc:
+            progress(f"[{game.name}] miniatura: {type(exc).__name__}: {exc}")
+
+    def crawl_catalog(
+        self,
+        *,
+        stop_event: threading.Event,
+        progress: Progress,
+        max_pages: int = 100,
+        on_game: GameCallback | None = None,
+    ) -> list[Game]:
+        limit = int(max_pages)
+        if limit <= 0:
+            limit = 1000
+
+        by_slug: dict[str, Game] = {}
+        visited: set[str] = set()
+        page_no = 1
+        url = self.catalog_url
+        raw_dir = self.provider_root / "catalog-pages"
+        raw_dir.mkdir(parents=True, exist_ok=True)
+
+        progress(
+            "D1 catálogo HAR: Webflow HTTP paginado; siguiendo el href real de "
+            "'cargar más' sin interacción gráfica."
+        )
+
+        while url and page_no <= limit and not stop_event.is_set():
+            if url in visited:
+                progress(f"D1 catálogo: ciclo de paginación detectado en {url}")
+                break
+            visited.add(url)
+
+            response = self.http.get(url, timeout=30.0, allow_redirects=True)
+            response.raise_for_status()
+            (raw_dir / f"page-{page_no:03d}.html").write_text(
+                response.text,
+                encoding="utf-8",
+                errors="replace",
+            )
+
+            page_games, next_url = self._extract_catalog_page(response.text, response.url)
+            new_count = 0
+            for game in page_games:
+                if game.slug in by_slug:
+                    continue
+                by_slug[game.slug] = game
+                new_count += 1
+                self._persist_thumbnail(game, progress)
+                if on_game is not None:
+                    on_game(game)
+                progress(
+                    f"  + D1 {game.name} [{game.symbol or game.slug}] — {game.url}"
+                )
+
+            progress(
+                f"D1 página {page_no}: juegos={len(page_games)}, "
+                f"nuevos={new_count}, total={len(by_slug)}, "
+                f"siguiente={'sí' if next_url else 'no'}"
+            )
+
+            if not page_games:
+                break
+            url = next_url
+            page_no += 1
+
+        games = sorted(by_slug.values(), key=lambda game: game.name.casefold())
+        (self.provider_root / "catalog.json").write_text(
+            json.dumps(
+                [
+                    {
+                        "provider": game.provider,
+                        "slug": game.slug,
+                        "name": game.name,
+                        "url": game.url,
+                        "thumbnail_url": game.thumbnail_url,
+                        "thumbnail_path": game.thumbnail_path,
+                        "symbol": game.symbol,
+                        "catalog_transport": "webflow_html",
+                        "runtime_transport": "websocket",
+                    }
+                    for game in games
+                ],
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        progress(f"Catálogo D1 terminado: {len(games)} juegos únicos.")
+        return games
+
+    @staticmethod
     def _frame_preview(payload: object, *, limit: int = 16384) -> dict[str, object]:
         if isinstance(payload, bytes):
             raw = payload[:limit]
@@ -180,8 +319,6 @@ class OneSpin4WinProvider(ProviderAdapter):
             return None
 
         candidates = [text]
-        # Socket.IO/event-stream style frames often prefix JSON with a small
-        # numeric/event marker, e.g. 42[...].
         starts = [index for index, char in enumerate(text[:64]) if char in "[{"]
         candidates.extend(text[index:] for index in starts if index > 0)
 
@@ -212,9 +349,10 @@ class OneSpin4WinProvider(ProviderAdapter):
         ):
             body = value.get("body")
             if isinstance(body, list):
-                for item in body:
-                    if isinstance(item, dict) and str(item.get("event") or "") == "sessionStart":
-                        return True
+                return any(
+                    isinstance(item, dict) and str(item.get("event") or "") == "sessionStart"
+                    for item in body
+                )
         return False
 
     @staticmethod
@@ -229,303 +367,6 @@ class OneSpin4WinProvider(ProviderAdapter):
             or host.endswith("googletagmanager.com")
             or host.endswith("doubleclick.net")
         )
-
-    def _game_from_candidate(
-        self,
-        data: dict[str, Any],
-        *,
-        source_url: str,
-        path: tuple[str, ...],
-    ) -> Game | None:
-        context = {part.casefold() for part in path}
-        game_context = bool(context & _GAME_CONTEXT_KEYS)
-        explicit_game_keys = any(
-            key in data
-            for key in (
-                "gameId",
-                "game_id",
-                "gameID",
-                "gameName",
-                "game_name",
-                "launchUrl",
-                "launch_url",
-                "gameUrl",
-                "game_url",
-            )
-        )
-
-        name = _pick(data, _NAME_KEYS)
-        game_id = _pick(data, _ID_KEYS)
-        launch_url = _pick(data, _URL_KEYS)
-        thumbnail = _pick(data, _IMAGE_KEYS)
-
-        # A generic object with {id,name,url} is too weak. Accept it only when
-        # nested below game/catalog semantics. Explicit game-specific keys may
-        # qualify without that context.
-        if not name:
-            if not game_id or not (game_context or explicit_game_keys):
-                return None
-            name = _slug_title(game_id)
-        if not game_id and not launch_url:
-            return None
-        if not (game_context or explicit_game_keys):
-            return None
-
-        slug_source = _pick(data, ("slug",)) or game_id or name
-        slug = _slugify(slug_source)
-        if launch_url:
-            launch_url = urljoin(source_url, launch_url)
-        else:
-            launch_url = source_url
-        if thumbnail:
-            thumbnail = urljoin(source_url, thumbnail)
-
-        return Game(
-            provider=self.key,
-            slug=slug,
-            name=name,
-            url=launch_url,
-            thumbnail_url=thumbnail,
-            symbol=game_id,
-        )
-
-    def _extract_games_from_ws_object(
-        self,
-        value: Any,
-        *,
-        source_url: str,
-        path: tuple[str, ...] = (),
-    ) -> list[Game]:
-        if self._is_webvisor_payload(value):
-            return []
-
-        found: dict[str, Game] = {}
-
-        def walk(node: Any, node_path: tuple[str, ...]) -> None:
-            if isinstance(node, dict):
-                game = self._game_from_candidate(node, source_url=source_url, path=node_path)
-                if game is not None:
-                    current = found.get(game.slug)
-                    if current is None:
-                        found[game.slug] = game
-                    else:
-                        if not current.symbol and game.symbol:
-                            current.symbol = game.symbol
-                        if current.url == source_url and game.url != source_url:
-                            current.url = game.url
-                        if not current.thumbnail_url and game.thumbnail_url:
-                            current.thumbnail_url = game.thumbnail_url
-                for key, child in node.items():
-                    walk(child, (*node_path, str(key)))
-            elif isinstance(node, list):
-                for index, child in enumerate(node):
-                    walk(child, (*node_path, str(index)))
-
-        walk(value, path)
-        return list(found.values())
-
-    def _persist_thumbnail(self, game: Game, progress: Progress) -> None:
-        if not game.thumbnail_url:
-            return
-        root = self.game_dir(game)
-        suffix = Path(urlparse(game.thumbnail_url).path).suffix.lower()
-        if suffix not in {".png", ".jpg", ".jpeg", ".webp", ".gif"}:
-            suffix = ".img"
-        target = root / f"thumbnail{suffix}"
-        if target.exists() and target.stat().st_size > 0:
-            game.thumbnail_path = str(target)
-            return
-        try:
-            response = self._worker_session().get(game.thumbnail_url, timeout=20.0)
-            response.raise_for_status()
-            target.write_bytes(response.content)
-            game.thumbnail_path = str(target)
-        except Exception as exc:
-            progress(f"[{game.name}] miniatura: {type(exc).__name__}: {exc}")
-
-    def _capture_catalog_websocket(
-        self,
-        *,
-        stop_event: threading.Event,
-        progress: Progress,
-        on_game: GameCallback | None,
-    ) -> list[Game]:
-        capture_path = self.provider_root / "catalog-websocket-capture.jsonl"
-        games: dict[str, Game] = {}
-        records: list[dict[str, Any]] = []
-        last_game_at: list[float | None] = [None]
-        socket_urls: set[str] = set()
-
-        try:
-            from playwright.sync_api import sync_playwright
-
-            with sync_playwright() as playwright:
-                browser = playwright.chromium.launch(headless=True)
-                context = browser.new_context()
-                page = context.new_page()
-
-                def append_record(record: dict[str, Any]) -> None:
-                    if len(records) < self._MAX_CAPTURED_FRAMES:
-                        records.append(record)
-
-                def on_websocket(ws) -> None:
-                    ws_url = str(ws.url)
-                    socket_urls.add(ws_url)
-                    noise_url = self._is_noise_websocket_url(ws_url)
-                    progress(
-                        f"D1 WS abierto: {ws_url}"
-                        + (" [telemetría ignorada]" if noise_url else "")
-                    )
-
-                    def capture(direction: str):
-                        def handler(payload) -> None:
-                            decoded = self._decode_ws_json(payload)
-                            telemetry = noise_url or self._is_webvisor_payload(decoded)
-                            extracted: list[Game] = []
-                            if not telemetry and decoded is not None:
-                                extracted = self._extract_games_from_ws_object(
-                                    decoded,
-                                    source_url=self.catalog_url,
-                                )
-                                for game in extracted:
-                                    existing = games.get(game.slug)
-                                    is_new = existing is None
-                                    if is_new:
-                                        games[game.slug] = game
-                                        self._persist_thumbnail(game, progress)
-                                        if on_game is not None:
-                                            on_game(game)
-                                        last_game_at[0] = time.monotonic()
-                                        progress(
-                                            f"  + D1 WS catálogo: {game.name} "
-                                            f"[{game.symbol or game.slug}]"
-                                        )
-                                    else:
-                                        if not existing.symbol and game.symbol:
-                                            existing.symbol = game.symbol
-                                        if existing.url == self.catalog_url and game.url != self.catalog_url:
-                                            existing.url = game.url
-                                        if not existing.thumbnail_url and game.thumbnail_url:
-                                            existing.thumbnail_url = game.thumbnail_url
-
-                            append_record(
-                                {
-                                    "t": time.time(),
-                                    "direction": direction,
-                                    "websocket_url": ws_url,
-                                    "classification": (
-                                        "telemetry_ignored"
-                                        if telemetry
-                                        else "catalog_data" if extracted else "provider_or_unknown"
-                                    ),
-                                    "games_extracted": [game.slug for game in extracted],
-                                    "payload": self._frame_preview(payload),
-                                }
-                            )
-
-                        return handler
-
-                    ws.on("framesent", capture("sent"))
-                    ws.on("framereceived", capture("received"))
-
-                page.on("websocket", on_websocket)
-                progress(
-                    "D1 catálogo: abriendo URL de entrada y esperando frames WebSocket; "
-                    "HTML/HTTP no se usa como fuente de catálogo."
-                )
-                page.goto(
-                    self.catalog_url,
-                    wait_until="domcontentloaded",
-                    timeout=30_000,
-                )
-
-                started = time.monotonic()
-                while not stop_event.is_set():
-                    elapsed = time.monotonic() - started
-                    if elapsed >= self._CATALOG_OBSERVE_MAX_S:
-                        break
-                    if (
-                        games
-                        and last_game_at[0] is not None
-                        and time.monotonic() - last_game_at[0] >= self._CATALOG_QUIET_AFTER_DATA_S
-                    ):
-                        break
-                    page.wait_for_timeout(250)
-
-                context.close()
-                browser.close()
-        except Exception as exc:
-            append = {
-                "t": time.time(),
-                "classification": "capture_error",
-                "error": f"{type(exc).__name__}: {exc}",
-            }
-            records.append(append)
-            progress(f"D1 catálogo WS: {append['error']}")
-
-        with capture_path.open("w", encoding="utf-8") as handle:
-            for record in records:
-                handle.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
-
-        diagnostic = {
-            "transport": "websocket",
-            "entry_url": self.catalog_url,
-            "websocket_urls": sorted(socket_urls),
-            "frames_captured": len(records),
-            "games_extracted": len(games),
-            "capture_file": str(capture_path),
-            "note": (
-                "D1 catalogue is sourced only from WebSocket frames. HTTP is used "
-                "only for page shell/static assets needed to establish the sockets."
-            ),
-        }
-        (self.provider_root / "catalog-websocket-summary.json").write_text(
-            json.dumps(diagnostic, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        return sorted(games.values(), key=lambda game: game.name.casefold())
-
-    def crawl_catalog(
-        self,
-        *,
-        stop_event: threading.Event,
-        progress: Progress,
-        max_pages: int = 100,
-        on_game: GameCallback | None = None,
-    ) -> list[Game]:
-        del max_pages
-        games = self._capture_catalog_websocket(
-            stop_event=stop_event,
-            progress=progress,
-            on_game=on_game,
-        )
-        (self.provider_root / "catalog.json").write_text(
-            json.dumps(
-                [
-                    {
-                        "provider": game.provider,
-                        "slug": game.slug,
-                        "name": game.name,
-                        "url": game.url,
-                        "thumbnail_url": game.thumbnail_url,
-                        "thumbnail_path": game.thumbnail_path,
-                        "symbol": game.symbol,
-                        "catalog_transport": "websocket",
-                    }
-                    for game in games
-                ],
-                ensure_ascii=False,
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
-        progress(f"Catálogo D1 WS terminado: {len(games)} juegos únicos.")
-        if not games:
-            progress(
-                "D1 WS: no se reconocieron objetos de catálogo. Revisá "
-                "catalog-websocket-capture.jsonl; no se hará fallback a HTML."
-            )
-        return games
 
     def _observe_game_websockets(
         self,
@@ -553,7 +394,7 @@ class OneSpin4WinProvider(ProviderAdapter):
 
                     def capture(direction: str):
                         def handler(payload) -> None:
-                            if len(frames) >= 200:
+                            if len(frames) >= 300:
                                 return
                             decoded = self._decode_ws_json(payload)
                             telemetry = noise_url or self._is_webvisor_payload(decoded)
@@ -562,12 +403,13 @@ class OneSpin4WinProvider(ProviderAdapter):
                                     "direction": direction,
                                     "websocket_url": url,
                                     "classification": (
-                                        "telemetry_ignored" if telemetry else "provider_or_unknown"
+                                        "telemetry_ignored"
+                                        if telemetry
+                                        else "provider_or_unknown"
                                     ),
                                     "payload": self._frame_preview(payload),
                                 }
                             )
-
                         return handler
 
                     ws.on("framesent", capture("sent"))
@@ -585,19 +427,22 @@ class OneSpin4WinProvider(ProviderAdapter):
         except Exception as exc:
             error = f"{type(exc).__name__}: {exc}"
 
-        payload = {
-            "entry_url": entry_url,
-            "transport": "websocket",
-            "websocket_urls": sockets,
-            "frames": frames,
-            "error": error,
-            "note": (
-                "Passive D1 runtime observation only. Provider/game data is classified "
-                "from WebSocket frames; no bet/spin frame is generated by this observer."
-            ),
-        }
         (attempt_dir / "runtime-websocket.json").write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2),
+            json.dumps(
+                {
+                    "entry_url": entry_url,
+                    "transport": "websocket",
+                    "websocket_urls": sockets,
+                    "frames": frames,
+                    "error": error,
+                    "note": (
+                        "Passive runtime observation only. The public catalogue is "
+                        "Webflow HTML, while game protocol discovery remains WebSocket."
+                    ),
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
             encoding="utf-8",
         )
         return sockets, frames, error
@@ -621,8 +466,8 @@ class OneSpin4WinProvider(ProviderAdapter):
         errors: list[str] = []
 
         progress(
-            f"[{game.name}] D1: catálogo/sesión/juego se tratan como WebSocket; "
-            "observando socket y frames sin enviar una apuesta."
+            f"[{game.name}] D1: abriendo demo observado en catálogo y capturando "
+            "el protocolo WebSocket."
         )
 
         for number in range(1, repetitions + 1):
@@ -643,15 +488,13 @@ class OneSpin4WinProvider(ProviderAdapter):
                         ok=True,
                         mode_id="WS_PROTOCOL_DISCOVERY",
                         mode_kind="DISCOVERY_WS",
-                        status_code=None,
-                        elapsed_ms=None,
                         symbol=game.symbol,
                         endpoint=sockets[0],
                         terminal=False,
                         wire_steps=len(frames),
                         warning=(
-                            "D1 es WS-native: socket observado, pero todavía falta "
-                            "clasificar handshake y frames de catalog/session/spin/bet/bonus/buy."
+                            "Socket D1 observado; falta clasificar handshake y frames "
+                            "spin/bet/bonus/buy antes de marcar una tirada como OK."
                         ),
                         artifact_dir=str(attempt_dir),
                     )
@@ -677,15 +520,13 @@ class OneSpin4WinProvider(ProviderAdapter):
                 progress(f"[{game.name}] WS discovery ERROR: {message}")
 
         elapsed_total = (time.monotonic() - started) * 1000.0
-        if observed_ok:
-            status = "PARCIAL"
-            error = (
-                "Transporte D1 confirmado/modelado como WebSocket para catálogo y juego; "
-                "falta automatizar handshake y frames reales de spin/bet/bonus/buy."
-            )
-        else:
-            status = "ERROR"
-            error = errors[0] if errors else "No se observó transporte WebSocket D1."
+        status = "PARCIAL" if observed_ok else "ERROR"
+        error = (
+            "Catálogo D1 resuelto desde Webflow; runtime WS observado. Falta "
+            "automatizar handshake y frames reales de spin/bet/bonus/buy."
+            if observed_ok
+            else (errors[0] if errors else "No se observó transporte WebSocket D1.")
+        )
 
         result = GameTestResult(
             provider=self.key,
@@ -702,8 +543,7 @@ class OneSpin4WinProvider(ProviderAdapter):
                     "id": "WS_PROTOCOL_DISCOVERY",
                     "kind": "DISCOVERY_WS",
                     "transport": "websocket",
-                    "catalog_transport": "websocket",
-                    "provider_data_http": False,
+                    "catalog_transport": "webflow_html",
                     "automated": True,
                     "spin_validated": False,
                 }
