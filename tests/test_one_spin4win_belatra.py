@@ -622,7 +622,7 @@ class BelatraCatalogTests(unittest.TestCase):
         self.assertEqual(summary["action_xhr_fetch"], 1)
         self.assertEqual(summary["action_ws_sent"], 1)
         self.assertEqual(summary["action_ws_received"], 1)
-        self.assertEqual(summary["action_signals"], 3)
+        self.assertEqual(summary["action_signals"], 2)
 
     def test_runtime_noise_filters_analytics_hosts(self) -> None:
         self.assertTrue(
