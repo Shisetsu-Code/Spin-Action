@@ -104,6 +104,85 @@ class OneSpin4WinCatalogTests(unittest.TestCase):
             ["VeryLucky1024", "testuser2", "debug", "", "01", "", ""],
         )
 
+    def test_observed_init_wire_recovers_runtime_parameters(self) -> None:
+        init = self.provider._parse_observed_init_wire(
+            'A/u2{"key":"","type":"0","data":",,freeplay,VeryLucky243,01,1,EUR,test"}'
+        )
+        self.assertEqual(
+            init,
+            {
+                "game_name": "VeryLucky243",
+                "version": "01",
+                "wallet": "1",
+                "currency": "EUR",
+            },
+        )
+
+    def test_runtime_spec_falls_back_to_observed_socket_when_assets_omit_gameurl(self) -> None:
+        game = Game(
+            provider=self.provider.key,
+            slug="very-lucky-243",
+            name="Very Lucky 243",
+            url=(
+                "https://gs.1spin4win.com:10443/gmh5/verylucky243.html?"
+                "currency=EUR&config=1&freeplay=true&language=en&exit=none"
+            ),
+            symbol="verylucky243",
+        )
+
+        class FakeResponse:
+            def __init__(self, url: str, text: str) -> None:
+                self.url = url
+                self.text = text
+                self.content = text.encode("utf-8")
+
+            def raise_for_status(self) -> None:
+                return None
+
+        class FakeSession:
+            cookies = type("Cookies", (), {"get_dict": lambda self: {}})()
+
+            def get(self, url: str, **_kwargs):
+                if url == game.url:
+                    return FakeResponse(
+                        game.url,
+                        '<html><script src="/gmh5/verylucky243.js"></script></html>',
+                    )
+                if url.endswith("/gmh5/verylucky243.js"):
+                    return FakeResponse(
+                        url,
+                        'this.gameController.connect('
+                        '"VeryLucky243","testuser2","debug","","01","","")',
+                    )
+                raise AssertionError(f"unexpected URL: {url}")
+
+        self.provider._worker_session = lambda: FakeSession()  # type: ignore[method-assign]
+        self.provider._observe_runtime_bootstrap = (  # type: ignore[method-assign]
+            lambda *_args, **_kwargs: {
+                "ws_url": "wss://gs.1spin4win.com:443/games",
+                "game_name": "VeryLucky243",
+                "version": "01",
+                "wallet": "1",
+                "currency": "EUR",
+                "frames": [],
+                "error": "",
+            }
+        )
+
+        with tempfile.TemporaryDirectory() as attempt:
+            spec = self.provider._discover_runtime_spec(
+                game,
+                timeout_s=5.0,
+                attempt_dir=Path(attempt),
+            )
+
+        self.assertEqual(spec["ws_url"], "wss://gs.1spin4win.com:443/games")
+        self.assertEqual(spec["game_name"], "VeryLucky243")
+        self.assertEqual(spec["version"], "01")
+        self.assertTrue(spec["discovery"]["runtime_fallback_used"])
+        self.assertFalse(spec["discovery"]["ws_from_static_assets"])
+        self.assertTrue(spec["discovery"]["connect_from_static_assets"])
+
     def test_wire_messages_match_observed_client_protocol(self) -> None:
         self.assertEqual(
             self.provider._wire_message(
