@@ -578,16 +578,33 @@ No confundir slug con provider ID.
 
 ## 4.8 Demo
 
-Host observado/conocido:
+Host:
 
 ```text
-https://free-slot.belatragames.com/play/<slug>
+https://free-slot.belatragames.com/
 ```
 
-Prioridad:
+El path `/play/<slug>` no usa siempre el mismo slug del catálogo corporativo.
 
-1. URL explícita encontrada en ficha;
-2. fallback por slug.
+Ejemplos observados:
+
+```text
+20-icy-fruits -> icy-fruits
+7-fruits      -> seven-fruits
+88-golden     -> 88-golden-88
+```
+
+Resolución:
+
+1. enlace explícito `/play/...`;
+2. slug corporativo;
+3. variantes derivadas (quitar prefijo numérico, duplicarlo al final, convertir número inicial a palabra cuando aplica);
+4. páginas `promotion-packs`;
+5. enlaces play y `Nickname` extraídos de promoción;
+6. GET de validación para cada candidato;
+7. sólo una respuesta válida se acepta como demo.
+
+Un 404 de un candidato no es error final: sólo descarta ese alias.
 
 ## 4.9 Runtime
 
