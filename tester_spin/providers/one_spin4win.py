@@ -370,24 +370,151 @@ class OneSpin4WinProvider(ProviderAdapter):
 
     @staticmethod
     def _parse_runtime_source(text: str) -> tuple[str, list[str]]:
+        source = text or ""
         ws_url = ""
         match = re.search(
             r"""gameURL\s*=\s*["'](wss?://[^"']+)["']""",
-            text or "",
+            source,
             re.I,
         )
+        if not match:
+            # Some D1 titles build the config differently but still contain the
+            # final socket literal somewhere in a bundled/minified asset.
+            match = re.search(r"""["'](wss?://[^"'\\s]+)["']""", source, re.I)
         if match:
             ws_url = match.group(1).strip()
 
         connect_args: list[str] = []
         match = re.search(
             r"""gameController\.connect\s*\(([^;]{1,500})\)""",
-            text or "",
+            source,
             re.I | re.S,
         )
         if match:
             connect_args = re.findall(r"""["']([^"']*)["']""", match.group(1))
         return ws_url, connect_args
+
+    @staticmethod
+    def _parse_observed_init_wire(payload: object) -> dict[str, str] | None:
+        if isinstance(payload, bytes):
+            try:
+                text = payload.decode("utf-8")
+            except UnicodeDecodeError:
+                return None
+        else:
+            text = str(payload)
+
+        if not text.startswith("A/u2"):
+            return None
+        try:
+            envelope = json.loads(text[4:])
+        except json.JSONDecodeError:
+            return None
+        if str(envelope.get("type")) != "0":
+            return None
+
+        fields = str(envelope.get("data") or "").split(",")
+        if len(fields) < 7 or fields[2].casefold() != "freeplay":
+            return None
+        game_name = fields[3].strip()
+        version = fields[4].strip()
+        wallet = fields[5].strip()
+        currency = fields[6].strip()
+        if not game_name or not version:
+            return None
+        return {
+            "game_name": game_name,
+            "version": version,
+            "wallet": wallet,
+            "currency": currency,
+        }
+
+    def _observe_runtime_bootstrap(
+        self,
+        entry_url: str,
+        *,
+        timeout_s: float,
+        attempt_dir: Path,
+    ) -> dict[str, Any]:
+        observed: dict[str, Any] = {
+            "ws_url": "",
+            "game_name": "",
+            "version": "",
+            "wallet": "",
+            "currency": "",
+            "frames": [],
+            "error": "",
+        }
+        try:
+            from playwright.sync_api import sync_playwright
+
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch(headless=True)
+                context = browser.new_context()
+                page = context.new_page()
+
+                def on_websocket(ws) -> None:
+                    ws_url = str(ws.url)
+                    if self._is_noise_websocket_url(ws_url):
+                        return
+                    if not observed["ws_url"]:
+                        observed["ws_url"] = ws_url
+
+                    def on_sent(payload) -> None:
+                        if len(observed["frames"]) < 80:
+                            observed["frames"].append(
+                                {
+                                    "direction": "sent",
+                                    "websocket_url": ws_url,
+                                    "payload": self._frame_preview(payload),
+                                }
+                            )
+                        init = self._parse_observed_init_wire(payload)
+                        if init:
+                            for key, value in init.items():
+                                if value and not observed.get(key):
+                                    observed[key] = value
+
+                    def on_received(payload) -> None:
+                        if len(observed["frames"]) < 80:
+                            observed["frames"].append(
+                                {
+                                    "direction": "received",
+                                    "websocket_url": ws_url,
+                                    "payload": self._frame_preview(payload),
+                                }
+                            )
+
+                    ws.on("framesent", on_sent)
+                    ws.on("framereceived", on_received)
+
+                page.on("websocket", on_websocket)
+                page.goto(
+                    entry_url,
+                    wait_until="domcontentloaded",
+                    timeout=max(1_000, int(timeout_s * 1000)),
+                )
+
+                deadline = time.monotonic() + min(max(timeout_s, 3.0), 12.0)
+                while time.monotonic() < deadline:
+                    if (
+                        observed["ws_url"]
+                        and observed["game_name"]
+                        and observed["version"]
+                    ):
+                        break
+                    page.wait_for_timeout(200)
+
+                context.close()
+                browser.close()
+        except Exception as exc:
+            observed["error"] = f"{type(exc).__name__}: {exc}"
+
+        (attempt_dir / "runtime-bootstrap-observed.json").write_text(
+            json.dumps(observed, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        return observed
 
     @staticmethod
     def _script_references(text: str) -> list[str]:
@@ -431,15 +558,14 @@ class OneSpin4WinProvider(ProviderAdapter):
 
         soup = BeautifulSoup(response.text or "", "html.parser")
         queue: list[str] = []
+        ws_url, connect_args = self._parse_runtime_source(response.text)
         for node in soup.find_all("script", src=True):
             src = urljoin(response.url, str(node.get("src") or ""))
             if src and src not in queue:
                 queue.append(src)
 
         scanned: list[str] = []
-        ws_url = ""
-        connect_args: list[str] = []
-        while queue and len(scanned) < 16:
+        while queue and len(scanned) < 32:
             src = queue.pop(0)
             if src in scanned:
                 continue
@@ -466,17 +592,40 @@ class OneSpin4WinProvider(ProviderAdapter):
                 if child not in scanned and child not in queue:
                     queue.append(child)
 
-        if not ws_url:
-            raise RuntimeError("D1: no se resolvió gameURL WebSocket desde los assets.")
-        if len(connect_args) < 7:
-            raise RuntimeError("D1: no se resolvió gameController.connect(...) desde el JS.")
+        observed: dict[str, Any] = {}
+        if not ws_url or len(connect_args) < 7:
+            observed = self._observe_runtime_bootstrap(
+                response.url,
+                timeout_s=timeout_s,
+                attempt_dir=attempt_dir,
+            )
+            if not ws_url:
+                ws_url = str(observed.get("ws_url") or "").strip()
 
-        game_name = connect_args[0].strip()
-        version = connect_args[4].strip()
-        wallet = (query.get("config") or [connect_args[5]])[0].strip()
-        currency = (query.get("currency") or [connect_args[6]])[0].strip()
+        if len(connect_args) >= 7:
+            game_name = connect_args[0].strip()
+            version = connect_args[4].strip()
+            wallet = connect_args[5].strip()
+            currency = connect_args[6].strip()
+        else:
+            game_name = str(observed.get("game_name") or "").strip()
+            version = str(observed.get("version") or "").strip()
+            wallet = str(observed.get("wallet") or "").strip()
+            currency = str(observed.get("currency") or "").strip()
+
+        wallet = (query.get("config") or [wallet])[0].strip()
+        currency = (query.get("currency") or [currency])[0].strip()
+
+        if not ws_url:
+            detail = str(observed.get("error") or "").strip()
+            raise RuntimeError(
+                "D1: no se resolvió WebSocket ni desde assets ni observando runtime"
+                + (f" ({detail})" if detail else ".")
+            )
         if not game_name or not version:
-            raise RuntimeError("D1: runtime gameName/version incompletos.")
+            raise RuntimeError(
+                "D1: no se resolvió gameName/version ni desde JS ni desde el init WS observado."
+            )
         if not currency:
             currency = "EUR"
 
@@ -490,6 +639,11 @@ class OneSpin4WinProvider(ProviderAdapter):
             "freeplay": True,
             "demo_url": response.url,
             "scripts_scanned": scanned,
+            "discovery": {
+                "ws_from_static_assets": not bool(observed) or bool(ws_url and not observed.get("ws_url")),
+                "runtime_fallback_used": bool(observed),
+                "runtime_fallback_error": str(observed.get("error") or "") if observed else "",
+            },
         }
         (attempt_dir / "runtime-spec.json").write_text(
             json.dumps(spec, ensure_ascii=False, indent=2),
