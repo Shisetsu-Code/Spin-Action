@@ -577,3 +577,31 @@ No cambies protocolos ya resueltos sin nueva evidencia.
 ```
 
 Después adjuntar únicamente el HAR/log que corresponda al siguiente problema.
+
+## 15.1 runtime-activity.json
+
+Cuando Belatra queda `PARCIAL`, revisar:
+
+```text
+<attempt>/runtime-activity.json
+```
+
+Campos principales:
+
+```text
+action
+summary
+websocket_urls
+events
+error
+```
+
+`summary.action_signals` cuenta señales posteriores a la entrada de diagnóstico.
+
+Interpretación:
+
+- `action_signals > 0`: hay tráfico correlacionado que vale la pena clasificar;
+- `action_signals = 0`: la entrada no activó el juego o el protocolo no usa una señal detectable por esos criterios;
+- `error != ""`: falló el browser/captura, pero el bootstrap HTTP puede seguir siendo válido.
+
+Para continuar el análisis en otro chat, adjuntar preferentemente `runtime-activity.json` de uno o dos juegos que produzcan señales.
