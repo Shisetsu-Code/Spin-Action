@@ -4,3 +4,5 @@ Pillow>=10.4,<12
 playwright>=1.55,<2
 
 websocket-client>=1.8,<2
+
+cryptography>=45,<47

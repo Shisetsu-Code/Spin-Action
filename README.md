@@ -29,13 +29,14 @@ Proveedores disponibles: **Pragmatic Play**, **1spin4win (D1)** y **Belatra Game
 ### Belatra Games
 
 - El catálogo de slots usa la ruta observada `https://belatragames.com/es/games/category/2`.
-- La aplicación oficial es Next.js: los juegos no se obtienen de anchors HTML sino de los objetos `games[]` embebidos en el stream RSC de `self.__next_f.push(...)`.
-- Los chunks Next se decodifican y concatenan antes de aplicar `json.JSONDecoder.raw_decode()`, porque un objeto grande puede quedar partido entre varios `<script>`.
-- La paginación usa rutas `/es/games/category/2/N` y metadata `current_page`, `last_page`, `per_page` y `total`. En el HAR de referencia se observaron 25 juegos/página, 5 páginas y 104 slots.
-- Cada juego conserva `id`, `title`, `slug`, URL de ficha y la mejor miniatura disponible (preferencia desktop `webp_x2`/alta resolución).
-- Usa `https://free-slot.belatragames.com/play/<slug>` como fallback de demo cuando la ficha no expone el enlace directamente.
-- En cada prueba realiza bootstrap HTTP de ficha+demo, guarda HTML, scripts y candidatos de endpoints en `bootstrap-discovery.json`.
-- Hasta disponer de una captura HAR/runtime que demuestre el contrato real de tirada/bonus/buy, Belatra se marca `PARCIAL` y nunca `OK` por un simple HTTP 200.
+- La aplicación oficial es Next.js: los juegos se extraen de `games[]` dentro del stream RSC de `self.__next_f.push(...)`; la paginación usa `current_page`, `last_page`, `per_page` y `total`.
+- En el HAR de referencia se observaron 25 juegos/página, 5 páginas y 104 slots.
+- La ficha corporativa actual publica un iframe `https://demo.bltr-static.com/belatra/demo?game=<nickname>`; aliases `free-slot` se conservan como fallback histórico.
+- La demo crea una sesión y expone `var config` con `request_crypt`, `sc`, `sid`, `modification` y `nickname`.
+- El runtime funcional confirmado es HTTP cifrado: `POST https://demo.bltr-static.com/game`. El único WebSocket del HAR era Yandex/WebVisor.
+- Tester-Spin reproduce el cifrado AES-CTR del cliente y ejecuta el spin base endpoint-first: `enter → start → finish`.
+- Un spin queda `OK` sólo cuando `start.phaseNext=toPaid` y `finish` termina en `phaseCur=finished`, `phaseNext=toIdle`.
+- Features/buy/free-spins no observados todavía quedan `PARCIAL` con la respuesta descifrada preservada.
 
 ### 1spin4win (D1)
 
