@@ -434,21 +434,143 @@ class BelatraCatalogTests(unittest.TestCase):
             symbol="77",
         )
 
-    def test_resolve_demo_url_uses_observed_free_slot_url(self) -> None:
-        game = self._game()
-        html = (
-            '<script>window.demo="https://free-slot.belatragames.com/play/just-a-bingo";</script>'
+    def test_demo_slug_candidates_cover_observed_historical_aliases(self) -> None:
+        icy = Game(
+            provider=self.provider.key,
+            slug="20-icy-fruits",
+            name="20 Icy Fruits",
+            url="https://belatragames.com/es/games/game/20-icy-fruits",
         )
-        self.assertEqual(
-            self.provider._resolve_demo_url(game, html),
-            "https://free-slot.belatragames.com/play/just-a-bingo",
+        fruits = Game(
+            provider=self.provider.key,
+            slug="7-fruits",
+            name="7 Fruits",
+            url="https://belatragames.com/es/games/game/7-fruits",
+        )
+        golden = Game(
+            provider=self.provider.key,
+            slug="88-golden",
+            name="88 Golden",
+            url="https://belatragames.com/es/games/game/88-golden",
         )
 
-    def test_resolve_demo_url_has_safe_slug_fallback(self) -> None:
-        game = self._game()
+        self.assertIn("icy-fruits", self.provider._demo_slug_candidates(icy))
+        self.assertIn("seven-fruits", self.provider._demo_slug_candidates(fruits))
+        self.assertIn("88-golden-88", self.provider._demo_slug_candidates(golden))
+
+    def test_extract_demo_links_accepts_absolute_and_relative_play_paths(self) -> None:
+        html = (
+            '<a href="/play/icy-fruits">A</a>'
+            '<script>window.demo="https://free-slot.belatragames.com/es/play/7-fruits";</script>'
+        )
+        links = self.provider._extract_demo_links(html)
+        self.assertIn("https://free-slot.belatragames.com/play/icy-fruits", links)
+        self.assertIn("https://free-slot.belatragames.com/es/play/7-fruits", links)
+
+    def test_resolve_demo_response_skips_404_alias_and_selects_valid_candidate(self) -> None:
+        game = Game(
+            provider=self.provider.key,
+            slug="20-icy-fruits",
+            name="20 Icy Fruits",
+            url="https://belatragames.com/es/games/game/20-icy-fruits",
+            symbol="98",
+        )
+
+        class FakeResponse:
+            def __init__(self, url: str, status_code: int, text: str = "<html></html>") -> None:
+                self.url = url
+                self.status_code = status_code
+                self.text = text
+                self.content = text.encode("utf-8")
+
+            def raise_for_status(self) -> None:
+                if self.status_code >= 400:
+                    import requests
+                    raise requests.HTTPError(f"{self.status_code}")
+
+        class FakeSession:
+            def __init__(self) -> None:
+                self.seen: list[str] = []
+
+            def get(self, url: str, **_kwargs):
+                self.seen.append(url)
+                if url.endswith("/play/20-icy-fruits"):
+                    return FakeResponse(url, 404)
+                if url.endswith("/es/play/20-icy-fruits"):
+                    return FakeResponse(url, 404)
+                if url.endswith("/play/icy-fruits"):
+                    return FakeResponse(url, 200, "<html><script src='/game.js'></script></html>")
+                return FakeResponse(url, 404)
+
+        session = FakeSession()
+        with tempfile.TemporaryDirectory() as attempt:
+            response = self.provider._resolve_demo_response(
+                session,  # type: ignore[arg-type]
+                game,
+                "<html></html>",
+                timeout_s=5.0,
+                attempt_dir=Path(attempt),
+            )
+            evidence = json.loads(
+                (Path(attempt) / "demo-resolution.json").read_text(encoding="utf-8")
+            )
+
         self.assertEqual(
-            self.provider._resolve_demo_url(game, "<html></html>"),
-            "https://free-slot.belatragames.com/play/just-a-bingo",
+            response.url,
+            "https://free-slot.belatragames.com/play/icy-fruits",
+        )
+        self.assertEqual(
+            evidence["selected_url"],
+            "https://free-slot.belatragames.com/play/icy-fruits",
+        )
+        self.assertIn(
+            "https://free-slot.belatragames.com/play/20-icy-fruits",
+            session.seen,
+        )
+        self.assertIn(
+            "https://free-slot.belatragames.com/play/icy-fruits",
+            session.seen,
+        )
+
+    def test_promotion_pack_nickname_adds_demo_candidate(self) -> None:
+        game = Game(
+            provider=self.provider.key,
+            slug="legacy-foo",
+            name="Legacy Foo",
+            url="https://belatragames.com/es/games/game/legacy-foo",
+        )
+
+        class FakeResponse:
+            def __init__(self, url: str, status_code: int, text: str = "") -> None:
+                self.url = url
+                self.status_code = status_code
+                self.text = text
+                self.content = text.encode("utf-8")
+
+        class FakeSession:
+            def get(self, url: str, **_kwargs):
+                if "/promotion-packs/legacy-foo" in url:
+                    return FakeResponse(
+                        url,
+                        200,
+                        "<html><body><div>Nickname:</div><div>legacy_internal</div></body></html>",
+                    )
+                if url.endswith("/play/legacy-internal"):
+                    return FakeResponse(url, 200, "<html></html>")
+                return FakeResponse(url, 404)
+
+        with tempfile.TemporaryDirectory() as attempt:
+            response = self.provider._resolve_demo_response(
+                FakeSession(),  # type: ignore[arg-type]
+                game,
+                "",
+                timeout_s=5.0,
+                attempt_dir=Path(attempt),
+            )
+
+        self.assertEqual(
+            response.url,
+            "https://free-slot.belatragames.com/play/legacy-internal",
         )
 
     def test_successful_bootstrap_remains_partial_not_spin_ok(self) -> None:
