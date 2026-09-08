@@ -368,6 +368,339 @@ class OneSpin4WinProvider(ProviderAdapter):
             or host.endswith("doubleclick.net")
         )
 
+    @staticmethod
+    def _parse_runtime_source(text: str) -> tuple[str, list[str]]:
+        ws_url = ""
+        match = re.search(
+            r"""gameURL\s*=\s*["'](wss?://[^"']+)["']""",
+            text or "",
+            re.I,
+        )
+        if match:
+            ws_url = match.group(1).strip()
+
+        connect_args: list[str] = []
+        match = re.search(
+            r"""gameController\.connect\s*\(([^;]{1,500})\)""",
+            text or "",
+            re.I | re.S,
+        )
+        if match:
+            connect_args = re.findall(r"""["']([^"']*)["']""", match.group(1))
+        return ws_url, connect_args
+
+    @staticmethod
+    def _script_references(text: str) -> list[str]:
+        refs: list[str] = []
+        patterns = (
+            r"""addJSFile\s*\(\s*["']([^"']+)["']\s*\)""",
+            r"""script\.src\s*=\s*["']([^"']+)["']""",
+        )
+        for pattern in patterns:
+            for match in re.finditer(pattern, text or "", re.I):
+                value = match.group(1).strip()
+                if value and value not in refs:
+                    refs.append(value)
+        return refs
+
+    def _discover_runtime_spec(
+        self,
+        game: Game,
+        *,
+        timeout_s: float,
+        attempt_dir: Path,
+    ) -> dict[str, Any]:
+        session = self._worker_session()
+        response = session.get(game.url, timeout=timeout_s, allow_redirects=True)
+        response.raise_for_status()
+        attempt_dir.mkdir(parents=True, exist_ok=True)
+        (attempt_dir / "demo-page.html").write_text(
+            response.text,
+            encoding="utf-8",
+            errors="replace",
+        )
+
+        parsed_demo = urlparse(response.url)
+        origin = f"{parsed_demo.scheme}://{parsed_demo.netloc}"
+        query = parse_qs(parsed_demo.query)
+        freeplay = (query.get("freeplay") or [""])[0].casefold() == "true"
+        if not freeplay:
+            raise RuntimeError(
+                "D1 direct WS sólo está habilitado para la demo pública freeplay."
+            )
+
+        soup = BeautifulSoup(response.text or "", "html.parser")
+        queue: list[str] = []
+        for node in soup.find_all("script", src=True):
+            src = urljoin(response.url, str(node.get("src") or ""))
+            if src and src not in queue:
+                queue.append(src)
+
+        scanned: list[str] = []
+        ws_url = ""
+        connect_args: list[str] = []
+        while queue and len(scanned) < 16:
+            src = queue.pop(0)
+            if src in scanned:
+                continue
+            scanned.append(src)
+            try:
+                js = session.get(src, timeout=min(timeout_s, 20.0), allow_redirects=True)
+                js.raise_for_status()
+                if len(js.content) > 8 * 1024 * 1024:
+                    continue
+                text = js.text
+            except Exception:
+                continue
+
+            candidate_ws, candidate_args = self._parse_runtime_source(text)
+            if candidate_ws and not ws_url:
+                ws_url = candidate_ws
+            if len(candidate_args) >= 7 and not connect_args:
+                connect_args = candidate_args[:7]
+
+            # These paths are inserted into the document by the loader, so they
+            # resolve against the demo document URL, not against the loader file.
+            for ref in self._script_references(text):
+                child = urljoin(response.url, ref)
+                if child not in scanned and child not in queue:
+                    queue.append(child)
+
+        if not ws_url:
+            raise RuntimeError("D1: no se resolvió gameURL WebSocket desde los assets.")
+        if len(connect_args) < 7:
+            raise RuntimeError("D1: no se resolvió gameController.connect(...) desde el JS.")
+
+        game_name = connect_args[0].strip()
+        version = connect_args[4].strip()
+        wallet = (query.get("config") or [connect_args[5]])[0].strip()
+        currency = (query.get("currency") or [connect_args[6]])[0].strip()
+        if not game_name or not version:
+            raise RuntimeError("D1: runtime gameName/version incompletos.")
+        if not currency:
+            currency = "EUR"
+
+        spec = {
+            "ws_url": ws_url,
+            "origin": origin,
+            "game_name": game_name,
+            "version": version,
+            "wallet": wallet,
+            "currency": currency,
+            "freeplay": True,
+            "demo_url": response.url,
+            "scripts_scanned": scanned,
+        }
+        (attempt_dir / "runtime-spec.json").write_text(
+            json.dumps(spec, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        return spec
+
+    def _open_websocket(self, spec: dict[str, Any], timeout_s: float):
+        import websocket
+
+        cookie = "; ".join(
+            f"{name}={value}"
+            for name, value in self._worker_session().cookies.get_dict().items()
+        )
+        return websocket.create_connection(
+            str(spec["ws_url"]),
+            timeout=max(1.0, float(timeout_s)),
+            origin=str(spec["origin"]),
+            cookie=cookie or None,
+            header=[
+                "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:155.0) "
+                "Gecko/20100101 Firefox/155.0"
+            ],
+        )
+
+    @staticmethod
+    def _wire_message(message_type: str, data: str, *, key: str = "") -> str:
+        return "A/u2" + json.dumps(
+            {"key": key, "type": str(message_type), "data": data},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+
+    @staticmethod
+    def _int_field(value: Any, default: int = 0) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    @classmethod
+    def _d1_feature_active(cls, payload: dict[str, Any]) -> bool:
+        state = cls._int_field(payload.get("st"), 0)
+        return state in {5, 6, 11, 12}
+
+    def _recv_protocol_json(
+        self,
+        ws,
+        *,
+        deadline: float,
+        frames: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        while time.monotonic() < deadline:
+            raw = ws.recv()
+            frames.append(
+                {
+                    "direction": "received",
+                    "payload": self._frame_preview(raw),
+                }
+            )
+            if raw == "pns":
+                pong = "A/pns"
+                ws.send(pong)
+                frames.append(
+                    {
+                        "direction": "sent",
+                        "payload": self._frame_preview(pong),
+                        "classification": "keepalive",
+                    }
+                )
+                continue
+            decoded = self._decode_ws_json(raw)
+            if isinstance(decoded, dict):
+                return decoded
+        raise TimeoutError("D1: timeout esperando frame JSON del servidor.")
+
+    def _execute_direct_ws_spin(
+        self,
+        game: Game,
+        *,
+        timeout_s: float,
+        attempt_dir: Path,
+        wire_guard: int = 128,
+    ) -> tuple[bool, bool, float, str, list[dict[str, Any]], str]:
+        started = time.monotonic()
+        spec = self._discover_runtime_spec(
+            game,
+            timeout_s=timeout_s,
+            attempt_dir=attempt_dir,
+        )
+        frames: list[dict[str, Any]] = []
+        warning = ""
+        ws = self._open_websocket(spec, timeout_s)
+        try:
+            init_data = (
+                f",,freeplay,{spec['game_name']},{spec['version']},"
+                f"{spec['wallet']},{spec['currency']},test"
+            )
+            init_wire = self._wire_message("0", init_data)
+            ws.send(init_wire)
+            frames.append(
+                {
+                    "direction": "sent",
+                    "classification": "init",
+                    "payload": self._frame_preview(init_wire),
+                }
+            )
+
+            deadline = time.monotonic() + max(2.0, timeout_s)
+            init_payload: dict[str, Any] | None = None
+            while time.monotonic() < deadline:
+                payload = self._recv_protocol_json(
+                    ws,
+                    deadline=deadline,
+                    frames=frames,
+                )
+                message_type = self._int_field(payload.get("type"), -1)
+                if message_type == 2:
+                    raise RuntimeError(
+                        "D1 init error: "
+                        + str(payload.get("error") or payload.get("errorCode") or payload)
+                    )
+                if message_type == 1:
+                    init_payload = payload
+                    break
+
+            if init_payload is None:
+                raise TimeoutError("D1: no llegó respuesta type=1 de inicialización.")
+
+            lines = self._int_field(init_payload.get("l"), 0)
+            bet_index = self._int_field(init_payload.get("b3"), -1)
+            if lines <= 0 or bet_index < 0:
+                raise RuntimeError(
+                    f"D1 init incompleto: l={init_payload.get('l')!r}, "
+                    f"b3={init_payload.get('b3')!r}"
+                )
+
+            result_payload: dict[str, Any] | None = None
+            terminal = False
+            steps = 0
+            while steps < wire_guard:
+                steps += 1
+                play_data = f"{lines},{bet_index},0"
+                play_wire = self._wire_message("1", play_data)
+                ws.send(play_wire)
+                frames.append(
+                    {
+                        "direction": "sent",
+                        "classification": "spin" if steps == 1 else "continuation",
+                        "payload": self._frame_preview(play_wire),
+                    }
+                )
+
+                result_deadline = time.monotonic() + max(2.0, timeout_s)
+                while time.monotonic() < result_deadline:
+                    payload = self._recv_protocol_json(
+                        ws,
+                        deadline=result_deadline,
+                        frames=frames,
+                    )
+                    message_type = self._int_field(payload.get("type"), -1)
+                    if message_type == 2:
+                        raise RuntimeError(
+                            "D1 spin error: "
+                            + str(payload.get("error") or payload.get("errorCode") or payload)
+                        )
+                    if message_type == 3:
+                        result_payload = payload
+                        break
+                if result_payload is None:
+                    raise TimeoutError("D1: no llegó resultado type=3 de la tirada.")
+
+                if not self._d1_feature_active(result_payload):
+                    terminal = True
+                    break
+
+                # The official client continues bonus/free-spin states through the
+                # same playGame() -> type=1 path. Reuse lines/betIndex and guard
+                # against malformed or endless feature state.
+                bet_index = self._int_field(result_payload.get("b3"), bet_index)
+                lines = self._int_field(result_payload.get("l"), lines)
+                result_payload = None
+
+            if not terminal:
+                warning = f"D1: límite de {wire_guard} continuaciones WS alcanzado."
+
+            elapsed_ms = (time.monotonic() - started) * 1000.0
+            artifact = {
+                "spec": spec,
+                "terminal": terminal,
+                "wire_steps": steps,
+                "warning": warning,
+                "frames": frames,
+                "final_result": result_payload,
+            }
+            (attempt_dir / "ws-attempt.json").write_text(
+                json.dumps(artifact, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            return True, terminal, elapsed_ms, str(spec["ws_url"]), frames, warning
+        finally:
+            try:
+                close_wire = self._wire_message("3", "close")
+                ws.send(close_wire)
+            except Exception:
+                pass
+            try:
+                ws.close()
+            except Exception:
+                pass
+
     def _observe_game_websockets(
         self,
         entry_url: str,
@@ -460,14 +793,16 @@ class OneSpin4WinProvider(ProviderAdapter):
         started_iso = utc_now_iso()
         started = time.monotonic()
         stamp = time.strftime("%Y-%m-%d_%H-%M-%S")
-        run_dir = self.game_dir(game) / "tests" / f"{stamp}-1spin4win-ws-discovery"
+        run_dir = self.game_dir(game) / "tests" / f"{stamp}-1spin4win-direct-ws"
         attempts: list[SpinAttempt] = []
-        observed_ok = 0
+        successes = 0
+        responded = 0
         errors: list[str] = []
+        resolved_symbol = game.symbol
 
         progress(
-            f"[{game.name}] D1: abriendo demo observado en catálogo y capturando "
-            "el protocolo WebSocket."
+            f"[{game.name}] D1: ejecutando {repetitions} tirada(s) directamente "
+            "contra el WebSocket del cliente oficial."
         )
 
         for number in range(1, repetitions + 1):
@@ -475,58 +810,82 @@ class OneSpin4WinProvider(ProviderAdapter):
                 break
             attempt_dir = run_dir / f"attempt-{number:03d}"
             attempt_dir.mkdir(parents=True, exist_ok=True)
-            sockets, frames, runtime_error = self._observe_game_websockets(
-                game.url,
-                timeout_s=timeout_s,
-                attempt_dir=attempt_dir,
-            )
-            if sockets:
-                observed_ok += 1
+            try:
+                ok, terminal, elapsed_ms, endpoint, frames, warning = (
+                    self._execute_direct_ws_spin(
+                        game,
+                        timeout_s=timeout_s,
+                        attempt_dir=attempt_dir,
+                    )
+                )
+                responded += int(ok)
+                successes += int(ok and terminal)
+
+                try:
+                    spec = json.loads(
+                        (attempt_dir / "runtime-spec.json").read_text(encoding="utf-8")
+                    )
+                    resolved_symbol = str(spec.get("game_name") or resolved_symbol)
+                except Exception:
+                    pass
+
                 attempts.append(
                     SpinAttempt(
                         number=number,
-                        ok=True,
-                        mode_id="WS_PROTOCOL_DISCOVERY",
-                        mode_kind="DISCOVERY_WS",
-                        symbol=game.symbol,
-                        endpoint=sockets[0],
-                        terminal=False,
-                        wire_steps=len(frames),
-                        warning=(
-                            "Socket D1 observado; falta clasificar handshake y frames "
-                            "spin/bet/bonus/buy antes de marcar una tirada como OK."
+                        ok=ok,
+                        mode_id="SPIN",
+                        mode_kind="SPIN",
+                        elapsed_ms=elapsed_ms,
+                        symbol=resolved_symbol,
+                        endpoint=endpoint,
+                        terminal=terminal,
+                        wire_steps=sum(
+                            1
+                            for frame in frames
+                            if frame.get("direction") == "sent"
+                            and frame.get("classification") in {"spin", "continuation"}
                         ),
+                        warning=warning,
                         artifact_dir=str(attempt_dir),
                     )
                 )
                 progress(
-                    f"[{game.name}] WS observado: sockets={len(sockets)}, frames={len(frames)}"
+                    f"[{game.name}] SPIN {number}/{repetitions}: "
+                    f"{'OK' if terminal else 'PARCIAL'} {elapsed_ms:.0f} ms, "
+                    f"frames={len(frames)}"
+                    + (f"; {warning}" if warning else "")
                 )
-            else:
-                message = runtime_error or "No se observó un WebSocket funcional de D1."
+            except Exception as exc:
+                message = f"{type(exc).__name__}: {exc}"
                 errors.append(message)
                 attempts.append(
                     SpinAttempt(
                         number=number,
                         ok=False,
-                        mode_id="WS_PROTOCOL_DISCOVERY",
-                        mode_kind="DISCOVERY_WS",
-                        symbol=game.symbol,
+                        mode_id="SPIN",
+                        mode_kind="SPIN",
+                        symbol=resolved_symbol,
                         terminal=False,
                         error=message,
                         artifact_dir=str(attempt_dir),
                     )
                 )
-                progress(f"[{game.name}] WS discovery ERROR: {message}")
+                progress(f"[{game.name}] SPIN {number}/{repetitions}: ERROR {message}")
 
         elapsed_total = (time.monotonic() - started) * 1000.0
-        status = "PARCIAL" if observed_ok else "ERROR"
-        error = (
-            "Catálogo D1 resuelto desde Webflow; runtime WS observado. Falta "
-            "automatizar handshake y frames reales de spin/bet/bonus/buy."
-            if observed_ok
-            else (errors[0] if errors else "No se observó transporte WebSocket D1.")
-        )
+        attempted = len(attempts)
+        if attempted and successes == attempted:
+            status = "OK"
+            error = ""
+        elif responded:
+            status = "PARCIAL"
+            error = (
+                f"D1 respondió {responded}/{attempted}; "
+                f"tiradas terminales={successes}/{attempted}."
+            )
+        else:
+            status = "ERROR"
+            error = errors[0] if errors else "No se completó ninguna tirada D1."
 
         result = GameTestResult(
             provider=self.key,
@@ -534,18 +893,22 @@ class OneSpin4WinProvider(ProviderAdapter):
             game_name=game.name,
             game_url=game.url,
             requested_spins=repetitions,
-            successful_spins=0,
+            successful_spins=successes,
             failed_spins=sum(1 for attempt in attempts if not attempt.ok),
             status=status,
-            symbol=game.symbol,
+            symbol=resolved_symbol,
             discovered_modes=[
                 {
-                    "id": "WS_PROTOCOL_DISCOVERY",
-                    "kind": "DISCOVERY_WS",
+                    "id": "SPIN",
+                    "kind": "SPIN",
                     "transport": "websocket",
                     "catalog_transport": "webflow_html",
                     "automated": True,
-                    "spin_validated": False,
+                    "spin_validated": successes > 0,
+                    "wire_prefix": "A/u2",
+                    "init_type": "0",
+                    "spin_type": "1",
+                    "result_type": 3,
                 }
             ],
             started_at=started_iso,
