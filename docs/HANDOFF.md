@@ -667,17 +667,29 @@ URL de ficha reconstruida:
 https://belatragames.com/es/games/game/<slug>
 ```
 
-### 9.4 Runtime Belatra
+### 9.4 Resolución de demo y runtime Belatra
 
-Demo conocida:
+No asumir que el slug corporativo coincide con el slug del sitio free-slot.
+
+Alias observados públicamente:
 
 ```text
-https://free-slot.belatragames.com/play/<slug>
+20-icy-fruits -> /play/icy-fruits
+7-fruits      -> /play/seven-fruits
+88-golden     -> /play/88-golden-88
 ```
 
-Si la ficha publica otra URL free-slot explícita, debe preferirse esa URL.
+El resolver debe:
 
-Estado actual:
+1. aceptar enlaces free-slot explícitos;
+2. generar candidatos derivados del slug/título;
+3. validar cada candidato por HTTP en vez de abortar ante el primer 404;
+4. si siguen fallando, revisar `promotion-packs`;
+5. extraer enlaces `/play/...` y el campo `Nickname`;
+6. validar los nuevos candidatos;
+7. guardar `demo-resolution.json` con intentos, status y URL elegida.
+
+Estado runtime actual:
 
 - catálogo: implementado con Next/RSC;
 - demo/bootstrap: implementado;

@@ -380,6 +380,14 @@ No asumir que la clase CSS de las cards es API estable.
 
 # 15. Debug de runtime Belatra
 
+Antes del bootstrap se genera:
+
+```text
+demo-resolution.json
+```
+
+Si aparece un 404 en free-slot, revisar allí todos los aliases intentados y la URL finalmente seleccionada. El resolver no debe abortar por el primer 404.
+
 Estado actual:
 
 ```text
