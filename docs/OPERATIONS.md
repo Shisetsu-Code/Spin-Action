@@ -605,3 +605,52 @@ Interpretación:
 - `error != ""`: falló el browser/captura, pero el bootstrap HTTP puede seguir siendo válido.
 
 Para continuar el análisis en otro chat, adjuntar preferentemente `runtime-activity.json` de uno o dos juegos que produzcan señales.
+
+## 15.2 Diagnóstico del protocolo HTTP directo Belatra
+
+Artefactos esperados por run:
+
+```text
+direct-bootstrap.json
+bootstrap/
+  enter.request.json
+  enter.response.json
+  enter.wire.json
+attempt-001/
+  start.request.json
+  start.response.json
+  start.wire.json
+  finish.request.json
+  finish.response.json
+  finish.wire.json
+result.json
+```
+
+`direct-bootstrap.json` no debe contener la key `sc` ni el `sid` completo.
+
+Criterio base de `OK`:
+
+```text
+HTTP 200
++ respuesta start descifrada
++ start.phaseNext == toPaid
++ finish HTTP 200
++ finish.phaseCur == finished
++ finish.phaseNext == toIdle
+```
+
+Si `start.phaseNext` es distinto:
+
+- no enviar una acción inventada;
+- conservar `start.response.json`;
+- marcar `PARCIAL`;
+- usar ese archivo para extender la state machine.
+
+Si falla decrypt:
+
+1. revisar `request_crypt`;
+2. verificar que `sc` pertenece a la misma sesión;
+3. verificar cookie `connect.sid`;
+4. verificar que el prefix sea 8 bytes;
+5. verificar counter en últimos 8 bytes;
+6. verificar que `sid` esté fuera de `d`.
