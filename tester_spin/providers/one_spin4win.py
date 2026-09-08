@@ -592,8 +592,10 @@ class OneSpin4WinProvider(ProviderAdapter):
                 if child not in scanned and child not in queue:
                     queue.append(child)
 
+        static_ws_found = bool(ws_url)
+        static_connect_found = len(connect_args) >= 7
         observed: dict[str, Any] = {}
-        if not ws_url or len(connect_args) < 7:
+        if not static_ws_found or not static_connect_found:
             observed = self._observe_runtime_bootstrap(
                 response.url,
                 timeout_s=timeout_s,
@@ -640,9 +642,15 @@ class OneSpin4WinProvider(ProviderAdapter):
             "demo_url": response.url,
             "scripts_scanned": scanned,
             "discovery": {
-                "ws_from_static_assets": not bool(observed) or bool(ws_url and not observed.get("ws_url")),
+                "ws_from_static_assets": static_ws_found,
+                "connect_from_static_assets": static_connect_found,
                 "runtime_fallback_used": bool(observed),
-                "runtime_fallback_error": str(observed.get("error") or "") if observed else "",
+                "runtime_fallback_ws_url": (
+                    str(observed.get("ws_url") or "") if observed else ""
+                ),
+                "runtime_fallback_error": (
+                    str(observed.get("error") or "") if observed else ""
+                ),
             },
         }
         (attempt_dir / "runtime-spec.json").write_text(
