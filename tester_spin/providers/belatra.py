@@ -41,6 +41,35 @@ def _slug_title(slug: str) -> str:
     return re.sub(r"[-_]+", " ", slug).strip().title()
 
 
+_NUMBER_WORDS = {
+    0: "zero",
+    1: "one",
+    2: "two",
+    3: "three",
+    4: "four",
+    5: "five",
+    6: "six",
+    7: "seven",
+    8: "eight",
+    9: "nine",
+    10: "ten",
+    11: "eleven",
+    12: "twelve",
+    13: "thirteen",
+    14: "fourteen",
+    15: "fifteen",
+    16: "sixteen",
+    17: "seventeen",
+    18: "eighteen",
+    19: "nineteen",
+    20: "twenty",
+}
+
+
+def _slugify_text(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", str(value).casefold()).strip("-")
+
+
 def _best_image(img: Tag | None, base_url: str) -> str:
     if img is None:
         return ""
@@ -362,11 +391,212 @@ class BelatraProvider(ProviderAdapter):
         )
         return games
 
-    def _resolve_demo_url(self, game: Game, detail_html: str) -> str:
-        match = _DEMO_URL_RE.search(detail_html or "")
-        if match:
-            return match.group(0)
-        return f"https://free-slot.belatragames.com/play/{game.slug}"
+    @staticmethod
+    def _extract_demo_links(text: str, base_url: str = "https://free-slot.belatragames.com/") -> list[str]:
+        found: list[str] = []
+        seen: set[str] = set()
+        patterns = (
+            r"""https?://free-slot\.belatragames\.com/(?:[a-z]{2}/)?play/[A-Za-z0-9._~%+-]+""",
+            r"""(?<![A-Za-z0-9])/(?:[a-z]{2}/)?play/[A-Za-z0-9._~%+-]+""",
+            r"""(?<![A-Za-z0-9/])play/[A-Za-z0-9._~%+-]+""",
+        )
+        for pattern in patterns:
+            for match in re.finditer(pattern, text or "", re.I):
+                value = match.group(0).strip()
+                if value.startswith("play/"):
+                    value = "/" + value
+                value = urljoin(base_url, value)
+                if value not in seen:
+                    seen.add(value)
+                    found.append(value)
+        return found
+
+    @staticmethod
+    def _extract_nickname(text: str) -> str:
+        soup = BeautifulSoup(text or "", "html.parser")
+        lines = [
+            " ".join(part.split())
+            for part in soup.get_text("\n", strip=True).splitlines()
+            if " ".join(part.split())
+        ]
+        for index, line in enumerate(lines):
+            normalized = line.casefold().rstrip(":")
+            if normalized == "nickname" and index + 1 < len(lines):
+                candidate = re.sub(r"[^A-Za-z0-9_-]+", "", lines[index + 1]).strip()
+                if candidate:
+                    return candidate
+            match = re.match(r"nickname\s*:\s*([A-Za-z0-9_-]+)", line, re.I)
+            if match:
+                return match.group(1)
+        return ""
+
+    @staticmethod
+    def _demo_slug_candidates(game: Game) -> list[str]:
+        seeds = [game.slug, _slugify_text(game.name)]
+        found: list[str] = []
+        seen: set[str] = set()
+
+        def add(value: str) -> None:
+            value = _slugify_text(value)
+            if value and value not in seen:
+                seen.add(value)
+                found.append(value)
+
+        for seed in seeds:
+            add(seed)
+            match = re.match(r"^(\d+)-(.*)$", seed)
+            if not match:
+                continue
+            number_text, tail = match.groups()
+            add(tail)
+            add(f"{seed}-{number_text}")
+            try:
+                number = int(number_text)
+            except ValueError:
+                continue
+            word = _NUMBER_WORDS.get(number)
+            if word:
+                add(f"{word}-{tail}")
+
+        return found
+
+    @classmethod
+    def _promotion_pack_candidates(cls, game: Game) -> list[str]:
+        base = "https://free-slot.belatragames.com/promotion-packs/"
+        slugs = cls._demo_slug_candidates(game)
+        found: list[str] = []
+        seen: set[str] = set()
+        for slug in slugs:
+            for candidate in (slug, f"{slug}-1"):
+                url = base + candidate
+                if url not in seen:
+                    seen.add(url)
+                    found.append(url)
+        return found
+
+    def _resolve_demo_response(
+        self,
+        session: requests.Session,
+        game: Game,
+        detail_html: str,
+        *,
+        timeout_s: float,
+        attempt_dir: Path,
+    ) -> requests.Response:
+        """Resolve a real free-slot page without assuming corporate slug equality.
+
+        Belatra has historical aliases where the corporate catalogue slug differs
+        from the free-slot slug. Examples observed publicly:
+          20-icy-fruits -> icy-fruits
+          7-fruits      -> seven-fruits
+          88-golden     -> 88-golden-88
+
+        Every candidate is validated by an actual HTTP response. A 404 only rejects
+        that candidate; it no longer aborts the whole game.
+        """
+        attempted: list[dict[str, Any]] = []
+        candidates: list[str] = []
+        seen: set[str] = set()
+
+        def add(url: str, source: str) -> None:
+            url = str(url or "").strip()
+            if not url:
+                return
+            if url.startswith("/"):
+                url = urljoin("https://free-slot.belatragames.com/", url)
+            parsed = urlparse(url)
+            if (parsed.hostname or "").casefold() != "free-slot.belatragames.com":
+                return
+            if "/play/" not in parsed.path.casefold():
+                return
+            if url in seen:
+                return
+            seen.add(url)
+            candidates.append(url)
+            attempted.append({"url": url, "source": source, "status": None})
+
+        for url in self._extract_demo_links(detail_html, game.url):
+            add(url, "detail")
+
+        for slug in self._demo_slug_candidates(game):
+            add(f"https://free-slot.belatragames.com/play/{slug}", "derived")
+            add(f"https://free-slot.belatragames.com/es/play/{slug}", "derived_es")
+
+        def probe_pending() -> requests.Response | None:
+            for item in attempted:
+                if item["status"] is not None:
+                    continue
+                url = str(item["url"])
+                try:
+                    response = session.get(url, timeout=timeout_s, allow_redirects=True)
+                    item["status"] = int(response.status_code)
+                    item["final_url"] = response.url
+                    if response.status_code < 400 and "/play/" in urlparse(response.url).path.casefold():
+                        item["selected"] = True
+                        return response
+                except Exception as exc:
+                    item["error"] = f"{type(exc).__name__}: {exc}"
+                    item["status"] = -1
+            return None
+
+        response = probe_pending()
+        promo_pages: list[dict[str, Any]] = []
+
+        if response is None:
+            for promo_url in self._promotion_pack_candidates(game):
+                entry: dict[str, Any] = {"url": promo_url}
+                promo_pages.append(entry)
+                try:
+                    promo = session.get(promo_url, timeout=timeout_s, allow_redirects=True)
+                    entry["status"] = int(promo.status_code)
+                    entry["final_url"] = promo.url
+                    if promo.status_code >= 400:
+                        continue
+
+                    for link in self._extract_demo_links(promo.text, promo.url):
+                        add(link, "promotion_pack_link")
+
+                    nickname = self._extract_nickname(promo.text)
+                    if nickname:
+                        entry["nickname"] = nickname
+                        normalized = _slugify_text(nickname.replace("_", "-"))
+                        add(
+                            f"https://free-slot.belatragames.com/play/{normalized}",
+                            "promotion_pack_nickname",
+                        )
+                        add(
+                            f"https://free-slot.belatragames.com/es/play/{normalized}",
+                            "promotion_pack_nickname_es",
+                        )
+                except Exception as exc:
+                    entry["status"] = -1
+                    entry["error"] = f"{type(exc).__name__}: {exc}"
+
+            response = probe_pending()
+
+        resolution = {
+            "game": game.name,
+            "catalog_slug": game.slug,
+            "attempted_play_urls": attempted,
+            "promotion_pack_pages": promo_pages,
+            "selected_url": response.url if response is not None else "",
+        }
+        attempt_dir.mkdir(parents=True, exist_ok=True)
+        (attempt_dir / "demo-resolution.json").write_text(
+            json.dumps(resolution, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+        if response is None:
+            statuses = ", ".join(
+                f"{item.get('url')}={item.get('status')}"
+                for item in attempted[:12]
+            )
+            raise RuntimeError(
+                "Belatra: no se resolvió una demo válida en free-slot"
+                + (f" ({statuses})" if statuses else "")
+            )
+        return response
 
     @staticmethod
     def _endpoint_candidates(text: str, base_url: str) -> list[str]:
@@ -394,8 +624,13 @@ class BelatraProvider(ProviderAdapter):
         session = self._worker_session()
         detail = session.get(game.url, timeout=timeout_s, allow_redirects=True)
         detail.raise_for_status()
-        demo_url = self._resolve_demo_url(game, detail.text)
-        demo = session.get(demo_url, timeout=timeout_s, allow_redirects=True)
+        demo = self._resolve_demo_response(
+            session,
+            game,
+            detail.text,
+            timeout_s=timeout_s,
+            attempt_dir=attempt_dir,
+        )
         demo.raise_for_status()
         elapsed_ms = (time.monotonic() - started) * 1000.0
 
