@@ -25,13 +25,20 @@ HTML = """
   <div>Coming soon</div>
   <div class="game-type-text">Slots</div>
 </div>
+<div data-catalog-card data-image="https://bgaming.com/wp-content/uploads/token.webp">
+  <a href="https://bgaming.com/games/token-demo"><img alt="Token Demo"></a>
+  <a href="https://demo.bgaming-network.com/games/TokenDemo/FUN?play_token=secret-session">
+    Play Demo
+  </a>
+  <div class="game-type-text">Slots</div>
+</div>
 """
 
 
 class BGamingCatalogTests(unittest.TestCase):
     def test_parses_demo_identifier_and_metadata(self) -> None:
         records = parse_catalog_html(HTML)
-        self.assertEqual(len(records), 2)
+        self.assertEqual(len(records), 3)
 
         first = records[0]
         self.assertEqual(first.game.provider, "bgaming")
@@ -43,6 +50,15 @@ class BGamingCatalogTests(unittest.TestCase):
         self.assertEqual(first.volatility, "Very-high")
         self.assertEqual(first.game_type, "Slots")
         self.assertEqual(first.availability, "DEMO")
+
+    def test_does_not_persist_ephemeral_demo_tokens(self) -> None:
+        records = parse_catalog_html(HTML)
+        token_demo = records[2]
+        self.assertEqual(token_demo.game.symbol, "TokenDemo")
+        self.assertEqual(token_demo.availability, "EPHEMERAL_DEMO")
+        self.assertEqual(token_demo.demo_url, "")
+        self.assertEqual(token_demo.game.url, "https://bgaming.com/games/token-demo")
+        self.assertNotIn("secret-session", token_demo.game.url)
 
     def test_keeps_non_demo_catalog_rows_without_inventing_identifier(self) -> None:
         records = parse_catalog_html(HTML)
