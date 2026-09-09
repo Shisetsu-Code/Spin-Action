@@ -115,47 +115,52 @@ def discover_modes_from_bundle(
     *,
     timeout_s: float,
 ) -> list[dict[str, Any]]:
-    """Discover only purchase requests literally present in the loaded client bundle."""
+    """Discover the exact HyperHive request vocabulary from the loaded bundle."""
     bundle = _download_bundle(runtime, timeout_s)
+    bet_type = "betting" if 'bet_type:"betting"' in bundle else "bet"
+
+    spin_request: dict[str, Any] = {"bet_type": bet_type}
+    if 'action:"spin"' in bundle:
+        spin_request["action"] = "spin"
+
     modes: list[dict[str, Any]] = [
         {
             "id": "SPIN",
             "kind": "SPIN",
-            "request": {"bet_type": "bet"},
+            "request": spin_request,
             "expected_multiplier": 1.0,
-            "source": "hyperhive-base",
+            "source": "game_bundle_source" if bundle else "hyperhive-base",
         }
     ]
     if not bundle:
         return modes
 
     if 'purchased_feature:"buy_chance"' in bundle:
-        match = re.search(r"goldenBetMulti:([0-9]+(?:\.[0-9]+)?)", bundle)
-        multiplier = float(match.group(1)) if match else None
         modes.append(
             {
                 "id": "PURCHASE_BUY_CHANCE",
                 "kind": "PURCHASE",
                 "request": {
                     "purchased_feature": "buy_chance",
-                    "bet_type": "bet",
+                    "bet_type": bet_type,
                 },
-                "expected_multiplier": multiplier,
+                "expected_multiplier": None,
                 "source": "game_bundle_source",
             }
         )
 
-    bonus_variants = [
-        ("freeSpin", "PURCHASE_BUY_BONUS_FREESPIN", 100.0),
-        ("freeSpinRandom", "PURCHASE_BUY_BONUS_RANDOM", 200.0),
-    ]
-    for variant, mode_id, observed_multiplier in bonus_variants:
+    variants_found = False
+    for variant, mode_id in [
+        ("freeSpin", "PURCHASE_BUY_BONUS_FREESPIN"),
+        ("freeSpinRandom", "PURCHASE_BUY_BONUS_RANDOM"),
+    ]:
         literal = (
             'purchased_feature:"buy_bonus",bonus_multiplier_type:"'
             + variant
             + '"'
         )
         if literal in bundle:
+            variants_found = True
             modes.append(
                 {
                     "id": mode_id,
@@ -163,15 +168,27 @@ def discover_modes_from_bundle(
                     "request": {
                         "purchased_feature": "buy_bonus",
                         "bonus_multiplier_type": variant,
+                        "bet_type": bet_type,
                     },
-                    # This multiplier is HAR-confirmed for BlackbeardsBounty.
-                    # It is diagnostic only; server balance remains authoritative.
-                    "expected_multiplier": observed_multiplier,
-                    "source": "game_bundle_source+har",
+                    "expected_multiplier": None,
+                    "source": "game_bundle_source",
                 }
             )
 
-    # Generic literal purchased_feature modes used by future HyperHive games.
+    if 'purchased_feature:"buy_bonus"' in bundle and not variants_found:
+        modes.append(
+            {
+                "id": "PURCHASE_BUY_BONUS",
+                "kind": "PURCHASE",
+                "request": {
+                    "purchased_feature": "buy_bonus",
+                    "bet_type": bet_type,
+                },
+                "expected_multiplier": None,
+                "source": "game_bundle_source",
+            }
+        )
+
     known = {
         str(mode["request"].get("purchased_feature") or "")
         for mode in modes
@@ -180,7 +197,7 @@ def discover_modes_from_bundle(
     for feature in sorted(
         set(re.findall(r'purchased_feature:"([A-Za-z0-9_]+)"', bundle))
     ):
-        if not feature or feature in known or feature == "buy_bonus":
+        if not feature or feature in known:
             continue
         modes.append(
             {
@@ -188,7 +205,7 @@ def discover_modes_from_bundle(
                 "kind": "PURCHASE",
                 "request": {
                     "purchased_feature": feature,
-                    "bet_type": "bet",
+                    "bet_type": bet_type,
                 },
                 "expected_multiplier": None,
                 "source": "game_bundle_source",
@@ -196,7 +213,6 @@ def discover_modes_from_bundle(
         )
 
     return modes
-
 
 def _result_summary(data: dict[str, Any]) -> dict[str, Any]:
     result = data.get("result")
