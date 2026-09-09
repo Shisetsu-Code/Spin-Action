@@ -648,6 +648,35 @@ class BGamingRuntimeTests(unittest.TestCase):
             2400.0,
         )
 
+    def test_base_spin_can_use_server_reported_effective_bet(self) -> None:
+        response = {
+            "api_version": "2",
+            "outcome": {
+                "screen": [["1", "2", "3"]] * 5,
+                "bet": 400,
+                "win": 0,
+            },
+            "balance": {"wallet": 99600, "game": 0},
+            "flow": {
+                "state": "closed",
+                "command": "spin",
+                "available_actions": ["init", "spin"],
+            },
+        }
+        self.assertEqual(
+            validate_spin(
+                response,
+                requested_bet=100,
+                previous_balance_total=100000,
+                expected_reels=5,
+                expected_rows=5,
+                command="spin",
+                expected_debit=100,
+                trust_returned_bet=True,
+            ),
+            [],
+        )
+
     def test_remote_proof_changes_with_server_round_identity(self) -> None:
         first = {
             "outcome": {
