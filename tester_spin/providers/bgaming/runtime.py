@@ -262,6 +262,88 @@ def resolve_base_bet(data: dict[str, Any]) -> tuple[int | float | None, str]:
     return None, ""
 
 
+def discover_purchase_modes(data: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return only purchase modes explicitly advertised by BGaming init.
+
+    HAR 2026-09-09 (AlienFruits3) exposes:
+      feature_options.feature_multipliers = {
+        "bonus_buy": 2000,
+        "bonus_chance": 30,
+        "base_bet": 20,
+      }
+
+    The wire request uses options.purchased_feature=<name>.  base_bet is a
+    denominator/reference, not itself a purchased feature.
+    """
+    options = data.get("options")
+    if not isinstance(options, dict):
+        return []
+    feature_options = options.get("feature_options")
+    if not isinstance(feature_options, dict):
+        return []
+    multipliers = feature_options.get("feature_multipliers")
+    if not isinstance(multipliers, dict):
+        return []
+
+    base = multipliers.get("base_bet")
+    if not isinstance(base, (int, float)) or base <= 0:
+        return []
+
+    disabled_raw = feature_options.get("disabled_features")
+    disabled: set[str] = set()
+    if isinstance(disabled_raw, list):
+        disabled = {str(item) for item in disabled_raw}
+    elif isinstance(disabled_raw, dict):
+        disabled = {
+            str(key)
+            for key, value in disabled_raw.items()
+            if bool(value)
+        }
+
+    modes: list[dict[str, Any]] = []
+    for name, raw_multiplier in multipliers.items():
+        feature_name = str(name)
+        if feature_name == "base_bet" or feature_name in disabled:
+            continue
+        if not isinstance(raw_multiplier, (int, float)) or raw_multiplier <= 0:
+            continue
+        modes.append(
+            {
+                "name": feature_name,
+                "feature_multiplier": raw_multiplier,
+                "base_multiplier": base,
+                "cost_multiplier": float(raw_multiplier) / float(base),
+            }
+        )
+    return modes
+
+
+def purchase_expected_debit(
+    requested_bet: int | float,
+    purchase_mode: dict[str, Any] | None,
+) -> float:
+    if not purchase_mode:
+        return float(requested_bet)
+    multiplier = purchase_mode.get("cost_multiplier")
+    if not isinstance(multiplier, (int, float)) or multiplier <= 0:
+        return float(requested_bet)
+    return float(requested_bet) * float(multiplier)
+
+
+def result_has_authoritative_shape(data: dict[str, Any]) -> bool:
+    """Accept both server-grid and seeded-client result shapes observed in HARs."""
+    outcome = data.get("outcome")
+    if not isinstance(outcome, dict):
+        return False
+    screen = outcome.get("screen")
+    if isinstance(screen, list) and bool(screen):
+        return True
+    storage = outcome.get("storage")
+    if isinstance(storage, dict) and isinstance(storage.get("seed"), (int, float)):
+        return True
+    return False
+
+
 def flow_available_actions(data: dict[str, Any]) -> list[str]:
     flow = data.get("flow")
     if not isinstance(flow, dict):
@@ -273,7 +355,8 @@ def flow_available_actions(data: dict[str, Any]) -> list[str]:
 
 
 def pending_flow_actions(data: dict[str, Any]) -> list[str]:
-    return sorted(set(flow_available_actions(data)) - {"init", "spin"})
+    # freespin is a continuation observed and automated from TreasureOfAnubis HAR.
+    return sorted(set(flow_available_actions(data)) - {"init", "spin", "freespin"})
 
 
 def validate_init(data: dict[str, Any]) -> list[str]:
@@ -322,6 +405,8 @@ def validate_spin(
     previous_balance_total: int | float | None,
     expected_reels: int | None,
     expected_rows: int | None,
+    command: str = "spin",
+    expected_debit: int | float | None = None,
 ) -> list[str]:
     warnings: list[str] = []
 
@@ -330,7 +415,7 @@ def validate_spin(
 
     outcome = data.get("outcome")
     if not isinstance(outcome, dict):
-        warnings.append("spin sin outcome")
+        warnings.append(f"{command} sin outcome")
         return warnings
 
     actual_bet = outcome.get("bet")
@@ -338,12 +423,10 @@ def validate_spin(
     if actual_bet != requested_bet:
         warnings.append(f"bet devuelta={actual_bet!r}, solicitada={requested_bet!r}")
     if not isinstance(win, (int, float)):
-        warnings.append("spin sin win numérico")
+        warnings.append(f"{command} sin win numérico")
 
     screen = outcome.get("screen")
-    if not isinstance(screen, list) or not screen:
-        warnings.append("spin sin screen")
-    else:
+    if isinstance(screen, list) and screen:
         if expected_reels is not None and len(screen) != expected_reels:
             warnings.append(
                 f"screen reels={len(screen)}, esperados={expected_reels}"
@@ -356,29 +439,47 @@ def validate_spin(
             ]
             if bad:
                 warnings.append(f"screen rows inesperadas en reels={bad}")
+    elif not result_has_authoritative_shape(data):
+        warnings.append(
+            f"{command} sin screen ni outcome.storage.seed autoritativos"
+        )
 
     flow = data.get("flow")
     if not isinstance(flow, dict):
-        warnings.append("spin sin flow")
+        warnings.append(f"{command} sin flow")
     else:
-        command = str(flow.get("command") or "")
+        flow_command = str(flow.get("command") or "")
         state = str(flow.get("state") or "")
-        if command != "spin":
-            warnings.append(f"flow.command no observado: {command!r}")
-        if state != "closed":
+        if flow_command != command:
+            warnings.append(
+                f"flow.command inesperado para {command}: {flow_command!r}"
+            )
+        if command == "spin":
+            if state not in {"closed", "freespins"}:
+                warnings.append(f"flow.state spin no observado: {state!r}")
+        elif command == "freespin":
+            if state not in {"freespins", "closed"}:
+                warnings.append(f"flow.state freespin no observado: {state!r}")
+        elif state != "closed":
             warnings.append(f"flow.state no terminal/no observado: {state!r}")
 
     current_total = balance_total(data)
+    debit = (
+        float(expected_debit)
+        if isinstance(expected_debit, (int, float))
+        else (0.0 if command == "freespin" else float(actual_bet or 0))
+    )
     if (
         previous_balance_total is not None
         and current_total is not None
-        and isinstance(actual_bet, (int, float))
         and isinstance(win, (int, float))
     ):
-        expected = previous_balance_total - actual_bet + win
-        if abs(float(current_total) - float(expected)) > 1e-9:
+        expected = float(previous_balance_total) - debit + float(win)
+        if abs(float(current_total) - expected) > 1e-9:
             warnings.append(
-                f"balance inconsistente: actual={current_total}, esperado={expected}"
+                f"balance inconsistente: actual={current_total}, esperado={expected}, "
+                f"debito={debit}"
             )
 
     return warnings
+
