@@ -72,6 +72,23 @@ class PragmaticCatalogSafetyTests(unittest.TestCase):
         self.assertEqual(game.slug, "candy-rush")
         self.assertEqual(game.name, "Candy Rush")
 
+    def test_provider_marks_data_uri_catalog_row_invalid(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            provider = PragmaticProvider(Path(temp))
+            from tester_spin.models import Game
+
+            game = Game(
+                provider="pragmatic",
+                slug="fake-game",
+                name="日本語",
+                url="https://www.pragmaticplay.com/en/games/fake-game/",
+                thumbnail_url="data:image/png;base64,AAAA",
+            )
+            self.assertIn(
+                "data URI",
+                provider.catalog_record_invalid_reason(game),
+            )
+
     def test_recover_known_catalog_rejects_data_uri_artifact(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             provider = PragmaticProvider(Path(temp))
