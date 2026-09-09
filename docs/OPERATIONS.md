@@ -654,3 +654,22 @@ Si falla decrypt:
 4. verificar que el prefix sea 8 bytes;
 5. verificar counter en últimos 8 bytes;
 6. verificar que `sid` esté fuera de `d`.
+
+## 15.3 Belatra y pruebas concurrentes
+
+Aunque el control de GUI indique 2, 3 o más simultáneos, Belatra se limita automáticamente a 1.
+
+El log debe indicar el límite efectivo, por ejemplo:
+
+```text
+simultáneos=1 (solicitados=3, limitado por proveedor)
+```
+
+Si un título devuelve HTTP 500:
+
+1. confirmar que la versión actual ya aplica `max_test_concurrency=1`;
+2. repetir individualmente;
+3. si persiste, revisar `enter.response.json` por campos específicos de modo;
+4. comparar el `start.request.json` con un HAR de ese juego.
+
+No asumir incompatibilidad del juego a partir de un 500 obtenido durante múltiples sesiones simultáneas.
