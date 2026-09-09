@@ -43,7 +43,7 @@ ALL_GAME_CARDS_JS = r"""
     for (let i = 0; i < 8 && node; i++, node = node.parentElement) {
       if (!node.querySelector) continue;
       if (node.querySelector(
-        'a[href*="/games/"],[data-href*="/games/"],[data-url*="/games/"],[data-game],[data-slug]'
+        'a[href*="/games/"],[data-href*="/games/"],[data-url*="/games/"]'
       )) return true;
     }
     return false;
@@ -51,6 +51,7 @@ ALL_GAME_CARDS_JS = r"""
 
   const isGameImage = (img) => {
     const joined = sources(img).join(' ');
+    if (!joined || /^data:/i.test(joined.trim())) return false;
     if (/(?:339x180|338x180|340x180|300x160|600x320)/i.test(joined)) return true;
     return hasGameControl(img);
   };
@@ -219,6 +220,10 @@ def crawl_pragmatic_catalog_preloaded(
     """Enumerate hidden/preloaded cards first; click only when structure actually grows."""
     from playwright.sync_api import sync_playwright
 
+    provider.set_catalog_authority(
+        False,
+        "fallback DOM/preloaded de Pragmatic no es una fuente completa verificable",
+    )
     by_slug: dict[str, Game] = {}
     source_by_slug: dict[str, str] = {}
     max_loads = max(1, int(max_pages))
