@@ -29,6 +29,7 @@ from tester_spin.providers.bgaming.runtime import (
     discover_purchase_modes,
     flow_continuation_command,
     is_line_bet_init,
+    is_switchable_container_init,
     line_bet_count,
     pending_flow_actions,
     post_command,
@@ -43,6 +44,9 @@ from tester_spin.providers.bgaming.runtime import (
     validate_init,
     validate_line_spin,
     validate_spin,
+)
+from tester_spin.providers.bgaming.switchable import (
+    run_switchable_container_test,
 )
 
 
@@ -468,6 +472,24 @@ class BGamingProvider(ProviderAdapter):
             )
             self._write_json(run_dir / "init-request.json", init_request)
             self._write_json(run_dir / "init-response.json", init_data)
+
+            if is_switchable_container_init(init_data):
+                progress(
+                    f"[{game.name}] init de contenedor detectado; "
+                    "descubriendo variantes apostables."
+                )
+                return run_switchable_container_test(
+                    game=game,
+                    runtime=runtime,
+                    initial_data=init_data,
+                    spins=repetitions,
+                    timeout_s=timeout_s,
+                    stop_event=stop_event,
+                    progress=progress,
+                    run_dir=run_dir,
+                    started_iso=started_iso,
+                    started_monotonic=started,
+                )
 
             init_warnings = validate_init(init_data)
             global_warnings.extend(init_warnings)
