@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from bs4 import BeautifulSoup
 
@@ -89,6 +89,14 @@ def parse_catalog_html(html: str) -> list[BGamingCatalogRecord]:
                 break
 
         identifier = _identifier_from_demo_url(demo_url)
+        demo_has_ephemeral_token = False
+        if demo_url:
+            query = parse_qs(urlparse(demo_url).query)
+            demo_has_ephemeral_token = any(
+                key.casefold() in {"play_token", "launch_token", "token"}
+                for key in query
+            )
+
         thumbnail = str(card.get("data-image") or "").strip()
         if not thumbnail and image:
             thumbnail = str(image.get("src") or "").strip()
@@ -100,12 +108,22 @@ def parse_catalog_html(html: str) -> list[BGamingCatalogRecord]:
 
         game_type = _text(card.select_one(".game-type-text"))
         card_text = _text(card).casefold()
-        if demo_url:
+        if demo_has_ephemeral_token:
+            availability = "EPHEMERAL_DEMO"
+            safe_game_url = public_url
+            safe_demo_url = ""
+        elif demo_url:
             availability = "DEMO"
+            safe_game_url = demo_url
+            safe_demo_url = demo_url
         elif "coming soon" in card_text:
             availability = "COMING_SOON"
+            safe_game_url = public_url
+            safe_demo_url = ""
         else:
             availability = "NO_DEMO"
+            safe_game_url = public_url
+            safe_demo_url = ""
 
         records.append(
             BGamingCatalogRecord(
@@ -113,12 +131,12 @@ def parse_catalog_html(html: str) -> list[BGamingCatalogRecord]:
                     provider="bgaming",
                     slug=slug,
                     name=name,
-                    url=demo_url or public_url,
+                    url=safe_game_url,
                     thumbnail_url=thumbnail,
                     symbol=identifier,
                 ),
                 public_url=public_url,
-                demo_url=demo_url,
+                demo_url=safe_demo_url,
                 rtp=_rtp(card),
                 volatility=volatility,
                 game_type=game_type,
