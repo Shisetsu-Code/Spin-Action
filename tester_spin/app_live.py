@@ -68,6 +68,35 @@ class LiveTesterSpinApp(TesterSpinApp):
         def worker() -> None:
             try:
                 previous_games = self.storage.list_games(provider.key)
+
+                invalid_reasons: dict[str, str] = {}
+                for existing in previous_games:
+                    reason = provider.catalog_record_invalid_reason(existing)
+                    if reason:
+                        invalid_reasons[existing.slug] = reason
+
+                if invalid_reasons:
+                    removed_invalid = self.storage.delete_games(
+                        provider.key,
+                        set(invalid_reasons),
+                    )
+                    preview = ", ".join(
+                        f"{slug}: {reason}"
+                        for slug, reason in list(invalid_reasons.items())[:6]
+                    )
+                    self._events.put(
+                        (
+                            "log",
+                            f"Saneamiento estructural: filas inválidas eliminadas={removed_invalid}"
+                            + (f" [{preview}]" if preview else ""),
+                        )
+                    )
+                    previous_games = [
+                        game
+                        for game in previous_games
+                        if game.slug not in invalid_reasons
+                    ]
+
                 previous_count = len(previous_games)
 
                 provider.set_catalog_authority(True, "")
