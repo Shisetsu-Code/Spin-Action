@@ -43,6 +43,14 @@ class Storage:
                     PRIMARY KEY(provider, slug)
                 );
 
+                CREATE TABLE IF NOT EXISTS catalog_exclusions (
+                    provider TEXT NOT NULL,
+                    slug TEXT NOT NULL,
+                    reason TEXT NOT NULL DEFAULT 'manual',
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY(provider, slug)
+                );
+
                 CREATE TABLE IF NOT EXISTS test_results (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     provider TEXT NOT NULL,
@@ -66,6 +74,9 @@ class Storage:
 
                 CREATE INDEX IF NOT EXISTS idx_results_provider_slug
                 ON test_results(provider, slug, id DESC);
+
+                CREATE INDEX IF NOT EXISTS idx_catalog_exclusions_provider
+                ON catalog_exclusions(provider, slug);
                 """
             )
 
@@ -73,47 +84,63 @@ class Storage:
         if not games:
             return 0
         now = utc_now_iso()
-        rows = []
-        for game in games:
-            rows.append(
-                (
-                    game.provider,
-                    game.slug,
-                    game.name,
-                    game.url,
-                    game.thumbnail_url,
-                    game.thumbnail_path,
-                    game.symbol,
-                    game.discovered_at or now,
-                    now,
-                )
-            )
+        providers = sorted({game.provider for game in games if game.provider})
         with self._lock, self._connect() as con:
-            con.executemany(
-                """
-                INSERT INTO games (
-                    provider, slug, name, url, thumbnail_url, thumbnail_path,
-                    symbol, discovered_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(provider, slug) DO UPDATE SET
-                    name=excluded.name,
-                    url=excluded.url,
-                    thumbnail_url=CASE
-                        WHEN excluded.thumbnail_url <> '' THEN excluded.thumbnail_url
-                        ELSE games.thumbnail_url
-                    END,
-                    thumbnail_path=CASE
-                        WHEN excluded.thumbnail_path <> '' THEN excluded.thumbnail_path
-                        ELSE games.thumbnail_path
-                    END,
-                    symbol=CASE
-                        WHEN excluded.symbol <> '' THEN excluded.symbol
-                        ELSE games.symbol
-                    END,
-                    updated_at=excluded.updated_at
-                """,
-                rows,
-            )
+            excluded: set[tuple[str, str]] = set()
+            if providers:
+                placeholders = ",".join("?" for _ in providers)
+                excluded = {
+                    (str(row["provider"]), str(row["slug"]))
+                    for row in con.execute(
+                        f"SELECT provider, slug FROM catalog_exclusions WHERE provider IN ({placeholders})",
+                        providers,
+                    ).fetchall()
+                }
+
+            rows = []
+            for game in games:
+                if (game.provider, game.slug) in excluded:
+                    continue
+                rows.append(
+                    (
+                        game.provider,
+                        game.slug,
+                        game.name,
+                        game.url,
+                        game.thumbnail_url,
+                        game.thumbnail_path,
+                        game.symbol,
+                        game.discovered_at or now,
+                        now,
+                    )
+                )
+
+            if rows:
+                con.executemany(
+                    """
+                    INSERT INTO games (
+                        provider, slug, name, url, thumbnail_url, thumbnail_path,
+                        symbol, discovered_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(provider, slug) DO UPDATE SET
+                        name=excluded.name,
+                        url=excluded.url,
+                        thumbnail_url=CASE
+                            WHEN excluded.thumbnail_url <> '' THEN excluded.thumbnail_url
+                            ELSE games.thumbnail_url
+                        END,
+                        thumbnail_path=CASE
+                            WHEN excluded.thumbnail_path <> '' THEN excluded.thumbnail_path
+                            ELSE games.thumbnail_path
+                        END,
+                        symbol=CASE
+                            WHEN excluded.symbol <> '' THEN excluded.symbol
+                            ELSE games.symbol
+                        END,
+                        updated_at=excluded.updated_at
+                    """,
+                    rows,
+                )
         return len(rows)
 
     def reconcile_provider_games(self, provider: str, valid_slugs: set[str]) -> int:
@@ -185,6 +212,72 @@ class Storage:
             removed = max(0, int(cursor.rowcount or 0))
             con.execute("DROP TABLE _delete_catalog_slugs")
         return removed
+
+    def list_catalog_exclusions(self, provider: str) -> set[str]:
+        with self._lock, self._connect() as con:
+            rows = con.execute(
+                "SELECT slug FROM catalog_exclusions WHERE provider=? ORDER BY slug",
+                (provider,),
+            ).fetchall()
+        return {str(row["slug"]) for row in rows}
+
+    def exclude_games(
+        self,
+        provider: str,
+        slugs: set[str],
+        *,
+        reason: str = "manual",
+    ) -> int:
+        """Persist a manual catalogue exclusion and remove matching live rows.
+
+        Historical test_results and provider artifacts remain untouched. The exclusion
+        prevents a later crawl/fallback from re-inserting the same slug.
+        """
+        normalized = sorted(
+            {str(slug).strip() for slug in slugs if str(slug).strip()}
+        )
+        if not normalized:
+            return 0
+        now = utc_now_iso()
+        with self._lock, self._connect() as con:
+            con.executemany(
+                """
+                INSERT INTO catalog_exclusions(provider, slug, reason, created_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(provider, slug) DO UPDATE SET
+                    reason=excluded.reason,
+                    created_at=excluded.created_at
+                """,
+                ((provider, slug, reason, now) for slug in normalized),
+            )
+            con.executemany(
+                "DELETE FROM games WHERE provider=? AND slug=?",
+                ((provider, slug) for slug in normalized),
+            )
+        return len(normalized)
+
+    def clear_provider_catalog(
+        self,
+        provider: str,
+        *,
+        clear_exclusions: bool = False,
+    ) -> tuple[int, int]:
+        """Clear only the live catalogue for one provider.
+
+        Historical test_results are preserved. Manual exclusions are preserved by
+        default so known false positives do not immediately return on the next crawl.
+        """
+        with self._lock, self._connect() as con:
+            cursor = con.execute("DELETE FROM games WHERE provider=?", (provider,))
+            removed = max(0, int(cursor.rowcount or 0))
+            cleared_exclusions = 0
+            if clear_exclusions:
+                cursor = con.execute(
+                    "DELETE FROM catalog_exclusions WHERE provider=?",
+                    (provider,),
+                )
+                cleared_exclusions = max(0, int(cursor.rowcount or 0))
+        return removed, cleared_exclusions
 
     def list_games(self, provider: str) -> list[Game]:
         with self._lock, self._connect() as con:
