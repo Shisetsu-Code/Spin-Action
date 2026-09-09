@@ -98,6 +98,7 @@ class BGamingHyperHiveTests(unittest.TestCase):
             'var a={req:{bet:s.A.data.bet}};'
             'this.isFreebets&&(a.req.bet_type="freebet");'
             'buyBonus(){this.spin(!0,{purchased_feature:"buy_bonus"})}'
+            'this.buyBonusMultiplier=0;'
             'this.buyBonusMultiplier=120;'
             'jsonrpc:"2.0"'
         )
