@@ -466,14 +466,33 @@ def flow_available_actions(data: dict[str, Any]) -> list[str]:
     return [str(action) for action in actions if str(action)]
 
 
-def pending_flow_actions(data: dict[str, Any]) -> list[str]:
-    # Observed and automated continuations:
-    # - freespin: TreasureOfAnubis HAR
-    # - preselection_game: AlwaysUp HAR (rocket bonus reveal)
-    return sorted(
-        set(flow_available_actions(data))
-        - {"init", "spin", "freespin", "preselection_game"}
+def flow_continuation_command(data: dict[str, Any]) -> str:
+    flow = data.get("flow")
+    if not isinstance(flow, dict):
+        return ""
+    state = str(flow.get("state") or "")
+    actions = flow.get("available_actions")
+    action_names = (
+        {str(action) for action in actions}
+        if isinstance(actions, list)
+        else set()
     )
+    if state == "freespins" and "freespin" in action_names:
+        return "freespin"
+    if state in {"", "closed", "ready", "init", "spin"}:
+        return ""
+    if state in action_names:
+        return state
+    return ""
+
+
+def pending_flow_actions(data: dict[str, Any]) -> list[str]:
+    actions = set(flow_available_actions(data))
+    continuation = flow_continuation_command(data)
+    handled = {"init", "spin", "freespin", "preselection_game"}
+    if continuation:
+        handled.add(continuation)
+    return sorted(actions - handled)
 
 
 def validate_init(data: dict[str, Any]) -> list[str]:
@@ -600,6 +619,11 @@ def validate_spin(
             if state != "closed":
                 warnings.append(
                     f"flow.state preselection_game no terminal: {state!r}"
+                )
+        elif command not in {"spin", "freespin"}:
+            if state not in {command, "closed"}:
+                warnings.append(
+                    f"flow.state inesperado para {command}: {state!r}"
                 )
         elif state != "closed":
             warnings.append(f"flow.state no terminal/no observado: {state!r}")
