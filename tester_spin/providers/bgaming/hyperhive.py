@@ -122,7 +122,7 @@ def _download_bundle(runtime: BGamingRuntime, timeout_s: float) -> str:
         except Exception:
             continue
         match = re.search(
-            r'res(?::|=)[^"']*["']([^"']+?)["']',
+            r"res(?::|=)[^\"']*[\"']([^\"']+?)[\"']",
             loader_text,
         )
         if match:
