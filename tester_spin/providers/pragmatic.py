@@ -435,6 +435,87 @@ class PragmaticProvider(ProviderAdapter):
         tmp.replace(path)
         return str(path)
 
+    def _recover_catalog_games_from_artifacts(self) -> list[Game]:
+        """Recover previously discovered games from preserved per-game metadata.
+
+        This is used only when the live catalogue crawl is non-authoritative. It
+        keeps a temporary site/WAF failure from making the GUI forget hundreds of
+        known games. A later authoritative crawl is still responsible for removing
+        genuinely retired titles.
+        """
+        recovered: dict[str, Game] = {}
+        if not self.provider_root.exists():
+            return []
+
+        for child in self.provider_root.iterdir():
+            if not child.is_dir():
+                continue
+            metadata = self._read_json(child / "game.json")
+            if not isinstance(metadata, dict):
+                continue
+            if str(metadata.get("provider_key") or "").strip() != self.key:
+                continue
+
+            slug = str(metadata.get("provider_slug") or "").strip().lower()
+            if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{1,100}", slug):
+                continue
+
+            page_url = str(metadata.get("page_url") or "").strip()
+            if not page_url:
+                page_url = f"https://www.pragmaticplay.com/en/games/{slug}/"
+            parsed = urlparse(page_url)
+            if (parsed.hostname or "").casefold() not in {
+                "pragmaticplay.com",
+                "www.pragmaticplay.com",
+            }:
+                continue
+            if not GAME_PATH_RE.match(parsed.path):
+                continue
+
+            thumb_meta = metadata.get("thumbnail") or {}
+            thumb_url = ""
+            local_file = ""
+            if isinstance(thumb_meta, dict):
+                thumb_url = str(thumb_meta.get("source_url") or "").strip()
+                local_file = str(thumb_meta.get("local_file") or "").strip()
+
+            symbol = str(metadata.get("provider_internal_id") or "").strip()
+
+            # Reject artifacts that look like site chrome accidentally captured by
+            # an old DOM fallback. Real catalog thumbnails are normal HTTP assets;
+            # a data URI such as the language-icon false positive is never valid.
+            if thumb_url.casefold().startswith("data:"):
+                continue
+            if thumb_url:
+                thumb_path = unquote(urlparse(thumb_url).path)
+                looks_native_thumb = (
+                    "/wp-content/uploads/" in thumb_path.casefold()
+                    and re.search(r"[_-]\d{2,4}x\d{2,4}(?:[_-]|\.|$)", Path(thumb_path).name, re.I)
+                )
+                if not looks_native_thumb and not symbol:
+                    continue
+            elif not symbol:
+                continue
+
+            local_path = ""
+            if local_file:
+                candidate = child / local_file
+                if candidate.exists():
+                    local_path = str(candidate)
+
+            name = str(metadata.get("human_name") or "").strip() or _human_from_slug(slug)
+            recovered[slug] = Game(
+                provider=self.key,
+                slug=slug,
+                name=name,
+                url=f"https://www.pragmaticplay.com/en/games/{slug}/",
+                thumbnail_url=thumb_url,
+                thumbnail_path=local_path,
+                symbol=symbol,
+            )
+
+        return sorted(recovered.values(), key=lambda item: item.name.casefold())
+
     def _write_catalog_index(self, games: list[Game]) -> None:
         payload = {
             "schema": "tester-spin/provider-catalog/v1",
