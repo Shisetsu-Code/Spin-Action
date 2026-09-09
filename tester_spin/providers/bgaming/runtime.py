@@ -244,13 +244,26 @@ def balance_total(payload: dict[str, Any]) -> int | float | None:
     balance = payload.get("balance")
     if isinstance(balance, (int, float)):
         return balance
-    if not isinstance(balance, dict):
-        return None
-    wallet = balance.get("wallet")
-    game = balance.get("game")
-    if not isinstance(wallet, (int, float)) or not isinstance(game, (int, float)):
-        return None
-    return wallet + game
+    if isinstance(balance, dict):
+        wallet = balance.get("wallet")
+        game = balance.get("game")
+        if isinstance(wallet, (int, float)) and isinstance(game, (int, float)):
+            return wallet + game
+
+    # Switchable/container games can return wallet/game at the top level.
+    wallet = payload.get("wallet")
+    game = payload.get("game")
+    if isinstance(wallet, (int, float)) and isinstance(game, (int, float)):
+        return wallet + game
+    return None
+
+
+def is_switchable_container_init(data: dict[str, Any]) -> bool:
+    return (
+        not isinstance(data.get("options"), dict)
+        and isinstance(data.get("wallet"), (int, float))
+        and isinstance(data.get("game"), (int, float))
+    )
 
 
 def is_line_bet_init(data: dict[str, Any]) -> bool:
@@ -499,6 +512,10 @@ def flow_continuation_command(data: dict[str, Any]) -> str:
     )
     if state == "freespins" and "freespin" in action_names:
         return "freespin"
+    if state == "gamble" and "close" in action_names:
+        # HAR-confirmed terminal path: collect/close instead of placing an
+        # unsolicited gamble bet.
+        return "close"
     if (
         state == "preselection_game"
         and "play_preselection_game" in action_names
