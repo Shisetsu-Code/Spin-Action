@@ -610,7 +610,10 @@ def validate_spin(
                 f"flow.command inesperado para {command}: {flow_command!r}"
             )
         if command == "spin":
-            if state not in {"closed", "freespins", "preselection_game"}:
+            if (
+                state not in {"closed", "freespins", "preselection_game"}
+                and not flow_continuation_command(data)
+            ):
                 warnings.append(f"flow.state spin no observado: {state!r}")
         elif command == "freespin":
             if state not in {"freespins", "closed"}:
@@ -621,7 +624,10 @@ def validate_spin(
                     f"flow.state preselection_game no terminal: {state!r}"
                 )
         elif command not in {"spin", "freespin"}:
-            if state not in {command, "closed"}:
+            if (
+                state not in {command, "closed"}
+                and not flow_continuation_command(data)
+            ):
                 warnings.append(
                     f"flow.state inesperado para {command}: {state!r}"
                 )
