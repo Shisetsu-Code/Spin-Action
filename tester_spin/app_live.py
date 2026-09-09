@@ -8,6 +8,12 @@ from tester_spin.app import TesterSpinApp
 from tester_spin.models import Game
 
 
+def _catalog_shrink_suspicious(previous_count: int, current_count: int) -> bool:
+    previous = max(0, int(previous_count))
+    current = max(0, int(current_count))
+    return previous >= 100 and current < max(25, int(previous * 0.60))
+
+
 class LiveTesterSpinApp(TesterSpinApp):
     """GUI variant that streams catalog discoveries into the table immediately."""
 
@@ -84,9 +90,9 @@ class LiveTesterSpinApp(TesterSpinApp):
                 # shrinkage. A provider catalog may legitimately change, but losing
                 # most rows in one crawl is far more likely to be a WAF/DOM/parser
                 # regression than hundreds of simultaneous removals.
-                shrink_suspicious = (
-                    previous_count >= 100
-                    and len(games) < max(25, int(previous_count * 0.60))
+                shrink_suspicious = _catalog_shrink_suspicious(
+                    previous_count,
+                    len(games),
                 )
 
                 can_reconcile = (
