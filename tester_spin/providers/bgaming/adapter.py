@@ -17,6 +17,7 @@ from tester_spin.providers.bgaming.runtime import (
     balance_total,
     bootstrap_game,
     post_command,
+    sanitize_error_text,
     sanitize_options,
     sanitize_session_url,
     validate_init,
@@ -439,7 +440,7 @@ class BGamingProvider(ProviderAdapter):
                 )
             )
         except Exception as exc:
-            message = f"{type(exc).__name__}: {exc}"
+            message = sanitize_error_text(f"{type(exc).__name__}: {exc}")
             errors.append(message)
             progress(f"[{game.name}] BGaming bootstrap/init ERROR: {message}")
 
