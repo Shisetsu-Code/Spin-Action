@@ -91,6 +91,9 @@ def _best_image(img: Tag | None, base_url: str) -> str:
 class BelatraProvider(ProviderAdapter):
     key = "belatra"
     display_name = "Belatra Games"
+    # The public demo backend was observed invalidating/rejecting sessions when
+    # multiple games were opened concurrently. Retests one-by-one recovered OKs.
+    max_test_concurrency = 1
     # Slot category observed in the supplied Belatra HAR.
     catalog_url = "https://belatragames.com/es/games/category/2"
 
@@ -928,7 +931,7 @@ class BelatraProvider(ProviderAdapter):
         vip = gs.get("vipMode")
         dop = gs.get("dop")
         other = gs.get("other")
-        return {
+        request = {
             "q": "start",
             "betPerLine": bet_per_line,
             "nlines": nlines,
@@ -948,6 +951,15 @@ class BelatraProvider(ProviderAdapter):
                 else 0
             ),
         }
+
+        # Some current Belatra games expose a math/volatility selector. The
+        # Slattors Battle HAR confirms that isMathElf is part of every start
+        # request and that both 0 and 1 are accepted. Preserve the server's
+        # current/default selection instead of omitting the required field.
+        if "isMathElf" in gs:
+            request["isMathElf"] = int(gs.get("isMathElf") or 0)
+
+        return request
 
     def _execute_direct_spin(
         self,
@@ -974,7 +986,10 @@ class BelatraProvider(ProviderAdapter):
         if history_id is None:
             raise RuntimeError("Belatra start response does not contain historyId.")
 
-        if phase_next != "toPaid":
+        # Modern base wins commonly go toPaid. Older titles can expose the
+        # optional double/gamble dialog instead. A Lucky Drink HAR confirms that
+        # the official client may decline that dialog by sending q=finish directly.
+        if phase_next not in {"toPaid", "toDoubleDialog"}:
             return True, False, 1, phase_cur, phase_next
 
         finish_response = self._post_direct_game(
@@ -1390,10 +1405,31 @@ class BelatraProvider(ProviderAdapter):
                 run_dir=run_dir,
             )
             enter_gs = state["enter"].get("gs") or {}
+            capability_parts: list[str] = []
+            if "isMathElf" in enter_gs:
+                capability_parts.append(
+                    f"math_selector=isMathElf:{enter_gs.get('isMathElf')}"
+                )
+            vip_mode = enter_gs.get("vipMode")
+            if isinstance(vip_mode, dict) and float(vip_mode.get("vipBetK") or 0) > 1:
+                capability_parts.append(
+                    f"vip_bet=x{vip_mode.get('vipBetK')}"
+                )
+            buy_bonus = enter_gs.get("buyBonus")
+            if isinstance(buy_bonus, dict):
+                options = buy_bonus.get("buyTotalBetK")
+                if isinstance(options, list) and options:
+                    capability_parts.append(f"buy_options={len(options)}")
+
             progress(
                 f"[{game.name}] ENTER OK: nickname={state.get('nickname') or '—'}, "
                 f"phase={enter_gs.get('phaseCur') or '—'}→{enter_gs.get('phaseNext') or '—'}, "
                 f"endpoint={state.get('endpoint')}"
+                + (
+                    ", capacidades=" + ",".join(capability_parts)
+                    if capability_parts
+                    else ""
+                )
             )
         except Exception as exc:
             message = f"{type(exc).__name__}: {exc}"

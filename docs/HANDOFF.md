@@ -1044,3 +1044,74 @@ Pendiente Belatra después de este HAR:
 5. cualquier otra q específica observada en futuros HAR.
 
 El spin base ya no debe quedar `PARCIAL` si termina en `finished→toIdle`.
+
+## 9.7 Belatra: límite de sesión y variantes confirmadas
+
+Observación operativa importante:
+
+- el demo público de Belatra puede invalidar/rechazar sesiones cuando se abren varios juegos simultáneamente;
+- al repetir los mismos títulos uno a uno aparecieron nuevos `OK`;
+- Tester-Spin limita por defecto Belatra a `max_test_concurrency=1`;
+- el scheduler impone ese límite incluso si la GUI o un backend futuro solicita más workers.
+
+Esto evita clasificar como incompatibilidad del juego un `HTTP 500` inducido por concurrencia.
+
+### Selector matemático / volatilidad
+
+HAR de Slattors Battle - Orcs vs Elves:
+
+```text
+nickname=battle
+modification=151
+```
+
+El `enter` expone:
+
+```text
+isMathElf = 1
+vipMode.vipBetK = 1.2
+buyBonus.buyTotalBetK = 3 opciones
+```
+
+El cliente oficial envía `isMathElf` en cada `start` y el HAR confirma HTTP 200 para:
+
+```text
+isMathElf=0 / vipOn=0
+isMathElf=0 / vipOn=1
+isMathElf=1 / vipOn=0
+isMathElf=1 / vipOn=1
+```
+
+Por eso el start base debe preservar `isMathElf` cuando aparece en `gs`.
+
+Las opciones de buy bonus se detectan pero no deben ejecutarse automáticamente hasta capturar su request exacto.
+
+### Legacy double dialog
+
+HAR de Lucky Drink:
+
+```text
+nickname=lucky_old
+modification=6
+```
+
+Un spin ganador puede devolver:
+
+```text
+phaseCur=basedeal
+phaseNext=toDoubleDialog
+```
+
+El cliente oficial puede declinar el gamble/double enviando directamente:
+
+```json
+{"q":"finish","ghistId":<historyId>}
+```
+
+y termina en:
+
+```text
+finished → toIdle
+```
+
+Por lo tanto `toDoubleDialog` es una continuación conocida y terminalizable; ya no debe quedar PARCIAL sólo por aparecer esa fase.

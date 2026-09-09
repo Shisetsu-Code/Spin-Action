@@ -34,6 +34,9 @@ Proveedores disponibles: **Pragmatic Play**, **1spin4win (D1)** y **Belatra Game
 - La ficha corporativa actual publica un iframe `https://demo.bltr-static.com/belatra/demo?game=<nickname>`; aliases `free-slot` se conservan como fallback histórico.
 - La demo crea una sesión y expone `var config` con `request_crypt`, `sc`, `sid`, `modification` y `nickname`.
 - El runtime funcional confirmado es HTTP cifrado: `POST https://demo.bltr-static.com/game`. El único WebSocket del HAR era Yandex/WebVisor.
+- El demo público se prueba con una sola sesión Belatra activa (`max_test_concurrency=1`): ejecutar varios juegos simultáneos produjo 500 intermitentes que desaparecieron al repetirlos individualmente.
+- Algunos títulos exponen campos adicionales de modo en `enter`, por ejemplo `isMathElf` y `vipMode`; el start base preserva el selector matemático cuando existe.
+- Los títulos legacy pueden pasar por `basedeal → toDoubleDialog`; Tester-Spin declina ese gamble con `finish` y valida `finished → toIdle`.
 - Tester-Spin reproduce el cifrado AES-CTR del cliente y ejecuta el spin base endpoint-first: `enter → start → finish`.
 - Un spin queda `OK` sólo cuando `start.phaseNext=toPaid` y `finish` termina en `phaseCur=finished`, `phaseNext=toIdle`.
 - Features/buy/free-spins no observados todavía quedan `PARCIAL` con la respuesta descifrada preservada.

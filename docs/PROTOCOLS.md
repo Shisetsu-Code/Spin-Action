@@ -962,3 +962,57 @@ nickname=fortune_mummy
 La captura contiene múltiples pares `start/finish` válidos y una variación de apuesta de `betPerLine=10` a `12`, confirmando que los parámetros se transmiten explícitamente y no están hardcodeados en el endpoint.
 
 Este HAR reemplaza la hipótesis anterior de “runtime Belatra todavía desconocido”: el spin base está suficientemente documentado para ejecución HTTP directa.
+
+## 4.17 Concurrencia del demo Belatra
+
+La concurrencia del runner no es equivalente a la capacidad del proveedor.
+
+Evidencia operativa:
+
+- con tres demos simultáneas aparecieron HTTP 500 en títulos que luego devolvieron OK al ejecutarse individualmente;
+- por lo tanto Belatra se ejecuta con una sola sesión activa por defecto.
+
+La limitación se modela como capacidad del provider (`max_test_concurrency=1`), no como excepción de GUI.
+
+## 4.18 isMathElf y vipOn
+
+Slattors Battle confirma dos dimensiones de modo en `start`:
+
+```text
+isMathElf ∈ {0,1}
+vipOn     ∈ {0,1}
+```
+
+Ejemplo observado:
+
+```json
+{
+  "q": "start",
+  "betPerLine": 10,
+  "nlines": 20,
+  "denom": 1,
+  "buyBonus": null,
+  "selectId": null,
+  "vipOn": 1,
+  "isMathElf": 0
+}
+```
+
+El `enter` devuelve el valor actual/default de `isMathElf`; el start base debe reenviarlo.
+
+`vipMode.vipBetK` describe el multiplicador del modo de apuesta VIP. En el HAR observado es 1.2.
+
+`buyBonus.buyTotalBetK` lista tres opciones con id/cost/prefix2/rtp, pero el contrato de compra todavía no está implementado sin un HAR de una compra real.
+
+## 4.19 Legacy toDoubleDialog
+
+Para títulos legacy como Lucky Drink:
+
+```text
+start
+→ basedeal / toDoubleDialog
+→ finish(ghistId)
+→ finished / toIdle
+```
+
+No es necesario ejecutar la apuesta de double/gamble para completar el spin base; `finish` la declina.

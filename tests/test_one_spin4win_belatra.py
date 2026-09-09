@@ -639,6 +639,75 @@ class BelatraCatalogTests(unittest.TestCase):
             },
         )
 
+    def test_base_spin_request_preserves_math_selector_when_present(self) -> None:
+        request = self.provider._base_spin_request(
+            {
+                "gs": {
+                    "betPerLine": 10,
+                    "nlines": 20,
+                    "linesAssortment": [20],
+                    "gdenom": 1,
+                    "vipMode": {"on": 0, "vipBetK": 1.2},
+                    "dop": {"curModeID": 0},
+                    "other": {"showingInMoney": 0},
+                    "isMathElf": 1,
+                }
+            }
+        )
+        self.assertEqual(request["isMathElf"], 1)
+        self.assertEqual(request["vipOn"], 0)
+
+    def test_legacy_double_dialog_can_be_declined_with_finish(self) -> None:
+        state = {
+            "enter": {
+                "gs": {
+                    "betPerLine": 4,
+                    "nlines": 15,
+                    "linesAssortment": [15],
+                    "gdenom": 1,
+                    "other": {"showingInMoney": 0},
+                }
+            },
+            "history_id": None,
+        }
+        calls: list[dict] = []
+
+        def fake_post(_state, payload, **_kwargs):
+            calls.append(dict(payload))
+            if payload["q"] == "start":
+                return {
+                    "gs": {
+                        "phaseCur": "basedeal",
+                        "phaseNext": "toDoubleDialog",
+                        "historyId": 174424354,
+                        "curWin": 80,
+                    }
+                }
+            if payload["q"] == "finish":
+                return {
+                    "gs": {
+                        "phaseCur": "finished",
+                        "phaseNext": "toIdle",
+                        "historyId": 174424354,
+                        "curWin": 80,
+                    }
+                }
+            raise AssertionError(payload)
+
+        self.provider._post_direct_game = fake_post  # type: ignore[method-assign]
+        with tempfile.TemporaryDirectory() as attempt:
+            ok, terminal, steps, phase_cur, phase_next = self.provider._execute_direct_spin(
+                state,
+                timeout_s=5.0,
+                attempt_dir=Path(attempt),
+            )
+
+        self.assertTrue(ok)
+        self.assertTrue(terminal)
+        self.assertEqual(steps, 2)
+        self.assertEqual((phase_cur, phase_next), ("finished", "toIdle"))
+        self.assertEqual(calls[1], {"q": "finish", "ghistId": 174424354})
+
     def test_direct_spin_start_finish_reaches_terminal(self) -> None:
         state = {
             "enter": {

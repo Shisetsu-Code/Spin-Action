@@ -99,6 +99,15 @@ class CurrentTesterSpinApp(LiveTesterSpinApp):
             return
 
         provider = self._provider()
+        requested_concurrency = config.concurrency
+        effective_concurrency = provider.effective_test_concurrency(requested_concurrency)
+        if effective_concurrency != requested_concurrency:
+            config = ExecutionConfig(
+                concurrency=effective_concurrency,
+                spins_per_game=config.spins_per_game,
+                delay_between_starts_s=config.delay_between_starts_s,
+                timeout_s=config.timeout_s,
+            )
         self._stop_event = threading.Event()
         self._test_total = len(games)
         self._test_done = 0
@@ -108,7 +117,13 @@ class CurrentTesterSpinApp(LiveTesterSpinApp):
         self.progress.configure(mode="determinate", maximum=max(1, len(games)), value=0)
         self._append_log(
             f"=== INICIO: proveedor={provider.display_name}, backend={self._execution_backend.key}, "
-            f"juegos={len(games)}, simultáneos={config.concurrency}, "
+            f"juegos={len(games)}, simultáneos={config.concurrency}"
+            + (
+                f" (solicitados={requested_concurrency}, limitado por proveedor)"
+                if config.concurrency != requested_concurrency
+                else ""
+            )
+            + ", "
             f"repeticiones/modo={config.spins_per_game}, "
             f"delay={config.delay_between_starts_s}s ==="
         )
