@@ -142,20 +142,35 @@ def _slug_from_url(value: str) -> str:
     if not text:
         return ""
     try:
-        path = urlparse(text).path if "://" in text else urlparse(urljoin("https://www.pragmaticplay.com", text)).path
+        absolute = text if "://" in text else urljoin("https://www.pragmaticplay.com", text)
+        parsed = urlparse(absolute)
     except Exception:
         return ""
-    match = GAME_URL_RE.search(path)
+    host = (parsed.hostname or "").casefold()
+    if host not in {"pragmaticplay.com", "www.pragmaticplay.com"}:
+        return ""
+    match = GAME_URL_RE.search(parsed.path)
     return match.group(1).lower() if match else ""
 
 
 def _slug_from_thumbnail(src: str) -> str:
     text = _clean(src)
-    if not text:
+    if not text or text.casefold().startswith("data:"):
         return ""
-    filename = unquote(Path(urlparse(text).path).stem)
+    parsed = urlparse(text)
+    if parsed.scheme.casefold() not in {"http", "https"}:
+        return ""
+    path = unquote(parsed.path)
+    # Thumbnail-only recovery is intentionally strict. It exists for hidden
+    # preloaded game cards whose permalink is absent, not for arbitrary site
+    # images such as language flags, logos or navigation icons.
+    if "/wp-content/uploads/" not in path.casefold():
+        return ""
+    filename = Path(path).stem
     match = THUMB_NAME_RE.match(filename)
-    stem = match.group("name") if match else filename
+    if match is None:
+        return ""
+    stem = match.group("name")
     stem = re.sub(r"[_-](?:EN|ES|DE|FR|IT|PT|BR|PL|RO|RU|TR|JA|KO|TH|VI)$", "", stem, flags=re.I)
     stem = stem.replace("&", " and ")
     stem = re.sub(r"[^A-Za-z0-9]+", "-", stem).strip("-").lower()
@@ -230,12 +245,23 @@ def snapshot_to_game(snapshot: dict[str, Any], base_url: str) -> Game | None:
     if not slug:
         return None
 
-    name_candidates = _candidate_text_lines(snapshot)
     fallback = _human_from_slug(slug)
     name = fallback
+
+    if actual_url:
+        name_candidates = _candidate_text_lines(snapshot)
+    else:
+        # Thumbnail-only recovery must not borrow broad ancestor text. That was
+        # the source of false rows such as language labels ("日本語") when the
+        # fallback DOM temporarily matched site chrome instead of a game card.
+        image_candidates = {
+            "image": image,
+            "text": "",
+        }
+        name_candidates = _candidate_text_lines(image_candidates)
+
     for candidate in name_candidates:
-        # Prefer text that resembles a human title instead of UI labels.
-        if candidate.casefold() != fallback.casefold() and candidate.casefold() in IGNORED_TEXT:
+        if candidate.casefold() in IGNORED_TEXT:
             continue
         name = candidate
         break
