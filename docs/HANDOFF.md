@@ -1200,5 +1200,6 @@ Current invariants:
 6. Data-URI placeholders are never persisted as thumbnails. If a valid lazy `data-src` exists it is preferred.
 7. A navigation/language image next to a valid game URL cannot supply the game name; the slug-derived name is used instead.
 8. Previously discovered per-game artifacts are preserved and may be used to recover known rows during a non-authoritative fallback.
+9. Hidden/preloaded DOM cards do not prove catalogue exhaustion: if a click only reveals existing nodes but Load More remains active, the fallback keeps probing. It stops only when the control disappears or after 8 consecutive no-growth clicks.
 
 The safe failure mode is under-enumeration with no deletion, never a destructive partial catalogue.
