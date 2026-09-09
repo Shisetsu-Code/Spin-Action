@@ -91,6 +91,9 @@ def _best_image(img: Tag | None, base_url: str) -> str:
 class BelatraProvider(ProviderAdapter):
     key = "belatra"
     display_name = "Belatra Games"
+    # The public demo backend was observed invalidating/rejecting sessions when
+    # multiple games were opened concurrently. Retests one-by-one recovered OKs.
+    max_test_concurrency = 1
     # Slot category observed in the supplied Belatra HAR.
     catalog_url = "https://belatragames.com/es/games/category/2"
 
