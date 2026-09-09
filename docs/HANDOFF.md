@@ -1281,3 +1281,17 @@ Current invariants:
 9. Hidden/preloaded DOM cards do not prove catalogue exhaustion: if a click only reveals existing nodes but Load More remains active, the fallback keeps probing. It stops only when the control disappears or after 8 consecutive no-growth clicks.
 
 The safe failure mode is under-enumeration with no deletion, never a destructive partial catalogue.
+
+
+### BGaming HAR adicional: compras y free spins
+
+Evidencia 2026-09-09:
+
+- `AlienFruits3` confirma `options.feature_options.feature_multipliers` y ejecución de compras por `spin.options.purchased_feature`.
+- compras observadas: `bonus_buy` y `bonus_chance`;
+- costo real se valida con `feature_multiplier/base_bet`, no con `outcome.bet` solamente;
+- `AlienFruits3` es seed-driven: `outcome.screen=null` + `outcome.storage.seed` es un resultado válido;
+- `TreasureOfAnubis` confirma transición natural `spin → freespins → freespin...`;
+- los freespins mantienen `round_id`, avanzan `last_action_id`, soportan retrigger y terminan en `state=closed` con `available_actions=[init,spin]`;
+- las continuaciones `freespin` tienen débito cero y sus wins se acumulan en `balance.game`;
+- el runner BGaming prueba SPIN base y cada compra publicada, y sigue automáticamente free spins hasta terminal.
