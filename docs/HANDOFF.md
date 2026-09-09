@@ -32,6 +32,7 @@ El proyecto NO debe marcar `OK` sólo porque una página o demo devuelve HTTP 20
 | Pragmatic Play | `pragmatic` | AJAX Load More real | HTTP `gameService` endpoint-first | Maduro |
 | 1spin4win / D1 | `1spin4win` | Webflow HTML paginado | WebSocket directo | Spin base funcional |
 | Belatra Games | `belatra` | Next.js/RSC categoría 2 | HTTP cifrado `POST /game` endpoint-first | Spin base funcional; features/buy/free-spins pendientes |
+| BGaming | `bgaming` | HTML inicial + WordPress REST `/wp-json/bg/v1/games/search` | HTTP JSON API v2 `init/spin` | Spin base funcional; features no observadas quedan PARCIAL |
 
 ## 3. Comandos habituales
 
@@ -155,6 +156,9 @@ Nunca afirmar que una rama está validada hasta que el workflow CI correspondien
 - `tester_spin/providers/pragmatic_hybrid.py`
 - `tester_spin/providers/one_spin4win.py`
 - `tester_spin/providers/belatra.py`
+- `tester_spin/providers/bgaming/adapter.py`
+- `tester_spin/providers/bgaming/catalog.py`
+- `tester_spin/providers/bgaming/runtime.py`
 
 ## 5. Semántica de la GUI
 
@@ -701,6 +705,80 @@ Estado runtime actual:
 - features, buy bonus, free spins y selecciones `selectId` no observadas siguen en `PARCIAL`.
 
 No inventar continuaciones no observadas: preservar request/response descifrados y añadir handlers únicamente con HAR/runtime suficiente.
+
+## 9.5 BGaming — estado actual
+
+BGaming está integrado como provider aislado (`key=bgaming`).
+
+### Catálogo
+
+Fuente pública:
+
+```text
+https://bgaming.com/game-type/slots
+```
+
+Paginación observada:
+
+```text
+GET https://bgaming.com/wp-json/bg/v1/games/search?page=N
+```
+
+La respuesta expone `page`, `total`, `hasMore` y HTML de 25 tarjetas. Sólo `hasMore=false` autoriza considerar el crawl completo. Una interrupción, límite manual o error REST marca el crawl como no autoritativo.
+
+Cada tarjeta puede aportar:
+
+- nombre;
+- slug;
+- URL pública;
+- URL demo;
+- identifier;
+- thumbnail;
+- RTP;
+- volatility;
+- game type.
+
+Links que ya contienen `play_token`/`launch_token` se clasifican `EPHEMERAL_DEMO` y no se persisten como URL de ejecución.
+
+### Runtime
+
+Flujo confirmado por el HAR suministrado:
+
+```text
+GET demo
+→ redirect a /games/<Identifier>/FUN
+→ extraer window.__OPTIONS__
+→ POST command=init
+→ POST command=spin
+```
+
+`window.__OPTIONS__` aporta en runtime la URL API y el header CSRF. Tokens de sesión y CSRF se mantienen sólo en memoria; `bootstrap.json` usa opciones sanitizadas y las URLs de sesión se redactan.
+
+Contrato base observado:
+
+```text
+init:
+  api_version=2
+  flow.state=ready
+  flow.command=init
+  available_actions=[init, spin]
+
+spin:
+  flow.state=closed
+  flow.command=spin
+  available_actions=[init, spin]
+```
+
+Validaciones implementadas:
+
+- `outcome.bet` coincide con la apuesta solicitada;
+- `outcome.win` numérico;
+- dimensiones `screen` contra `options.layout`;
+- estado/command de `flow`;
+- acciones desconocidas generan warning;
+- conservación contable `wallet + game = balance_previo - bet + win`.
+
+Features adicionales mencionadas por assets pero no ejecutadas en el HAR no tienen handler todavía. Cualquier estado nuevo queda `PARCIAL` y conserva request/response.
 
 ## 10. Evidencia HAR y reglas de trabajo
 
