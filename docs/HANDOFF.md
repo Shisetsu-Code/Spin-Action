@@ -1134,3 +1134,22 @@ El adapter ahora:
 7. sólo después genera RuntimeError.
 
 Esto es deliberado: no agregar campos inventados por nombre de juego. El próximo 500 debe producir evidencia suficiente para comparar el request rechazado con un HAR del mismo título o con su código cliente.
+
+## 9.9 Belatra: line/bet compatibility and mathType
+
+Four persistent start HTTP 500s were traced to request construction rather than transport.
+
+For Book of Doom, BuyBonus of Maya and Legacy of Doom, enter returned current state with nlines=10 and betPerLine=5, while Tester-Spin forced nlines=min(linesAssortment)=1 and kept betPerLine=5. Their betDependOnLines tables explicitly reject that combination for line 1, where the minimum advertised bet is 10.
+
+Rule now:
+- preserve server-authoritative current gs.nlines when it is present and allowed;
+- preserve gs.betPerLine;
+- if the chosen line count has an explicit betDependOnLines row and the current bet is not allowed there, choose the first advertised allowed bet for that line;
+- do not minimize lines just to reduce wager size.
+
+Cops vs Robs exposes gs.mathType directly:
+- mathType=0 corresponds to the Cops math;
+- analInfo.mathTypeCops=0;
+- analInfo.mathTypeRobs=1.
+
+mathType is now propagated to start alongside existing isMath* selectors.
