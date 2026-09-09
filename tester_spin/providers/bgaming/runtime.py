@@ -253,6 +253,90 @@ def balance_total(payload: dict[str, Any]) -> int | float | None:
     return wallet + game
 
 
+def is_line_bet_init(data: dict[str, Any]) -> bool:
+    options = data.get("options")
+    if not isinstance(options, dict):
+        return False
+    line_bets = options.get("line_bets")
+    lines = options.get("lines")
+    return (
+        isinstance(line_bets, list)
+        and bool(line_bets)
+        and isinstance(lines, list)
+        and bool(lines)
+    )
+
+
+def line_bet_count(data: dict[str, Any]) -> int:
+    options = data.get("options")
+    if not isinstance(options, dict):
+        return 0
+    lines = options.get("lines")
+    return len(lines) if isinstance(lines, list) else 0
+
+
+def build_line_bets(data: dict[str, Any], line_bet: int | float) -> dict[str, int | float]:
+    count = line_bet_count(data)
+    return {str(index): line_bet for index in range(count)}
+
+
+def validate_line_spin(
+    data: dict[str, Any],
+    *,
+    requested_line_bet: int | float,
+    line_count: int,
+    previous_balance_total: int | float | None,
+) -> tuple[list[str], int | float | None]:
+    warnings: list[str] = []
+
+    bets = data.get("bets")
+    line_values = bets.get("lines") if isinstance(bets, dict) else None
+    if not isinstance(line_values, dict):
+        warnings.append("line-spin sin bets.lines")
+    else:
+        expected_keys = {str(index) for index in range(line_count)}
+        actual_keys = {str(key) for key in line_values}
+        if actual_keys != expected_keys:
+            warnings.append(
+                f"line-spin líneas={len(actual_keys)}, esperadas={line_count}"
+            )
+        bad = [
+            key
+            for key, value in line_values.items()
+            if value != requested_line_bet
+        ]
+        if bad:
+            warnings.append(f"line-spin apuestas distintas en líneas={bad[:8]}")
+
+    game = data.get("game")
+    if not isinstance(game, dict):
+        warnings.append("line-spin sin game")
+    else:
+        if str(game.get("action") or "") != "spin":
+            warnings.append(f"line-spin action inesperada={game.get('action')!r}")
+        if str(game.get("state") or "") != "closed":
+            warnings.append(f"line-spin state no terminal={game.get('state')!r}")
+
+    commands = data.get("available_commands")
+    if isinstance(commands, list) and "spin" not in {str(item) for item in commands}:
+        warnings.append(f"line-spin sin spin disponible: {commands!r}")
+
+    current_balance = balance_total(data)
+    inferred_win: int | float | None = None
+    if previous_balance_total is not None and current_balance is not None:
+        total_bet = float(requested_line_bet) * float(line_count)
+        inferred_win = (
+            float(current_balance)
+            - float(previous_balance_total)
+            + total_bet
+        )
+        if inferred_win < -1e-9:
+            warnings.append(
+                f"line-spin balance imposible: win inferido={inferred_win:g}"
+            )
+    return warnings, inferred_win
+
+
 def resolve_base_bet(data: dict[str, Any]) -> tuple[int | float | None, str]:
     options = data.get("options")
     if not isinstance(options, dict):
@@ -394,7 +478,8 @@ def pending_flow_actions(data: dict[str, Any]) -> list[str]:
 
 def validate_init(data: dict[str, Any]) -> list[str]:
     warnings: list[str] = []
-    if str(data.get("api_version") or "") != "2":
+    legacy_lines = is_line_bet_init(data)
+    if not legacy_lines and str(data.get("api_version") or "") != "2":
         warnings.append(f"api_version no observada: {data.get('api_version')!r}")
 
     options = data.get("options")
@@ -404,6 +489,7 @@ def validate_init(data: dict[str, Any]) -> list[str]:
 
     default_bet = options.get("default_bet")
     available_bets = options.get("available_bets")
+    line_bets = options.get("line_bets")
     resolved_bet, _source = resolve_base_bet(data)
     if resolved_bet is None:
         warnings.append(
@@ -412,10 +498,13 @@ def validate_init(data: dict[str, Any]) -> list[str]:
     if (
         not isinstance(default_bet, (int, float))
         and (not isinstance(available_bets, list) or not available_bets)
+        and (not isinstance(line_bets, list) or not line_bets)
     ):
         warnings.append("init sin metadata de apuestas")
 
     flow = data.get("flow")
+    if legacy_lines:
+        return warnings
     if not isinstance(flow, dict):
         warnings.append("init sin flow")
     else:
