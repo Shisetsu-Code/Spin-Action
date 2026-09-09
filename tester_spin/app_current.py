@@ -7,6 +7,7 @@ import time
 from tkinter import messagebox, ttk
 
 from tester_spin.app_live import LiveTesterSpinApp
+from tester_spin.catalog_maintenance import purge_provider_catalog_artifacts
 from tester_spin.execution_backend import ExecutionConfig, LocalThreadExecutionBackend
 from tester_spin.models import Game, GameTestResult
 from tester_spin.ui_game_index import game_sort_key, retryable_games
@@ -54,10 +55,97 @@ class CurrentTesterSpinApp(LiveTesterSpinApp):
             text=f"Ejecución: {self._execution_backend.display_name}",
         ).pack(side="left", padx=(14, 0))
 
+        catalog_controls = self.crawl_btn.master
+        self.delete_catalog_selected_btn = ttk.Button(
+            catalog_controls,
+            text="BORRAR SELECCIONADOS",
+            command=self._delete_selected_from_catalog,
+        )
+        self.delete_catalog_selected_btn.pack(side="left", padx=(8, 0))
+        self.clear_catalog_btn = ttk.Button(
+            catalog_controls,
+            text="VACIAR CATÁLOGO",
+            command=self._clear_provider_catalog,
+        )
+        self.clear_catalog_btn.pack(side="left", padx=(8, 0))
+
     def _set_busy(self, busy: bool) -> None:
         super()._set_busy(busy)
         if hasattr(self, "test_non_ok_btn"):
             self.test_non_ok_btn.configure(state="disabled" if busy else "normal")
+        if hasattr(self, "delete_catalog_selected_btn"):
+            self.delete_catalog_selected_btn.configure(state="disabled" if busy else "normal")
+        if hasattr(self, "clear_catalog_btn"):
+            self.clear_catalog_btn.configure(state="disabled" if busy else "normal")
+
+    def _delete_selected_from_catalog(self) -> None:
+        selection = self.tree.selection()
+        if not selection:
+            messagebox.showinfo("Tester-Spin", "Seleccioná uno o más juegos para borrar del catálogo.")
+            return
+
+        provider = self._provider()
+        games = [self._games[item_id] for item_id in selection if item_id in self._games]
+        if not games:
+            return
+
+        preview = "\n".join(f"• {game.name} [{game.slug}]" for game in games[:8])
+        if len(games) > 8:
+            preview += f"\n… y {len(games) - 8} más"
+
+        if not messagebox.askyesno(
+            "Tester-Spin",
+            (
+                f"¿Borrar {len(games)} juego(s) del catálogo de {provider.display_name}?\n\n"
+                f"{preview}\n\n"
+                "Quedarán EXCLUIDOS manualmente para que un próximo crawl/fallback "
+                "no los vuelva a insertar. El historial de pruebas y sus artefactos "
+                "no se borran."
+            ),
+        ):
+            return
+
+        blocked = self.storage.exclude_games(
+            provider.key,
+            {game.slug for game in games},
+            reason="manual_gui",
+        )
+        self._append_log(
+            f"Catálogo {provider.display_name}: exclusiones manuales añadidas={blocked}."
+        )
+        self.status_var.set(f"Eliminados del catálogo: {blocked}")
+        self._refresh_games()
+
+    def _clear_provider_catalog(self) -> None:
+        provider = self._provider()
+        games = self.storage.list_games(provider.key)
+        exclusions = self.storage.list_catalog_exclusions(provider.key)
+
+        if not messagebox.askyesno(
+            "Tester-Spin",
+            (
+                f"¿VACIAR COMPLETAMENTE el catálogo de {provider.display_name}?\n\n"
+                f"Filas actuales: {len(games)}\n"
+                f"Exclusiones manuales: {len(exclusions)}\n\n"
+                "Se borrarán las filas del catálogo, las exclusiones manuales y la "
+                "metadata/miniaturas usadas para reconstruir el catálogo.\n\n"
+                "SE CONSERVAN test_results y las carpetas tests/ de cada juego."
+            ),
+        ):
+            return
+
+        removed, cleared_exclusions = self.storage.clear_provider_catalog(
+            provider.key,
+            clear_exclusions=True,
+        )
+        stats = purge_provider_catalog_artifacts(provider.provider_root)
+        self._append_log(
+            f"RESET catálogo {provider.display_name}: filas={removed}, "
+            f"exclusiones={cleared_exclusions}, archivos={stats.files_removed}, "
+            f"directorios catálogo={stats.directories_removed}. Historial de pruebas preservado."
+        )
+        self.status_var.set(f"Catálogo vacío: {provider.display_name}")
+        self._refresh_games()
 
     def _test_non_ok(self) -> None:
         provider = self._provider()
