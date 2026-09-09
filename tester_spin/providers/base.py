@@ -14,6 +14,16 @@ class ProviderAdapter(ABC):
     key: str
     display_name: str
     catalog_url: str
+    # Optional provider-side cap. Some public/demo backends invalidate or reject
+    # concurrent sessions even when Tester-Spin can technically run more workers.
+    max_test_concurrency: int | None = None
+
+    def effective_test_concurrency(self, requested: int) -> int:
+        value = max(1, int(requested))
+        cap = self.max_test_concurrency
+        if cap is None:
+            return value
+        return min(value, max(1, int(cap)))
 
     @abstractmethod
     def crawl_catalog(
