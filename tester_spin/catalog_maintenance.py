@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,8 +18,12 @@ def purge_provider_catalog_artifacts(provider_root: Path) -> CatalogPurgeStats:
     The reset intentionally removes:
     - provider-level catalog.json;
     - catalog-pages/ and catalog-diagnostics/;
-    - per-game game.json metadata used by Pragmatic fallback recovery;
     - per-game thumbnail.* files.
+
+    Per-game game.json is preserved because it may contain provider protocol metadata
+    (symbol/cver/endpoint/mode catalogue). Instead it is marked with
+    catalog_recovery_disabled=true so Pragmatic fallback recovery cannot resurrect
+    the cleared catalogue until a fresh live crawl sees the game again.
 
     A per-game tests/ directory and any other runtime artifacts are preserved.
     """
@@ -46,8 +51,18 @@ def purge_provider_catalog_artifacts(provider_root: Path) -> CatalogPurgeStats:
 
         game_json = child / "game.json"
         if game_json.is_file():
-            game_json.unlink()
-            files_removed += 1
+            try:
+                metadata = json.loads(game_json.read_text(encoding="utf-8"))
+                if isinstance(metadata, dict):
+                    metadata["catalog_recovery_disabled"] = True
+                    game_json.write_text(
+                        json.dumps(metadata, ensure_ascii=False, indent=2),
+                        encoding="utf-8",
+                    )
+            except Exception:
+                # If legacy metadata cannot be parsed, leave it untouched rather
+                # than destroying potentially useful runtime evidence.
+                pass
 
         for thumbnail in child.glob("thumbnail.*"):
             if thumbnail.is_file():
