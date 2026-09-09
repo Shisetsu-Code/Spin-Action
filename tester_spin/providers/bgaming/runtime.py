@@ -387,8 +387,13 @@ def discover_purchase_modes(data: dict[str, Any]) -> list[dict[str, Any]]:
         return []
 
     base = multipliers.get("base_bet")
+    base_source = "feature_multipliers.base_bet"
     if not isinstance(base, (int, float)) or base <= 0:
-        return []
+        # BigAtlantisFrenzy HAR: freespin_buy=8000 => x80 and
+        # freespin_chance=200 => x2, with no explicit base_bet.
+        # This family publishes multipliers in percent basis (100 == x1).
+        base = 100
+        base_source = "implicit_percent_basis"
 
     disabled_raw = feature_options.get("disabled_features")
     disabled: set[str] = set()
@@ -413,6 +418,7 @@ def discover_purchase_modes(data: dict[str, Any]) -> list[dict[str, Any]]:
                 "name": feature_name,
                 "feature_multiplier": raw_multiplier,
                 "base_multiplier": base,
+                "base_source": base_source,
                 "cost_multiplier": float(raw_multiplier) / float(base),
             }
         )
