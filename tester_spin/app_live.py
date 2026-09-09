@@ -65,9 +65,14 @@ class LiveTesterSpinApp(TesterSpinApp):
         self.progress.configure(mode="indeterminate")
         self.progress.start(10)
 
+        manual_exclusions = self.storage.list_catalog_exclusions(provider.key)
+
         def on_game(game: Game) -> None:
-            # Stream directly to Tk. Persistence is committed in one provider batch
-            # after the crawl, avoiding one remote D1 request per catalogue item.
+            # Manual catalogue exclusions are applied before streaming, not only at
+            # persistence time, so a known false positive never flashes back into
+            # the GUI during a recrawl.
+            if game.slug in manual_exclusions:
+                return
             self._events.put(("catalog_game", game))
 
         def worker() -> None:
@@ -105,6 +110,17 @@ class LiveTesterSpinApp(TesterSpinApp):
                     max_pages=max_pages,
                     on_game=on_game,
                 )
+                if manual_exclusions:
+                    blocked_seen = [game for game in games if game.slug in manual_exclusions]
+                    games = [game for game in games if game.slug not in manual_exclusions]
+                    if blocked_seen:
+                        self._events.put(
+                            (
+                                "log",
+                                f"Exclusiones manuales aplicadas: {len(blocked_seen)} "
+                                "detecciones conocidas fueron omitidas.",
+                            )
+                        )
                 self.storage.upsert_games(games)
 
                 authoritative = bool(
