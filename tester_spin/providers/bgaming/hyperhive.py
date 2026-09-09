@@ -277,11 +277,13 @@ def run_hyperhive_test(
     )
     run_dir.mkdir(parents=True, exist_ok=True)
 
+    rpc_id = str(uuid.uuid4())
     init_response, init_request, init_data = _rpc(
         runtime,
         "init",
         timeout_s=timeout_s,
-        params={"token": token},
+        params={"token": token, "id": ""},
+        rpc_id=rpc_id,
     )
     init_result = init_data["result"]
     config = init_result.get("config")
@@ -317,6 +319,7 @@ def run_hyperhive_test(
     )
 
     modes = discover_modes_from_bundle(runtime, timeout_s=timeout_s)
+    state_lock = init_result.get("state_lock")
     discovered_modes = [
         {
             "id": mode["id"],
@@ -362,17 +365,26 @@ def run_hyperhive_test(
             try:
                 before_balance = float(current_balance)
                 request_spec = {"bet": default_bet, **dict(mode["request"])}
+                play_params: dict[str, Any] = {
+                    "token": token,
+                    "req": request_spec,
+                }
+                if state_lock:
+                    play_params["state_lock"] = state_lock
                 response, request_payload, data = _rpc(
                     runtime,
                     "play",
                     timeout_s=timeout_s,
-                    params={"token": token, "req": request_spec},
+                    params=play_params,
+                    rpc_id=rpc_id,
                 )
                 responded += 1
                 steps = 1
                 last_status = int(response.status_code)
                 first_summary = _result_summary(data)
                 final_summary = first_summary
+                if first_summary.get("state_lock"):
+                    state_lock = first_summary["state_lock"]
 
                 (attempt_dir / "step-001-request.json").write_text(
                     json.dumps(_safe_json(request_payload), ensure_ascii=False, indent=2),
@@ -393,18 +405,36 @@ def run_hyperhive_test(
                     if steps >= guard:
                         warnings.append(f"HyperHive guard alcanzado ({guard})")
                         break
+                    base_bet_type = str(
+                        dict(modes[0]["request"]).get("bet_type") or "bet"
+                    )
+                    next_action = str(
+                        final_summary.get("next_action") or ""
+                    ).strip().casefold()
+                    continuation_req: dict[str, Any] = {
+                        "bet": default_bet,
+                        "bet_type": base_bet_type,
+                    }
+                    if next_action:
+                        continuation_req["action"] = next_action
+                    play_params = {
+                        "token": token,
+                        "req": continuation_req,
+                    }
+                    if state_lock:
+                        play_params["state_lock"] = state_lock
                     response, request_payload, data = _rpc(
                         runtime,
                         "play",
                         timeout_s=timeout_s,
-                        params={
-                            "token": token,
-                            "req": {"bet": default_bet, "bet_type": "bet"},
-                        },
+                        params=play_params,
+                        rpc_id=rpc_id,
                     )
                     steps += 1
                     last_status = int(response.status_code)
                     final_summary = _result_summary(data)
+                    if final_summary.get("state_lock"):
+                        state_lock = final_summary["state_lock"]
                     (attempt_dir / f"step-{steps:03d}-request.json").write_text(
                         json.dumps(
                             _safe_json(request_payload),
