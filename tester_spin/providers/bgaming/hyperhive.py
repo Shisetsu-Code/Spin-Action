@@ -23,14 +23,10 @@ from tester_spin.providers.bgaming.runtime import (
 
 
 def is_hyperhive_runtime(runtime: BGamingRuntime) -> bool:
+    # game_bundle_source/version also exist in normal API-v2 launches.
+    # The HAR-confirmed discriminator is the final /hyperhive route.
     path = urlparse(runtime.launch_url).path.rstrip("/").casefold()
-    options = runtime.options
-    return (
-        path.endswith("/hyperhive")
-        or bool(options.get("game_bundle_source"))
-        and str(options.get("game") or "").startswith("slots/")
-        and str(options.get("version") or "") == "1.0.0"
-    )
+    return path.endswith("/hyperhive")
 
 
 def _origin(url: str) -> str:
