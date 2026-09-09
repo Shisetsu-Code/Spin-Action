@@ -685,3 +685,13 @@ Comparar además bootstrap/enter.response.json.
 Buscar especialmente campos top-level de gs relacionados con isMath*, mode, volatility, selector, buyBonus, vipMode y dop.
 
 No añadir un campo al start sólo porque aparezca en enter; confirmar mediante HAR/código cliente salvo para la familia isMath*, que ya está respaldada por el HAR de Slattors.
+
+## 15.5 Diagnosing Belatra 500 from line/bet mismatch
+
+When start returns HTTP 500, compare:
+- bootstrap/enter.response.json -> gs.nlines, gs.betPerLine, gs.linesAssortment, gs.betDependOnLines
+- attempt-001/start.request.json -> nlines, betPerLine
+
+If the request pair was not explicitly valid according to enter, the failure is request construction, not provider instability.
+
+Cops vs Robs additionally requires checking gs.mathType. The current adapter propagates it automatically.
