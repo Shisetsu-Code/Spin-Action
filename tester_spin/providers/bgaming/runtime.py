@@ -63,7 +63,10 @@ def sanitize_options(value: Any) -> Any:
     if isinstance(value, dict):
         clean: dict[str, Any] = {}
         for key, item in value.items():
-            if key in SENSITIVE_OPTION_KEYS:
+            key_lower = str(key).casefold()
+            if key in SENSITIVE_OPTION_KEYS or (
+                "token" in key_lower and key != "csrfTokenHeaderName"
+            ):
                 clean[key] = "<redacted>"
             elif key == "api":
                 clean[key] = sanitize_session_url(str(item))
