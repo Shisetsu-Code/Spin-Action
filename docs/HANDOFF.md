@@ -31,7 +31,7 @@ El proyecto NO debe marcar `OK` sólo porque una página o demo devuelve HTTP 20
 |---|---|---|---|---|
 | Pragmatic Play | `pragmatic` | AJAX Load More real | HTTP `gameService` endpoint-first | Maduro |
 | 1spin4win / D1 | `1spin4win` | Webflow HTML paginado | WebSocket directo | Spin base funcional |
-| Belatra Games | `belatra` | Next.js/RSC categoría 2 | bootstrap/demo discovery | Catálogo corregido; spin pendiente |
+| Belatra Games | `belatra` | Next.js/RSC categoría 2 | HTTP cifrado `POST /game` endpoint-first | Spin base funcional; features/buy/free-spins pendientes |
 
 ## 3. Comandos habituales
 
@@ -693,10 +693,14 @@ Estado runtime actual:
 
 - catálogo: implementado con Next/RSC;
 - demo/bootstrap: implementado;
-- spin real: todavía no implementado;
-- resultado esperado de un bootstrap exitoso: `PARCIAL`.
+- spin base: implementado endpoint-first sobre HTTP cifrado `POST /game`;
+- flujo validado: `enter → start → finish`;
+- terminal validado: `start.phaseNext=toPaid` y `finish: finished → toIdle`;
+- `toDoubleDialog` legacy se terminaliza declinando gamble mediante `finish`;
+- `max_test_concurrency=1` por límite observado del demo público;
+- features, buy bonus, free spins y selecciones `selectId` no observadas siguen en `PARCIAL`.
 
-No inventar el protocolo de spin. Esperar HAR/runtime que muestre request/WS/eventos reales.
+No inventar continuaciones no observadas: preservar request/response descifrados y añadir handlers únicamente con HAR/runtime suficiente.
 
 ## 10. Evidencia HAR y reglas de trabajo
 
@@ -766,7 +770,7 @@ D1 usa sesiones WS independientes.
 
 Pragmatic usa sesiones HTTP aisladas por worker.
 
-Belatra debe seguir el mismo principio cuando su runtime sea implementado.
+Belatra ya sigue el mismo principio y además limita el provider a una sola sesión activa (`max_test_concurrency=1`) por los HTTP 500 observados bajo concurrencia.
 
 ## 13. Updater y distribución
 
@@ -906,22 +910,25 @@ Mantener tests existentes de:
 - PR #16: catálogo D1 corregido desde HAR Webflow.
 - PR #17: ejecución directa de spin D1 sobre WS.
 - PR #18: fallback runtime para D1 cuando assets no exponen `gameURL`.
-- Siguiente cambio: Belatra Next/RSC category 2 + documentación de handoff.
+- Belatra Next/RSC y el spin base HTTP cifrado ya están implementados; los siguientes cambios deben concentrarse en estados/features aún no observados y en robustez de catálogo.
 
 La documentación debe actualizarse cada vez que un HAR contradiga una hipótesis previa.
 
 ## 17. Próximos trabajos prioritarios
 
-1. validar crawl Belatra completo en vivo y confirmar que devuelve alrededor del total remoto actual;
-2. capturar un juego Belatra con interacción suficiente para reconstruir spin;
-3. implementar runtime Belatra endpoint-first;
-4. ampliar D1:
+1. validar en vivo la recuperación del catálogo Pragmatic bajo 502/WAF y, cuando el AJAX oficial vuelva a responder, confirmar un crawl autoritativo completo sin reconciliación destructiva;
+2. ampliar Belatra sólo con evidencia nueva:
+   - features cuyo `phaseNext` no sea `toPaid`;
+   - buy bonus;
+   - free spins;
+   - selecciones `selectId`;
+3. ampliar D1:
    - buy bonus;
    - side/ante modes;
    - features específicas no cubiertas por `st`;
-5. reforzar clasificación automática de frames D1;
-6. futuro backend remoto usando `ExecutionBackend`;
-7. añadir fixtures sanitizados de HAR/protocolo cuando sea viable.
+4. reforzar clasificación automática de frames D1 y generar firmas reutilizables para estados todavía desconocidos;
+5. añadir fixtures sanitizados de HAR/protocolo para regresiones reproducibles;
+6. futuro backend remoto usando `ExecutionBackend`.
 
 ## 18. Invariantes del proyecto
 
