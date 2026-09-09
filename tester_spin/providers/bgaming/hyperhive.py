@@ -61,10 +61,11 @@ def _rpc(
     *,
     timeout_s: float,
     params: dict[str, Any],
+    rpc_id: str | None = None,
 ) -> tuple[requests.Response, dict[str, Any], dict[str, Any]]:
     api_url = _origin(runtime.launch_url) + "/api"
     payload = {
-        "id": str(uuid.uuid4()),
+        "id": rpc_id or str(uuid.uuid4()),
         "jsonrpc": "2.0",
         "method": method,
         "params": params,
@@ -218,13 +219,21 @@ def _result_summary(data: dict[str, Any]) -> dict[str, Any]:
                 separators=(",", ":"),
             ).encode("utf-8")
         ).hexdigest()[:12]
+    game = resp.get("game")
+    if not isinstance(game, dict):
+        game = {}
+    total_win = resp.get("totalWin")
+    if not isinstance(total_win, (int, float)):
+        total_win = game.get("totalWin")
     return {
         "final": bool(result.get("final")),
         "balance": result.get("balance"),
+        "state_lock": result.get("state_lock"),
         "round_step": resp.get("roundStep"),
         "bet": resp.get("bet"),
-        "total_win": resp.get("totalWin"),
+        "total_win": total_win,
         "freespins": resp.get("freespins"),
+        "next_action": resp.get("nextAction"),
         "table_sha256": table_hash,
         "response_sha256": response_fingerprint(data),
     }
