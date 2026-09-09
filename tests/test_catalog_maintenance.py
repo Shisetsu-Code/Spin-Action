@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 import tempfile
 import unittest
@@ -104,11 +105,13 @@ class CatalogMaintenanceTests(unittest.TestCase):
 
             stats = purge_provider_catalog_artifacts(root)
 
-            self.assertGreaterEqual(stats.files_removed, 3)
+            self.assertGreaterEqual(stats.files_removed, 2)
             self.assertFalse((root / "catalog.json").exists())
             self.assertFalse((root / "catalog-pages").exists())
             self.assertFalse((root / "catalog-diagnostics").exists())
-            self.assertFalse((game / "game.json").exists())
+            self.assertTrue((game / "game.json").exists())
+            metadata = json.loads((game / "game.json").read_text(encoding="utf-8"))
+            self.assertTrue(metadata.get("catalog_recovery_disabled"))
             self.assertFalse((game / "thumbnail.webp").exists())
             self.assertTrue((tests / "result.json").exists())
             self.assertTrue((game / "runtime-note.json").exists())
