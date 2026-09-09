@@ -440,6 +440,7 @@ def validate_spin(
     expected_rows: int | None,
     command: str = "spin",
     expected_debit: int | float | None = None,
+    variable_layout: bool = False,
 ) -> list[str]:
     warnings: list[str] = []
 
@@ -453,25 +454,38 @@ def validate_spin(
 
     actual_bet = outcome.get("bet")
     win = outcome.get("win")
-    if actual_bet != requested_bet:
+    # BGaming is not consistent about outcome.bet inside zero-debit continuations.
+    # For freespins/preselection, the balance delta is authoritative.
+    if command == "spin" and actual_bet != requested_bet:
         warnings.append(f"bet devuelta={actual_bet!r}, solicitada={requested_bet!r}")
     if not isinstance(win, (int, float)):
         warnings.append(f"{command} sin win numérico")
 
     screen = outcome.get("screen")
     if isinstance(screen, list) and screen:
-        if expected_reels is not None and len(screen) != expected_reels:
-            warnings.append(
-                f"screen reels={len(screen)}, esperados={expected_reels}"
-            )
-        if expected_rows is not None:
+        if variable_layout:
             bad = [
                 idx
                 for idx, reel in enumerate(screen)
-                if not isinstance(reel, list) or len(reel) != expected_rows
+                if not isinstance(reel, list) or not reel
             ]
             if bad:
-                warnings.append(f"screen rows inesperadas en reels={bad}")
+                warnings.append(
+                    f"screen dinámica contiene reels vacíos/inválidos={bad}"
+                )
+        else:
+            if expected_reels is not None and len(screen) != expected_reels:
+                warnings.append(
+                    f"screen reels={len(screen)}, esperados={expected_reels}"
+                )
+            if expected_rows is not None:
+                bad = [
+                    idx
+                    for idx, reel in enumerate(screen)
+                    if not isinstance(reel, list) or len(reel) != expected_rows
+                ]
+                if bad:
+                    warnings.append(f"screen rows inesperadas en reels={bad}")
     elif not result_has_authoritative_shape(data):
         warnings.append(
             f"{command} sin screen ni outcome.storage.seed autoritativos"
