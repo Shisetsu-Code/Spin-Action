@@ -1173,9 +1173,12 @@ class BGamingProvider(ProviderAdapter):
         if (
             attempted
             and successes == requested_total
-            and not global_warnings
             and not pending_actions
+            and not errors
         ):
+            # Attempt validation already incorporates fatal protocol warnings.
+            # Init-level diagnostics must not downgrade a run that completed
+            # every requested mode successfully.
             status = "OK"
             error = ""
         elif responded_attempts:
