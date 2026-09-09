@@ -673,3 +673,15 @@ Si un título devuelve HTTP 500:
 4. comparar el `start.request.json` con un HAR de ese juego.
 
 No asumir incompatibilidad del juego a partir de un 500 obtenido durante múltiples sesiones simultáneas.
+
+## 15.4 Cómo investigar los cuatro 500 Belatra restantes
+
+Para cada título que siga fallando, abrir el último attempt-001/start.request.json, attempt-001/start.response.raw.txt y attempt-001/start.wire.json.
+
+Si existe attempt-001/start.response.json, usar primero ese archivo: significa que el servidor devolvió un envelope descifrable aunque el HTTP fuera 500.
+
+Comparar además bootstrap/enter.response.json.
+
+Buscar especialmente campos top-level de gs relacionados con isMath*, mode, volatility, selector, buyBonus, vipMode y dop.
+
+No añadir un campo al start sólo porque aparezca en enter; confirmar mediante HAR/código cliente salvo para la familia isMath*, que ya está respaldada por el HAR de Slattors.
