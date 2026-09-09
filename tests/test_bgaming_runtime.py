@@ -80,7 +80,7 @@ class BGamingRuntimeTests(unittest.TestCase):
                 "win": 40,
                 "wins": [["line", 40, [0, 0, 0], 1]],
             },
-            "balance": {"game": 40, "wallet": 99910 - 90},
+            "balance": {"game": 40, "wallet": 99910},
             "flow": {
                 "round_id": 17236767117,
                 "last_action_id": "17236767117_1",
