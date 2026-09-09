@@ -413,6 +413,7 @@ class BGamingProvider(ProviderAdapter):
         variable_layout = False
         legacy_line_bets = False
         legacy_line_count = 0
+        rows_required = False
         purchase_modes: list[dict[str, Any]] = []
         mode_specs: list[dict[str, Any]] = [
             {"id": "SPIN", "kind": "SPIN", "purchase": None}
@@ -564,6 +565,79 @@ class BGamingProvider(ProviderAdapter):
             errors.append(message)
             progress(f"[{game.name}] BGaming bootstrap/init ERROR: {message}")
 
+        def send_api_command(
+            command: str,
+            *,
+            options_payload: dict[str, Any] | None = None,
+            extra_data_payload: dict[str, Any] | None = None,
+        ):
+            nonlocal rows_required
+            merged_options = (
+                dict(options_payload)
+                if isinstance(options_payload, dict)
+                else None
+            )
+            if (
+                rows_required
+                and not legacy_line_bets
+                and isinstance(expected_rows, int)
+                and expected_rows > 0
+            ):
+                if merged_options is None:
+                    merged_options = {}
+                merged_options.setdefault("rows", expected_rows)
+
+            try:
+                return post_command(
+                    runtime,
+                    command,
+                    timeout_s=timeout_s,
+                    options=merged_options,
+                    extra_data=extra_data_payload,
+                )
+            except requests.HTTPError as exc:
+                status = (
+                    int(exc.response.status_code)
+                    if exc.response is not None
+                    else 0
+                )
+                can_retry_rows = (
+                    status == 422
+                    and not legacy_line_bets
+                    and isinstance(expected_rows, int)
+                    and expected_rows > 0
+                    and (
+                        merged_options is None
+                        or "rows" not in merged_options
+                    )
+                )
+                if not can_retry_rows:
+                    raise
+
+                retry_options = (
+                    dict(merged_options)
+                    if isinstance(merged_options, dict)
+                    else {}
+                )
+                retry_options["rows"] = expected_rows
+                progress(
+                    f"[{game.name}] HTTP 422: reintentando {command} "
+                    f"con rows={expected_rows} según layout del init."
+                )
+                result = post_command(
+                    runtime,
+                    command,
+                    timeout_s=timeout_s,
+                    options=retry_options,
+                    extra_data=extra_data_payload,
+                )
+                rows_required = True
+                progress(
+                    f"[{game.name}] Perfil API aprendido: "
+                    f"rows={expected_rows} requerido en comandos de juego."
+                )
+                return result
+
         requested_total = repetitions * len(mode_specs)
 
         if runtime is not None and isinstance(default_bet, (int, float)):
@@ -617,12 +691,10 @@ class BGamingProvider(ProviderAdapter):
                                 purchase if isinstance(purchase, dict) else None,
                             )
 
-                        response, request_payload, data = post_command(
-                            runtime,
+                        response, request_payload, data = send_api_command(
                             "spin",
-                            timeout_s=timeout_s,
-                            options=spin_options,
-                            extra_data=request_extra_data,
+                            options_payload=spin_options,
+                            extra_data_payload=request_extra_data,
                         )
                         first_response_received = True
                         responded_attempts += 1
@@ -839,10 +911,8 @@ class BGamingProvider(ProviderAdapter):
                             )
 
                             before_total = previous_total
-                            cont_response, cont_request, cont_data = post_command(
-                                runtime,
+                            cont_response, cont_request, cont_data = send_api_command(
                                 continuation_command,
-                                timeout_s=timeout_s,
                             )
                             wire_steps += 1
                             last_status_code = int(cont_response.status_code)
