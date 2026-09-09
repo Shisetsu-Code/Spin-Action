@@ -12,6 +12,7 @@ from tester_spin.providers.pragmatic_catalog_dom import (
     snapshot_to_game,
 )
 from tester_spin.providers.pragmatic_hybrid import PragmaticProvider
+from tester_spin.providers.pragmatic_catalog_preloaded import _continue_after_no_growth
 
 
 class PragmaticCatalogSafetyTests(unittest.TestCase):
@@ -134,6 +135,36 @@ class PragmaticCatalogSafetyTests(unittest.TestCase):
         assert game is not None
         self.assertEqual(game.slug, "candy-rush")
         self.assertEqual(game.name, "Candy Rush")
+
+    def test_preloaded_cards_do_not_force_early_fallback_stop(self) -> None:
+        self.assertTrue(
+            _continue_after_no_growth(
+                hidden_preloaded=35,
+                button_present=True,
+                streak=1,
+            )
+        )
+        self.assertTrue(
+            _continue_after_no_growth(
+                hidden_preloaded=35,
+                button_present=True,
+                streak=7,
+            )
+        )
+        self.assertFalse(
+            _continue_after_no_growth(
+                hidden_preloaded=35,
+                button_present=True,
+                streak=8,
+            )
+        )
+        self.assertFalse(
+            _continue_after_no_growth(
+                hidden_preloaded=35,
+                button_present=False,
+                streak=1,
+            )
+        )
 
     def test_pragmatic_provider_uses_strict_reconcile_ratio(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
