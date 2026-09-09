@@ -4,7 +4,7 @@ GUI extensible en Python para catalogar juegos por proveedor y probar automátic
 
 ## Primera versión
 
-Proveedores disponibles: **Pragmatic Play**, **1spin4win (D1)** y **Belatra Games**.
+Proveedores disponibles: **Pragmatic Play**, **1spin4win (D1)**, **Belatra Games** y **BGaming**.
 
 > Para retomar el proyecto en otro chat o después de perder contexto, leer primero:
 > - [docs/HANDOFF.md](docs/HANDOFF.md) — estado completo, arquitectura, decisiones y próximos pasos.
@@ -24,7 +24,7 @@ Proveedores disponibles: **Pragmatic Play**, **1spin4win (D1)** y **Belatra Game
 - `Repeticiones por modo` configurable.
 - `Delay entre juegos` configurable.
 - Timeout configurable.
-- Arquitectura por adaptadores: agregar RubyPlay, BGaming u otros proveedores no requiere modificar el scheduler ni la GUI.
+- Arquitectura por adaptadores: BGaming ya está integrado como módulo aislado; agregar RubyPlay u otros proveedores no requiere modificar el scheduler.
 
 ### Belatra Games
 
@@ -53,6 +53,21 @@ Proveedores disponibles: **Pragmatic Play**, **1spin4win (D1)** y **Belatra Game
 - Estados de bonus/free-spins con `st in {5,6,11,12}` se continúan por el mismo mensaje de juego tipo `1`, con guard de 128 pasos para evitar loops.
 - Las pruebas D1 ya son endpoint-first sobre WebSocket: no necesitan hacer clic en la interfaz para una tirada normal. Cada intento guarda `runtime-spec.json`, `ws-attempt.json` y `result.json`.
 - Un juego pasa a `OK` sólo si cada tirada solicitada recibe un resultado terminal `type=3`; si responde pero queda en un estado no terminal se conserva como `PARCIAL`.
+
+### BGaming
+
+- Catálogo de slots: `https://bgaming.com/game-type/slots`.
+- La primera página se parsea desde tarjetas `[data-catalog-card]`; las siguientes se obtienen directamente por `GET /wp-json/bg/v1/games/search?page=N`.
+- La respuesta REST observada contiene `page`, `total`, `hasMore` y `html`; el crawl completo sólo se considera autoritativo al alcanzar `hasMore=false`.
+- Cada tarjeta conserva nombre, slug, miniatura, RTP, volatilidad, tipo de juego, URL pública y `identifier` cuando existe un demo estable.
+- Los enlaces demo que ya contienen `play_token`/`launch_token` no se persisten: quedan como `EPHEMERAL_DEMO` para evitar conservar credenciales de sesión.
+- Runtime observado: HTTP JSON API v2. El demo redirige al juego, cuyo HTML expone `window.__OPTIONS__` con `identifier`, URL `api`, nombre/valor del header CSRF y metadata de reglas.
+- Tester-Spin usa esos datos sólo en memoria y persiste una versión sanitizada de `window.__OPTIONS__`; tokens, CSRF y URLs de sesión se redactan.
+- Flujo base confirmado por HAR: `init → spin`.
+- `init` entrega `available_bets`, `default_bet`, `layout`, `currency`, `balance` y `flow`.
+- Cada `spin` se valida contra `outcome.bet`, `outcome.win`, dimensiones de `screen`, `flow.command/state` y la conservación contable `wallet + game = balance_previo - bet + win`.
+- El contrato observado terminal es `flow.command=spin`, `flow.state=closed`, con `available_actions=[init, spin]`.
+- Acciones no observadas todavía (bonus/free-spins/respin/select/buy) no se automatizan: si aparecen, el intento queda `PARCIAL` y se guarda la respuesta para clasificarla.
 
 ## Modos Pragmatic
 
@@ -152,6 +167,10 @@ tester_spin/
     base.py
     pragmatic.py
     pragmatic_modes.py
+    bgaming/
+      adapter.py
+      catalog.py
+      runtime.py
 ```
 
 Cada proveedor implementa el contrato `ProviderAdapter`:
@@ -159,14 +178,14 @@ Cada proveedor implementa el contrato `ProviderAdapter`:
 1. `crawl_catalog(...)` -> catálogo neutral `Game`.
 2. `test_game(...)` -> `GameTestResult` con todos los modos propios del proveedor.
 
-La GUI, SQLite y el scheduler no conocen `openGame`, `doInit`, `doSpin`, `bl`, `pur` ni ninguna particularidad de Pragmatic. Para BGaming/RubyPlay se agrega otro adaptador y se registra en `ProviderRegistry`. 1spin4win y Belatra ya siguen este mismo contrato.
+La GUI, SQLite y el scheduler no conocen `openGame`, `doInit`, `doSpin`, `bl`, `pur` ni ninguna particularidad de Pragmatic. BGaming, 1spin4win y Belatra ya siguen el mismo contrato `ProviderAdapter`; cada protocolo vive en su módulo propio.
 
 ### Mantenimiento manual del catálogo
 
 La GUI activa incluye dos controles para corregir detecciones erróneas sin tocar el historial de pruebas:
 
 - `BORRAR SELECCIONADOS`: elimina las filas elegidas y crea una exclusión manual persistente por `provider+slug`. Un crawl posterior no puede reinsertarlas, incluso si un fallback vuelve a detectar el mismo falso positivo.
-- `VACIAR CATÁLOGO`: reinicia completamente el catálogo del proveedor seleccionado. Elimina filas, exclusiones manuales, `catalog.json`, páginas/diagnósticos de catálogo, `game.json` de recuperación y miniaturas. Conserva `test_results`, carpetas `tests/` y demás evidencia runtime.
+- `VACIAR CATÁLOGO`: reinicia el catálogo del proveedor seleccionado. Elimina filas, exclusiones manuales, `catalog.json`, páginas/diagnósticos y miniaturas. Conserva `game.json`/metadata de protocolo, `test_results`, carpetas `tests/` y demás evidencia runtime; la recuperación automática desde `game.json` queda deshabilitada hasta un crawl fresco.
 
 ### Seguridad de catálogo Pragmatic
 
