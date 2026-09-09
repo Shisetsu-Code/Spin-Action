@@ -1039,3 +1039,35 @@ Artefactos obligatorios incluso con HTTP 500:
 Si el body es JSON con d, se intenta descifrar y escribir start.response.json.
 
 Esto permite distinguir campo obligatorio ausente, valor inválido, incompatibilidad de modificación o error interno sin detalle.
+
+## 4.22 Line-dependent bets
+
+Some legacy Belatra games expose both:
+- linesAssortment
+- betDependOnLines
+
+The tuple (nlines, betPerLine) must be treated atomically.
+
+Invalid example observed from the previous adapter:
+- nlines=1
+- betPerLine=5
+
+while enter advertised for line 1:
+- betAssort=[10,20,50,...]
+
+That request produced HTTP 500.
+
+Current rule:
+1. use current gs.nlines if valid;
+2. use current gs.betPerLine;
+3. if betDependOnLines has an entry for that line, validate the bet against its betAssort;
+4. repair only with a value explicitly advertised for that line.
+
+## 4.23 mathType selector
+
+Cops vs Robs publishes:
+- gs.mathType
+- analInfo.mathTypeCops
+- analInfo.mathTypeRobs
+
+The base start must preserve gs.mathType. This is a different naming convention from Slattors' isMathElf.
