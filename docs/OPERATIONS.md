@@ -712,3 +712,17 @@ Only a later successful complete AJAX crawl may remove genuinely stale games.
 A line such as:
 "reducción anómala 702→61"
 must always block reconciliation.
+
+## Pragmatic cleanup of prior false-positive rows
+
+Before a new catalogue crawl, providers may flag only provably malformed stored rows.
+
+For Pragmatic this currently includes:
+- malformed slug;
+- non-Pragmatic game URL;
+- page URL whose slug disagrees with the row;
+- thumbnail data URI.
+
+These rows are deleted explicitly with Storage.delete_games(). Historical test_results and artifact folders remain untouched.
+
+This mechanism is deliberately narrower than reconciliation. It must not be expanded to delete merely old, unreachable or unverified games.
