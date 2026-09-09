@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -73,6 +74,23 @@ def sanitize_options(value: Any) -> Any:
         return clean
     if isinstance(value, list):
         return [sanitize_options(item) for item in value]
+    return value
+
+
+def sanitize_error_text(text: str) -> str:
+    value = str(text or "")
+    value = re.sub(
+        r"([?&](?:launch_token|play_token|token)=)[^&\s]+",
+        r"\1<redacted>",
+        value,
+        flags=re.IGNORECASE,
+    )
+    value = re.sub(
+        r"(/api/[^/\s]+/[^/\s]+/)[^/?#\s]+",
+        r"\1<session>",
+        value,
+        flags=re.IGNORECASE,
+    )
     return value
 
 
