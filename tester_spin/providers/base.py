@@ -17,6 +17,15 @@ class ProviderAdapter(ABC):
     # Optional provider-side cap. Some public/demo backends invalidate or reject
     # concurrent sessions even when Tester-Spin can technically run more workers.
     max_test_concurrency: int | None = None
+    # Catalog crawlers may explicitly downgrade a run to non-authoritative when
+    # they use a degraded/fallback source. Non-authoritative runs can add/update
+    # validated rows but must never delete existing catalog rows.
+    catalog_crawl_authoritative: bool = True
+    catalog_crawl_reason: str = ""
+
+    def set_catalog_authority(self, authoritative: bool, reason: str = "") -> None:
+        self.catalog_crawl_authoritative = bool(authoritative)
+        self.catalog_crawl_reason = str(reason or "")
 
     def effective_test_concurrency(self, requested: int) -> int:
         value = max(1, int(requested))
