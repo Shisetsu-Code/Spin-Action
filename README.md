@@ -160,3 +160,11 @@ Cada proveedor implementa el contrato `ProviderAdapter`:
 2. `test_game(...)` -> `GameTestResult` con todos los modos propios del proveedor.
 
 La GUI, SQLite y el scheduler no conocen `openGame`, `doInit`, `doSpin`, `bl`, `pur` ni ninguna particularidad de Pragmatic. Para BGaming/RubyPlay se agrega otro adaptador y se registra en `ProviderRegistry`. 1spin4win y Belatra ya siguen este mismo contrato.
+
+### Seguridad de catálogo Pragmatic
+
+- El crawler AJAX oficial es la única fuente Pragmatic considerada autoritativa para reconciliar/borrar filas.
+- Si el catálogo principal o una página AJAX devuelve 403/429/5xx, el fallback DOM se usa sólo como diagnóstico y descubrimiento parcial: nunca autoriza borrados.
+- El fallback DOM exige señales fuertes de tarjeta de juego. No acepta data URIs, imágenes genéricas ni URLs externas con una ruta parecida a /games/.
+- Si el fallback no es autoritativo, Tester-Spin mezcla los juegos válidos detectados con game.json históricos preservados bajo data/providers/pragmatic para evitar que una caída temporal haga desaparecer cientos de títulos de la GUI.
+- Existe además una guardia global: una reducción anómala de más del 40% respecto del catálogo previo bloquea reconciliación aunque el crawler se marque autoritativo.

@@ -695,3 +695,20 @@ When start returns HTTP 500, compare:
 If the request pair was not explicitly valid according to enter, the failure is request construction, not provider instability.
 
 Cops vs Robs additionally requires checking gs.mathType. The current adapter propagates it automatically.
+
+## Pragmatic catalog recovery after 502/WAF failure
+
+If the log says the official Pragmatic catalog returned 5xx:
+- expect "fallback DOM marcado NO AUTORITATIVO";
+- expect "RECONCILIACIÓN BLOQUEADA";
+- no existing catalog rows should be deleted.
+
+The fallback may report fewer live-detected games than the normal catalog. This is acceptable because it merges preserved game.json artifacts from data/providers/pragmatic.
+
+If a previous buggy build already deleted rows, running the fixed fallback can repopulate rows from preserved game.json folders. Historical test_results were never deleted.
+
+Only a later successful complete AJAX crawl may remove genuinely stale games.
+
+A line such as:
+"reducción anómala 702→61"
+must always block reconciliation.

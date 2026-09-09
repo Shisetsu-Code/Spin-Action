@@ -133,6 +133,48 @@ def _looks_like_ajax_catalog(page: AjaxPage) -> bool:
     return bool(page.games)
 
 
+def _fallback_with_known_games(
+    provider,
+    *,
+    stop_event: threading.Event,
+    progress: Progress,
+    max_pages: int,
+    on_game: GameCallback | None,
+    reason: str,
+) -> list[Game]:
+    provider.set_catalog_authority(False, reason)
+    progress(
+        "Pragmatic: fallback DOM marcado NO AUTORITATIVO; "
+        "podrá sumar juegos validados pero no eliminar filas existentes."
+    )
+    fallback = crawl_pragmatic_catalog_preloaded(
+        provider,
+        stop_event=stop_event,
+        progress=progress,
+        max_pages=max_pages,
+        on_game=on_game,
+    )
+
+    merged: dict[str, Game] = {game.slug: game for game in fallback}
+    recovered = provider._recover_catalog_games_from_artifacts()
+    restored = 0
+    for game in recovered:
+        if game.slug in merged:
+            continue
+        merged[game.slug] = game
+        restored += 1
+        if on_game is not None:
+            on_game(game)
+
+    games = sorted(merged.values(), key=lambda item: item.name.casefold())
+    provider._write_catalog_index(games)
+    progress(
+        f"Pragmatic fallback: actuales detectados={len(fallback)}, "
+        f"conocidos recuperados={restored}, unión segura={len(games)}."
+    )
+    return games
+
+
 def crawl_pragmatic_catalog_ajax(
     provider,
     *,
@@ -155,6 +197,7 @@ def crawl_pragmatic_catalog_ajax(
     page order, stopping at the first short page.
     """
     max_loads = max(1, int(max_pages))
+    provider.set_catalog_authority(False, "crawl Pragmatic aún no completado")
     by_slug: dict[str, Game] = {}
     source_by_slug: dict[str, str] = {}
     diagnostics: list[dict[str, Any]] = []
@@ -185,13 +228,18 @@ def crawl_pragmatic_catalog_ajax(
         initial_response = provider.http.get(provider.catalog_url, timeout=30.0)
         initial_response.raise_for_status()
     except Exception as exc:
-        progress(f"No se pudo abrir el catálogo HTTP: {type(exc).__name__}: {exc}; fallback DOM.")
-        return crawl_pragmatic_catalog_preloaded(
+        reason = f"catálogo HTTP principal no disponible: {type(exc).__name__}: {exc}"
+        progress(
+            f"No se pudo abrir el catálogo HTTP: {type(exc).__name__}: {exc}; "
+            "fallback DOM diagnóstico/no autoritativo."
+        )
+        return _fallback_with_known_games(
             provider,
             stop_event=stop_event,
             progress=progress,
             max_pages=max_pages,
             on_game=on_game,
+            reason=reason,
         )
 
     per_page = _items_per_page(initial_response.text)
@@ -224,12 +272,13 @@ def crawl_pragmatic_catalog_ajax(
             "se usa el crawler DOM como fallback."
         )
         provider._write_json(diag_root / "ajax-validation-failed.json", diagnostics[-1])
-        return crawl_pragmatic_catalog_preloaded(
+        return _fallback_with_known_games(
             provider,
             stop_event=stop_event,
             progress=progress,
             max_pages=max_pages,
             on_game=on_game,
+            reason="endpoint AJAX de Load More no validó como catálogo",
         )
 
     added = ingest(first_ajax.games, first_ajax.url)
@@ -283,12 +332,13 @@ def crawl_pragmatic_catalog_ajax(
                     "fallback DOM para no truncar el catálogo."
                 )
                 provider._write_json(diag_root / "ajax-pages.json", diagnostics)
-                return crawl_pragmatic_catalog_preloaded(
+                return _fallback_with_known_games(
                     provider,
                     stop_event=stop_event,
                     progress=progress,
                     max_pages=max_pages,
                     on_game=on_game,
+                    reason=f"AJAX página {page_no} falló: {page.error or page.status}",
                 )
 
             added = ingest(page.games, page.url)
@@ -322,6 +372,17 @@ def crawl_pragmatic_catalog_ajax(
             "pages": diagnostics,
         },
     )
+
+    if terminal_page is not None and not stop_event.is_set():
+        provider.set_catalog_authority(
+            True,
+            f"AJAX completo hasta página terminal {terminal_page}",
+        )
+    else:
+        provider.set_catalog_authority(
+            False,
+            "crawl AJAX sin página terminal confirmada",
+        )
 
     # Keep discovery fast: only after the whole list is known do we download native
     # thumbnails and write per-game metadata, in parallel. Games were already emitted

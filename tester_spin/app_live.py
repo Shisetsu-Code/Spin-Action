@@ -8,6 +8,12 @@ from tester_spin.app import TesterSpinApp
 from tester_spin.models import Game
 
 
+def _catalog_shrink_suspicious(previous_count: int, current_count: int) -> bool:
+    previous = max(0, int(previous_count))
+    current = max(0, int(current_count))
+    return previous >= 100 and current < max(25, int(previous * 0.60))
+
+
 class LiveTesterSpinApp(TesterSpinApp):
     """GUI variant that streams catalog discoveries into the table immediately."""
 
@@ -61,6 +67,10 @@ class LiveTesterSpinApp(TesterSpinApp):
 
         def worker() -> None:
             try:
+                previous_games = self.storage.list_games(provider.key)
+                previous_count = len(previous_games)
+
+                provider.set_catalog_authority(True, "")
                 games = provider.crawl_catalog(
                     stop_event=self._stop_event,
                     progress=lambda message: self._events.put(("log", message)),
@@ -69,10 +79,31 @@ class LiveTesterSpinApp(TesterSpinApp):
                 )
                 self.storage.upsert_games(games)
 
-                # Only a user-requested full, non-interrupted crawl is authoritative
-                # enough to remove rows that no longer exist in the provider's
-                # catalogue. Historical test_results and artifact folders remain.
-                if full_catalog_requested and not self._stop_event.is_set() and games:
+                authoritative = bool(
+                    getattr(provider, "catalog_crawl_authoritative", True)
+                )
+                authority_reason = str(
+                    getattr(provider, "catalog_crawl_reason", "") or ""
+                )
+
+                # Even an authoritative crawler must fail closed on catastrophic
+                # shrinkage. A provider catalog may legitimately change, but losing
+                # most rows in one crawl is far more likely to be a WAF/DOM/parser
+                # regression than hundreds of simultaneous removals.
+                shrink_suspicious = _catalog_shrink_suspicious(
+                    previous_count,
+                    len(games),
+                )
+
+                can_reconcile = (
+                    full_catalog_requested
+                    and not self._stop_event.is_set()
+                    and bool(games)
+                    and authoritative
+                    and not shrink_suspicious
+                )
+
+                if can_reconcile:
                     removed = self.storage.reconcile_provider_games(
                         provider.key,
                         {game.slug for game in games},
@@ -81,6 +112,25 @@ class LiveTesterSpinApp(TesterSpinApp):
                         (
                             "log",
                             f"Reconciliación de catálogo: actuales={len(games)}, obsoletos eliminados={removed}.",
+                        )
+                    )
+                elif full_catalog_requested and not self._stop_event.is_set():
+                    reasons: list[str] = []
+                    if not authoritative:
+                        reasons.append(
+                            authority_reason or "crawler/fuente no autoritativa"
+                        )
+                    if shrink_suspicious:
+                        reasons.append(
+                            f"reducción anómala {previous_count}→{len(games)}"
+                        )
+                    if not games:
+                        reasons.append("crawl vacío")
+                    self._events.put(
+                        (
+                            "log",
+                            "RECONCILIACIÓN BLOQUEADA: no se eliminará ningún juego"
+                            + (f" ({'; '.join(reasons)})." if reasons else "."),
                         )
                     )
 
