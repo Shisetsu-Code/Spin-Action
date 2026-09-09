@@ -1115,3 +1115,22 @@ finished → toIdle
 ```
 
 Por lo tanto `toDoubleDialog` es una continuación conocida y terminalizable; ya no debe quedar PARCIAL sólo por aparecer esa fase.
+
+## 9.8 Belatra: diagnóstico de HTTP 500 y selectores isMath*
+
+Después de serializar Belatra quedaron cuatro títulos con HTTP 500 persistente en start:
+
+Book of Doom; BuyBonus of Maya; Cops vs Robs; Legacy of Doom.
+
+Slattors Battle dejó de fallar al preservar isMathElf, confirmando que algunos juegos añaden campos específicos mediante su override cliente de addToRequestBody("start", ...).
+
+El adapter ahora:
+1. propaga automáticamente cualquier campo top-level de gs cuyo nombre cumpla isMath* y cuyo valor sea bool/int/float;
+2. muestra esos campos como capacidades en el log ENTER;
+3. escribe <label>.request.json antes de realizar el POST;
+4. conserva <label>.response.raw.txt incluso en HTTP >= 400;
+5. intenta parsear/descifrar el envelope aunque el status sea 500;
+6. guarda siempre <label>.wire.json con status, content-type, tamaños y preview;
+7. sólo después genera RuntimeError.
+
+Esto es deliberado: no agregar campos inventados por nombre de juego. El próximo 500 debe producir evidencia suficiente para comparar el request rechazado con un HAR del mismo título o con su código cliente.
