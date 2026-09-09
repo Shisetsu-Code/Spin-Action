@@ -135,6 +135,11 @@ class PragmaticCatalogSafetyTests(unittest.TestCase):
         self.assertEqual(game.slug, "candy-rush")
         self.assertEqual(game.name, "Candy Rush")
 
+    def test_pragmatic_provider_uses_strict_reconcile_ratio(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            provider = PragmaticProvider(Path(temp))
+            self.assertEqual(provider.min_catalog_reconcile_ratio, 0.90)
+
     def test_provider_marks_data_uri_catalog_row_invalid(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             provider = PragmaticProvider(Path(temp))
