@@ -613,29 +613,20 @@ def validate_spin(
 
     screen = outcome.get("screen")
     if isinstance(screen, list) and screen:
-        if variable_layout:
-            bad = [
-                idx
-                for idx, reel in enumerate(screen)
-                if not isinstance(reel, list) or not reel
-            ]
-            if bad:
-                warnings.append(
-                    f"screen dinámica contiene reels vacíos/inválidos={bad}"
-                )
-        else:
-            if expected_reels is not None and len(screen) != expected_reels:
-                warnings.append(
-                    f"screen reels={len(screen)}, esperados={expected_reels}"
-                )
-            if expected_rows is not None:
-                bad = [
-                    idx
-                    for idx, reel in enumerate(screen)
-                    if not isinstance(reel, list) or len(reel) != expected_rows
-                ]
-                if bad:
-                    warnings.append(f"screen rows inesperadas en reels={bad}")
+        # BGaming's options.layout is not a universal wire-shape contract.
+        # Some valid games (e.g. UFO Pyramids / Hold&Win families) return
+        # auxiliary or feature reels in outcome.screen, so a dimensions
+        # mismatch is diagnostic only.  Protocol validity requires a
+        # structurally usable non-empty screen, not literal layout equality.
+        bad = [
+            idx
+            for idx, reel in enumerate(screen)
+            if not isinstance(reel, list) or not reel
+        ]
+        if bad:
+            warnings.append(
+                f"screen contiene reels vacíos/inválidos={bad}"
+            )
     elif not result_has_authoritative_shape(data):
         # Continuations may be balance/flow-only. FrozenFruit and Hottest666,
         # for example, return valid freespin steps without screen/seed while
