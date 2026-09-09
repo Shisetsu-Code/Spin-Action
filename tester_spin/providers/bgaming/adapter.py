@@ -23,6 +23,7 @@ from tester_spin.providers.bgaming.runtime import (
     discover_purchase_modes,
     pending_flow_actions,
     post_command,
+    preselection_multiplier,
     purchase_expected_debit,
     resolve_base_bet,
     sanitize_error_text,
@@ -651,18 +652,26 @@ class BGamingProvider(ProviderAdapter):
                         trigger_round_id = flow.get("round_id")
                         continuation_guard = 256
                         while (
-                            str(flow.get("state") or "") == "freespins"
+                            str(flow.get("state") or "")
+                            in {"freespins", "preselection_game"}
                             and not stop_event.is_set()
                         ):
+                            state = str(flow.get("state") or "")
                             actions = flow.get("available_actions")
                             action_names = (
                                 {str(action) for action in actions}
                                 if isinstance(actions, list)
                                 else set()
                             )
-                            if "freespin" not in action_names:
+                            continuation_command = (
+                                "freespin"
+                                if state == "freespins"
+                                else "preselection_game"
+                            )
+                            if continuation_command not in action_names:
                                 warnings.append(
-                                    "estado freespins sin available_actions=freespin"
+                                    f"estado {state} sin available_actions="
+                                    f"{continuation_command}"
                                 )
                                 break
                             if wire_steps >= continuation_guard:
@@ -671,47 +680,56 @@ class BGamingProvider(ProviderAdapter):
                                 )
                                 break
 
+                            register_mode(
+                                {
+                                    "id": continuation_command.upper(),
+                                    "kind": "CONTINUATION",
+                                    "observed": True,
+                                    "wire_command": continuation_command,
+                                }
+                            )
+
                             before_total = previous_total
-                            fs_response, fs_request, fs_data = post_command(
+                            cont_response, cont_request, cont_data = post_command(
                                 runtime,
-                                "freespin",
+                                continuation_command,
                                 timeout_s=timeout_s,
                             )
                             wire_steps += 1
-                            last_status_code = int(fs_response.status_code)
+                            last_status_code = int(cont_response.status_code)
                             self._write_json(
                                 attempt_dir / f"step-{wire_steps:03d}-request.json",
-                                fs_request,
+                                cont_request,
                             )
                             self._write_json(
                                 attempt_dir / f"step-{wire_steps:03d}-response.json",
-                                fs_data,
+                                cont_data,
                             )
 
-                            fs_warnings = validate_spin(
-                                fs_data,
+                            cont_warnings = validate_spin(
+                                cont_data,
                                 requested_bet=default_bet,
                                 previous_balance_total=before_total,
                                 expected_reels=expected_reels,
                                 expected_rows=expected_rows,
-                                command="freespin",
+                                command=continuation_command,
                                 expected_debit=0,
                             )
-                            warnings.extend(fs_warnings)
+                            warnings.extend(cont_warnings)
 
-                            fs_flow = fs_data.get("flow")
-                            if not isinstance(fs_flow, dict):
-                                fs_flow = {}
+                            cont_flow = cont_data.get("flow")
+                            if not isinstance(cont_flow, dict):
+                                cont_flow = {}
                             if (
                                 trigger_round_id is not None
-                                and fs_flow.get("round_id") != trigger_round_id
+                                and cont_flow.get("round_id") != trigger_round_id
                             ):
                                 warnings.append(
-                                    "round_id cambió dentro de la secuencia freespin: "
-                                    f"{trigger_round_id!r}→{fs_flow.get('round_id')!r}"
+                                    "round_id cambió dentro de la continuación: "
+                                    f"{trigger_round_id!r}→{cont_flow.get('round_id')!r}"
                                 )
 
-                            for action_name in pending_flow_actions(fs_data):
+                            for action_name in pending_flow_actions(cont_data):
                                 pending_actions.add(action_name)
                                 register_mode(
                                     {
@@ -722,51 +740,69 @@ class BGamingProvider(ProviderAdapter):
                                     }
                                 )
 
-                            fs_proof = spin_remote_proof(fs_data)
-                            fs_proof["mode_id"] = mode_id
-                            fs_proof["step"] = wire_steps
-                            fs_proof["expected_debit"] = 0
+                            cont_proof = spin_remote_proof(cont_data)
+                            cont_proof["mode_id"] = mode_id
+                            cont_proof["step"] = wire_steps
+                            cont_proof["expected_debit"] = 0
+                            if continuation_command == "preselection_game":
+                                cont_proof["bonus_multiplier"] = (
+                                    preselection_multiplier(cont_data)
+                                )
                             self._write_json(
                                 attempt_dir / f"step-{wire_steps:03d}-proof.json",
-                                fs_proof,
+                                cont_proof,
                             )
-                            final_proof = fs_proof
+                            final_proof = cont_proof
 
                             remote_identity = (
-                                fs_proof.get("round_id"),
-                                fs_proof.get("last_action_id"),
-                                str(fs_proof.get("response_sha256") or ""),
+                                cont_proof.get("round_id"),
+                                cont_proof.get("last_action_id"),
+                                str(cont_proof.get("response_sha256") or ""),
                             )
                             if (
                                 previous_remote_identity is not None
                                 and remote_identity == previous_remote_identity
                             ):
                                 warnings.append(
-                                    "respuesta remota freespin idéntica a la anterior"
+                                    f"respuesta remota {continuation_command} "
+                                    "idéntica a la anterior"
                                 )
                             previous_remote_identity = remote_identity
 
-                            current_total = balance_total(fs_data)
+                            current_total = balance_total(cont_data)
                             if current_total is not None:
                                 previous_total = current_total
 
-                            features = fs_data.get("features")
-                            freespins_left = (
-                                features.get("freespins_left")
-                                if isinstance(features, dict)
-                                else None
-                            )
-                            progress(
-                                f"[{game.name}] {mode_id} FREESPIN "
-                                f"step={wire_steps}, "
-                                f"round={fs_proof.get('round_id') or '—'}, "
-                                f"action={fs_proof.get('last_action_id') or '—'}, "
-                                f"left={freespins_left if freespins_left is not None else '—'}, "
-                                f"win={fs_proof.get('win') if fs_proof.get('win') is not None else '—'}, "
-                                f"balance={current_total if current_total is not None else '—'}"
-                            )
-                            data = fs_data
-                            flow = fs_flow
+                            if continuation_command == "freespin":
+                                features = cont_data.get("features")
+                                freespins_left = (
+                                    features.get("freespins_left")
+                                    if isinstance(features, dict)
+                                    else None
+                                )
+                                progress(
+                                    f"[{game.name}] {mode_id} FREESPIN "
+                                    f"step={wire_steps}, "
+                                    f"round={cont_proof.get('round_id') or '—'}, "
+                                    f"action={cont_proof.get('last_action_id') or '—'}, "
+                                    f"left={freespins_left if freespins_left is not None else '—'}, "
+                                    f"win={cont_proof.get('win') if cont_proof.get('win') is not None else '—'}, "
+                                    f"balance={current_total if current_total is not None else '—'}"
+                                )
+                            else:
+                                multiplier = preselection_multiplier(cont_data)
+                                progress(
+                                    f"[{game.name}] {mode_id} PRESELECTION "
+                                    f"step={wire_steps}, "
+                                    f"round={cont_proof.get('round_id') or '—'}, "
+                                    f"action={cont_proof.get('last_action_id') or '—'}, "
+                                    f"multiplier={multiplier if multiplier is not None else '—'}, "
+                                    f"win={cont_proof.get('win') if cont_proof.get('win') is not None else '—'}, "
+                                    f"balance={current_total if current_total is not None else '—'}"
+                                )
+
+                            data = cont_data
+                            flow = cont_flow
 
                         final_flow_state = str(flow.get("state") or "")
                         final_actions = flow.get("available_actions")
