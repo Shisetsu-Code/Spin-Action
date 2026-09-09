@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from tester_spin.app_live import _catalog_shrink_suspicious
 from tester_spin.providers.pragmatic_catalog_dom import (
     _slug_from_thumbnail,
     _slug_from_url,
@@ -14,6 +15,11 @@ from tester_spin.providers.pragmatic_hybrid import PragmaticProvider
 
 
 class PragmaticCatalogSafetyTests(unittest.TestCase):
+    def test_catastrophic_catalog_shrink_is_blocked(self) -> None:
+        self.assertTrue(_catalog_shrink_suspicious(702, 61))
+        self.assertFalse(_catalog_shrink_suspicious(702, 650))
+        self.assertFalse(_catalog_shrink_suspicious(61, 50))
+
     def test_data_uri_cannot_create_game_slug(self) -> None:
         self.assertEqual(
             _slug_from_thumbnail(
