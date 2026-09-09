@@ -177,6 +177,37 @@ def _slug_from_thumbnail(src: str) -> str:
     return stem
 
 
+def _snapshot_thumbnail_url(snapshot: dict[str, Any], base_url: str) -> str:
+    image = snapshot.get("image") or {}
+    candidates: list[str] = []
+    for key in ("src", "raw_src"):
+        candidates.append(_clean(image.get(key)))
+    attrs = image.get("attrs") or {}
+    if isinstance(attrs, dict):
+        for key in (
+            "data-src",
+            "data-lazy-src",
+            "data-original",
+            "src",
+        ):
+            candidates.append(_clean(attrs.get(key)))
+        for key in ("data-srcset", "srcset"):
+            raw = _clean(attrs.get(key))
+            for part in raw.split(","):
+                if part.strip():
+                    candidates.append(part.strip().split()[0])
+
+    for value in candidates:
+        if not value or value.casefold().startswith("data:"):
+            continue
+        absolute = urljoin(base_url, value)
+        parsed = urlparse(absolute)
+        if parsed.scheme.casefold() not in {"http", "https"}:
+            continue
+        return absolute
+    return ""
+
+
 def _candidate_text_lines(snapshot: dict[str, Any]) -> list[str]:
     values: list[str] = []
     image = snapshot.get("image") or {}
@@ -239,7 +270,7 @@ def snapshot_to_game(snapshot: dict[str, Any], base_url: str) -> Game | None:
             actual_url = urljoin(base_url, value)
             break
 
-    thumb = _clean(image.get("src") or image.get("raw_src"))
+    thumb = _snapshot_thumbnail_url(snapshot, base_url)
     if not slug:
         slug = _slug_from_thumbnail(thumb)
     if not slug:
@@ -248,8 +279,13 @@ def snapshot_to_game(snapshot: dict[str, Any], base_url: str) -> Game | None:
     fallback = _human_from_slug(slug)
     name = fallback
 
-    if actual_url:
+    if actual_url and thumb:
         name_candidates = _candidate_text_lines(snapshot)
+    elif actual_url:
+        # A real game URL can survive while an unrelated navigation/language
+        # image is captured by a broad DOM ancestor. Without a non-data image,
+        # trust the URL slug and do not borrow arbitrary image/nav labels.
+        name_candidates = []
     else:
         # Thumbnail-only recovery must not borrow broad ancestor text. That was
         # the source of false rows such as language labels ("日本語") when the

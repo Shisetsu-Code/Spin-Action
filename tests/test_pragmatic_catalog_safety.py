@@ -20,6 +20,10 @@ class PragmaticCatalogSafetyTests(unittest.TestCase):
         self.assertFalse(_catalog_shrink_suspicious(702, 650))
         self.assertFalse(_catalog_shrink_suspicious(61, 50))
 
+    def test_pragmatic_strict_ratio_blocks_large_but_not_catastrophic_shrink(self) -> None:
+        self.assertTrue(_catalog_shrink_suspicious(702, 600, 0.90))
+        self.assertFalse(_catalog_shrink_suspicious(702, 650, 0.90))
+
     def test_data_uri_cannot_create_game_slug(self) -> None:
         self.assertEqual(
             _slug_from_thumbnail(
@@ -50,6 +54,65 @@ class PragmaticCatalogSafetyTests(unittest.TestCase):
             "",
         )
 
+    def test_real_game_url_with_data_uri_image_does_not_use_language_label(self) -> None:
+        snapshot = {
+            "text": "日本語\nPlay Now",
+            "image": {
+                "src": "data:image/png;base64,AAAA",
+                "raw_src": "data:image/png;base64,AAAA",
+                "alt": "日本語",
+                "title": "",
+                "attrs": {},
+            },
+            "links": [
+                {
+                    "href": "https://www.pragmaticplay.com/en/games/candy-rush/",
+                    "text": "Play Now",
+                    "attrs": {},
+                }
+            ],
+            "card_attrs": [],
+        }
+        game = snapshot_to_game(
+            snapshot,
+            "https://www.pragmaticplay.com/en/games/",
+        )
+        self.assertIsNotNone(game)
+        assert game is not None
+        self.assertEqual(game.slug, "candy-rush")
+        self.assertEqual(game.name, "Candy Rush")
+        self.assertEqual(game.thumbnail_url, "")
+
+    def test_data_placeholder_uses_real_lazy_thumbnail_when_available(self) -> None:
+        snapshot = {
+            "text": "Candy Rush",
+            "image": {
+                "src": "data:image/png;base64,AAAA",
+                "raw_src": "data:image/png;base64,AAAA",
+                "alt": "Candy Rush",
+                "title": "",
+                "attrs": {
+                    "data-src": "https://www.pragmaticplay.com/wp-content/uploads/Candy-Rush_339x180_EN.png"
+                },
+            },
+            "links": [
+                {
+                    "href": "https://www.pragmaticplay.com/en/games/candy-rush/",
+                    "text": "Play Now",
+                    "attrs": {},
+                }
+            ],
+            "card_attrs": [],
+        }
+        game = snapshot_to_game(
+            snapshot,
+            "https://www.pragmaticplay.com/en/games/",
+        )
+        self.assertIsNotNone(game)
+        assert game is not None
+        self.assertEqual(game.name, "Candy Rush")
+        self.assertIn("Candy-Rush_339x180_EN.png", game.thumbnail_url)
+
     def test_thumbnail_only_recovery_does_not_borrow_navigation_text(self) -> None:
         snapshot = {
             "text": "日本語\nEnglish\nDeutsch",
@@ -71,6 +134,11 @@ class PragmaticCatalogSafetyTests(unittest.TestCase):
         assert game is not None
         self.assertEqual(game.slug, "candy-rush")
         self.assertEqual(game.name, "Candy Rush")
+
+    def test_pragmatic_provider_uses_strict_reconcile_ratio(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            provider = PragmaticProvider(Path(temp))
+            self.assertEqual(provider.min_catalog_reconcile_ratio, 0.90)
 
     def test_provider_marks_data_uri_catalog_row_invalid(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

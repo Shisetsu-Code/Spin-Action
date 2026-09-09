@@ -726,3 +726,25 @@ For Pragmatic this currently includes:
 These rows are deleted explicitly with Storage.delete_games(). Historical test_results and artifact folders remain untouched.
 
 This mechanism is deliberately narrower than reconciliation. It must not be expanded to delete merely old, unreachable or unverified games.
+
+## Pragmatic: HTTP 502 / partial catalog recovery
+
+If the Pragmatic catalogue root or AJAX Load More endpoint returns 5xx, expect logs indicating a non-authoritative fallback.
+
+A safe run must include a message equivalent to:
+
+```text
+Pragmatic: fallback DOM marcado NO AUTORITATIVO
+```
+
+and, if the live count is much smaller than the stored catalogue:
+
+```text
+RECONCILIACIÓN BLOQUEADA
+```
+
+For Pragmatic the minimum safe authoritative retention ratio is 90%.
+
+If an older build already removed rows from SQLite, provider artifact folders and historical test_results are intentionally preserved. Run a new full catalogue crawl after updating. When the official HTTP source is still unavailable, the fallback merges validated live results with recoverable per-game metadata instead of deleting the known catalogue.
+
+Any DOM candidate with a data URI thumbnail, language/navigation image, malformed slug, non-Pragmatic host, or mismatched game URL is not authoritative catalogue evidence.

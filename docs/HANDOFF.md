@@ -1173,3 +1173,25 @@ Current invariants:
 7. external hosts cannot create Pragmatic /games/ records.
 8. thumbnail-only recovery does not borrow broad ancestor/navigation text as the game name.
 9. During non-authoritative fallback, preserved per-game game.json artifacts are scanned and merged back into the result so temporary site failures do not erase known catalog state.
+
+## Pragmatic catalog hardening after fallback contamination
+
+A real failure mode was observed when `https://www.pragmaticplay.com/en/games/` returned HTTP 502:
+
+- the crawler fell back to DOM/preloaded enumeration;
+- site chrome leaked into the DOM candidate set, including a Japanese language label with a data-URI image;
+- only ~61 items were seen instead of the previously known ~700;
+- an older local build reconciled that partial set and removed hundreds of catalogue rows.
+
+Current invariants:
+
+1. Pragmatic fallback DOM/preloaded crawls are always non-authoritative.
+2. Non-authoritative crawls may add/update validated rows but must never delete existing rows.
+3. Pragmatic uses `min_catalog_reconcile_ratio=0.90`; even an authoritative crawl cannot reconcile if it retains less than 90% of the previous catalogue when the catalogue is large.
+4. Structural invalid-row detection is diagnostic before the crawl. No row is deleted before the new crawl proves authoritative.
+5. Preloaded fallback only treats images with known native game-thumbnail signatures such as 339x180/338x180/340x180/300x160/600x320 as game images.
+6. Data-URI placeholders are never persisted as thumbnails. If a valid lazy `data-src` exists it is preferred.
+7. A navigation/language image next to a valid game URL cannot supply the game name; the slug-derived name is used instead.
+8. Previously discovered per-game artifacts are preserved and may be used to recover known rows during a non-authoritative fallback.
+
+The safe failure mode is under-enumeration with no deletion, never a destructive partial catalogue.

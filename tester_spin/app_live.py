@@ -8,10 +8,15 @@ from tester_spin.app import TesterSpinApp
 from tester_spin.models import Game
 
 
-def _catalog_shrink_suspicious(previous_count: int, current_count: int) -> bool:
+def _catalog_shrink_suspicious(
+    previous_count: int,
+    current_count: int,
+    min_ratio: float = 0.60,
+) -> bool:
     previous = max(0, int(previous_count))
     current = max(0, int(current_count))
-    return previous >= 100 and current < max(25, int(previous * 0.60))
+    ratio = min(1.0, max(0.0, float(min_ratio)))
+    return previous >= 100 and current < max(25, int(previous * ratio))
 
 
 class LiveTesterSpinApp(TesterSpinApp):
@@ -75,11 +80,10 @@ class LiveTesterSpinApp(TesterSpinApp):
                     if reason:
                         invalid_reasons[existing.slug] = reason
 
+                # Never delete catalogue rows before the new crawl proves itself
+                # authoritative. Structural validators can evolve, and a parser/WAF
+                # regression must not turn a diagnostic crawl into mass deletion.
                 if invalid_reasons:
-                    removed_invalid = self.storage.delete_games(
-                        provider.key,
-                        set(invalid_reasons),
-                    )
                     preview = ", ".join(
                         f"{slug}: {reason}"
                         for slug, reason in list(invalid_reasons.items())[:6]
@@ -87,15 +91,10 @@ class LiveTesterSpinApp(TesterSpinApp):
                     self._events.put(
                         (
                             "log",
-                            f"Saneamiento estructural: filas inválidas eliminadas={removed_invalid}"
+                            f"Saneamiento estructural diferido: filas sospechosas={len(invalid_reasons)}"
                             + (f" [{preview}]" if preview else ""),
                         )
                     )
-                    previous_games = [
-                        game
-                        for game in previous_games
-                        if game.slug not in invalid_reasons
-                    ]
 
                 previous_count = len(previous_games)
 
@@ -119,9 +118,13 @@ class LiveTesterSpinApp(TesterSpinApp):
                 # shrinkage. A provider catalog may legitimately change, but losing
                 # most rows in one crawl is far more likely to be a WAF/DOM/parser
                 # regression than hundreds of simultaneous removals.
+                min_ratio = float(
+                    getattr(provider, "min_catalog_reconcile_ratio", 0.60) or 0.60
+                )
                 shrink_suspicious = _catalog_shrink_suspicious(
                     previous_count,
                     len(games),
+                    min_ratio,
                 )
 
                 can_reconcile = (
@@ -151,7 +154,8 @@ class LiveTesterSpinApp(TesterSpinApp):
                         )
                     if shrink_suspicious:
                         reasons.append(
-                            f"reducción anómala {previous_count}→{len(games)}"
+                            f"reducción anómala {previous_count}→{len(games)} "
+                            f"(mínimo seguro={min_ratio:.0%})"
                         )
                     if not games:
                         reasons.append("crawl vacío")

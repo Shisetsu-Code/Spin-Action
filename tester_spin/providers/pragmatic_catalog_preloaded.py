@@ -38,26 +38,21 @@ ALL_GAME_CARDS_JS = r"""
     img.getAttribute('srcset') || '',
   ].filter(Boolean);
 
-  const hasGameControl = (img) => {
-    let node = img;
-    for (let i = 0; i < 8 && node; i++, node = node.parentElement) {
-      if (!node.querySelector) continue;
-      if (node.querySelector(
-        'a[href*="/games/"],[data-href*="/games/"],[data-url*="/games/"]'
-      )) return true;
-    }
-    return false;
-  };
+  const usableSources = (img) =>
+    sources(img).filter(v => v && !/^data:/i.test(v.trim()));
 
   const isGameImage = (img) => {
-    const joined = sources(img).join(' ');
-    if (!joined || /^data:/i.test(joined.trim())) return false;
-    if (/(?:339x180|338x180|340x180|300x160|600x320)/i.test(joined)) return true;
-    return hasGameControl(img);
+    const usable = usableSources(img);
+    if (!usable.length) return false;
+    const joined = usable.join(' ');
+    // Fallback/preloaded mode deliberately uses a strict signature. A generic
+    // image merely sharing an ancestor with a /games/ link is not enough:
+    // language flags and navigation icons previously leaked into the catalogue.
+    return /(?:339x180|338x180|340x180|300x160|600x320)/i.test(joined);
   };
 
   const bestSource = (img) => {
-    const all = sources(img);
+    const all = usableSources(img);
     return all.find(v => /(?:339x180|338x180|340x180|300x160|600x320)/i.test(v)) ||
            all.find(v => /\/wp-content\/uploads\//i.test(v)) ||
            all[0] || '';

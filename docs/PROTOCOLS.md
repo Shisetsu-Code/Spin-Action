@@ -1071,3 +1071,19 @@ Cops vs Robs publishes:
 - analInfo.mathTypeRobs
 
 The base start must preserve gs.mathType. This is a different naming convention from Slattors' isMathElf.
+
+## Pragmatic catalogue authority
+
+Catalogue transport and game transport are separate trust domains.
+
+Authoritative catalogue evidence:
+- successful Pragmatic HTTP root;
+- validated AJAX Load More sequence;
+- confirmed terminal short page.
+
+Non-authoritative evidence:
+- Playwright DOM fallback;
+- hidden/preloaded DOM snapshots;
+- partial site rendering under WAF/CDN/5xx conditions.
+
+A DOM fallback can recover or add game candidates but cannot establish that missing titles were removed by Pragmatic. Reconciliation therefore requires both an authoritative source and the provider-specific shrink threshold.
