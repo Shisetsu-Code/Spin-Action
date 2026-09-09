@@ -651,11 +651,62 @@ class BelatraCatalogTests(unittest.TestCase):
                     "dop": {"curModeID": 0},
                     "other": {"showingInMoney": 0},
                     "isMathElf": 1,
+                    "isMathRobber": 0,
                 }
             }
         )
         self.assertEqual(request["isMathElf"], 1)
+        self.assertEqual(request["isMathRobber"], 0)
         self.assertEqual(request["vipOn"], 0)
+
+    def test_http_500_preserves_request_and_raw_response_artifacts(self) -> None:
+        class FakeResponse:
+            status_code = 500
+            text = "synthetic server failure"
+            headers = {"Content-Type": "text/plain"}
+
+            def json(self):
+                raise ValueError("not json")
+
+        class FakeSession:
+            def post(self, *_args, **_kwargs):
+                return FakeResponse()
+
+        state = {
+            "session": FakeSession(),
+            "endpoint": "https://demo.bltr-static.com/game",
+            "origin": "https://demo.bltr-static.com",
+            "referer": "https://demo.bltr-static.com/?modification=1&sid=x",
+            "secret": "testkey",
+            "sid": "session-12345678",
+            "uid": "_synthetic",
+            "counter": 0,
+            "modification": 1,
+            "history_id": None,
+        }
+
+        with tempfile.TemporaryDirectory() as attempt:
+            root = Path(attempt)
+            with self.assertRaisesRegex(RuntimeError, r"HTTP 500.*synthetic server failure"):
+                self.provider._post_direct_game(
+                    state,
+                    {"q": "start", "betPerLine": 1},
+                    timeout_s=5.0,
+                    artifact_dir=root,
+                    label="start",
+                )
+
+            request = json.loads(
+                (root / "start.request.json").read_text(encoding="utf-8")
+            )
+            wire = json.loads(
+                (root / "start.wire.json").read_text(encoding="utf-8")
+            )
+            raw = (root / "start.response.raw.txt").read_text(encoding="utf-8")
+
+        self.assertEqual(request["q"], "start")
+        self.assertEqual(wire["status"], 500)
+        self.assertIn("synthetic server failure", raw)
 
     def test_legacy_double_dialog_can_be_declined_with_finish(self) -> None:
         state = {

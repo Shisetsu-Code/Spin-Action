@@ -846,6 +846,12 @@ class BelatraProvider(ProviderAdapter):
         request_payload["modification"] = state["modification"]
         state["counter"] = (int(state["counter"]) + 1) % 1000
 
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        (artifact_dir / f"{label}.request.json").write_text(
+            json.dumps(request_payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
         plaintext = json.dumps(
             request_payload,
             ensure_ascii=False,
@@ -862,38 +868,67 @@ class BelatraProvider(ProviderAdapter):
             },
             timeout=timeout_s,
         )
-        response.raise_for_status()
-        envelope = response.json()
-        decoded = self._decrypt_envelope(envelope, str(state["secret"]))
+
+        raw_text = str(getattr(response, "text", "") or "")
+        (artifact_dir / f"{label}.response.raw.txt").write_text(
+            raw_text,
+            encoding="utf-8",
+            errors="replace",
+        )
+
+        envelope: dict[str, Any] = {}
+        decoded: dict[str, Any] | None = None
+        decode_error = ""
+        try:
+            value = response.json()
+            if isinstance(value, dict):
+                envelope = value
+                if isinstance(value.get("d"), str):
+                    decoded = self._decrypt_envelope(value, str(state["secret"]))
+                else:
+                    decoded = value
+        except Exception as exc:
+            decode_error = f"{type(exc).__name__}: {exc}"
+
+        if decoded is not None:
+            (artifact_dir / f"{label}.response.json").write_text(
+                json.dumps(decoded, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+
+        wire = {
+            "endpoint": state["endpoint"],
+            "status": int(response.status_code),
+            "content_type": response.headers.get("Content-Type", ""),
+            "encrypted_request_size": len(encrypted),
+            "encrypted_response_size": len(str(envelope.get("d") or "")),
+            "sid": self._redacted_session(str(state["sid"])),
+            "decode_error": decode_error,
+            "raw_response_preview": raw_text[:1000],
+        }
+        (artifact_dir / f"{label}.wire.json").write_text(
+            json.dumps(wire, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+        if int(response.status_code) >= 400:
+            if decoded is not None:
+                detail = json.dumps(decoded, ensure_ascii=False, separators=(",", ":"))[:1200]
+            else:
+                detail = raw_text[:1200] or decode_error or "sin body"
+            raise RuntimeError(
+                f"Belatra {label}: HTTP {int(response.status_code)}; respuesta={detail}"
+            )
+
+        if decoded is None:
+            raise RuntimeError(
+                f"Belatra {label}: respuesta no descifrable"
+                + (f" ({decode_error})" if decode_error else "")
+            )
 
         gs = decoded.get("gs")
         if isinstance(gs, dict) and gs.get("historyId") is not None:
             state["history_id"] = gs.get("historyId")
-
-        artifact_dir.mkdir(parents=True, exist_ok=True)
-        (artifact_dir / f"{label}.request.json").write_text(
-            json.dumps(request_payload, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        (artifact_dir / f"{label}.response.json").write_text(
-            json.dumps(decoded, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        (artifact_dir / f"{label}.wire.json").write_text(
-            json.dumps(
-                {
-                    "endpoint": state["endpoint"],
-                    "status": int(response.status_code),
-                    "content_type": response.headers.get("Content-Type", ""),
-                    "encrypted_request_size": len(encrypted),
-                    "encrypted_response_size": len(str(envelope.get("d") or "")),
-                    "sid": self._redacted_session(str(state["sid"])),
-                },
-                ensure_ascii=False,
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
         return decoded
 
     @staticmethod
@@ -952,12 +987,17 @@ class BelatraProvider(ProviderAdapter):
             ),
         }
 
-        # Some current Belatra games expose a math/volatility selector. The
-        # Slattors Battle HAR confirms that isMathElf is part of every start
-        # request and that both 0 and 1 are accepted. Preserve the server's
-        # current/default selection instead of omitting the required field.
-        if "isMathElf" in gs:
-            request["isMathElf"] = int(gs.get("isMathElf") or 0)
+        # Some Belatra games expose game-specific math/volatility selectors.
+        # Slattors Battle uses isMathElf. Keep the rule generic so newer titles
+        # such as Cops vs Robs can reuse the same client convention without a
+        # hard-coded game-name exception.
+        for key, value in gs.items():
+            if not re.fullmatch(r"isMath[A-Za-z0-9_]*", str(key)):
+                continue
+            if isinstance(value, bool):
+                request[str(key)] = int(value)
+            elif isinstance(value, (int, float)):
+                request[str(key)] = int(value)
 
         return request
 
@@ -1406,10 +1446,14 @@ class BelatraProvider(ProviderAdapter):
             )
             enter_gs = state["enter"].get("gs") or {}
             capability_parts: list[str] = []
-            if "isMathElf" in enter_gs:
-                capability_parts.append(
-                    f"math_selector=isMathElf:{enter_gs.get('isMathElf')}"
-                )
+            math_fields = [
+                (str(key), value)
+                for key, value in enter_gs.items()
+                if re.fullmatch(r"isMath[A-Za-z0-9_]*", str(key))
+                and isinstance(value, (bool, int, float))
+            ]
+            for key, value in math_fields:
+                capability_parts.append(f"math_selector={key}:{int(value)}")
             vip_mode = enter_gs.get("vipMode")
             if isinstance(vip_mode, dict) and float(vip_mode.get("vipBetK") or 0) > 1:
                 capability_parts.append(

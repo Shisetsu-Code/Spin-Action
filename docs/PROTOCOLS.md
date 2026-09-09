@@ -1016,3 +1016,26 @@ start
 ```
 
 No es necesario ejecutar la apuesta de double/gamble para completar el spin base; `finish` la declina.
+
+## 4.20 Campos de modelo matemático dinámicos
+
+No asumir que todos los selectores de volatilidad se llaman isMathElf.
+
+Regla actual: copiar al start cualquier campo top-level de gs que coincida con ^isMath[A-Za-z0-9_]*$ y cuyo valor sea bool/int/float.
+
+La regla está fundamentada en Slattors, cuyo cliente agrega isMathElf específicamente al body de start.
+
+No copiar indiscriminadamente otros campos de gs: muchos son estado de respuesta y no parámetros de request.
+
+## 4.21 Respuestas HTTP de error
+
+Los errores del endpoint /game también son evidencia de protocolo.
+
+Artefactos obligatorios incluso con HTTP 500:
+- start.request.json
+- start.response.raw.txt
+- start.wire.json
+
+Si el body es JSON con d, se intenta descifrar y escribir start.response.json.
+
+Esto permite distinguir campo obligatorio ausente, valor inválido, incompatibilidad de modificación o error interno sin detalle.
