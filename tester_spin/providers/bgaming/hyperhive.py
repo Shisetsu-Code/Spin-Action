@@ -99,15 +99,34 @@ def _rpc(
 
 
 def _download_bundle(runtime: BGamingRuntime, timeout_s: float) -> str:
-    url = str(runtime.options.get("game_bundle_source") or "").strip()
-    if not url:
-        return ""
-    try:
-        response = runtime.session.get(url, timeout=timeout_s)
-        response.raise_for_status()
-        return response.text
-    except Exception:
-        return ""
+    candidates: list[str] = []
+    configured = str(runtime.options.get("game_bundle_source") or "").strip()
+    if configured:
+        candidates.append(configured)
+    candidates.append(_origin(runtime.launch_url) + "/main.js")
+
+    fallback = ""
+    seen: set[str] = set()
+    for url in candidates:
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        try:
+            response = runtime.session.get(url, timeout=timeout_s)
+            response.raise_for_status()
+            text = response.text
+        except Exception:
+            continue
+        if text and not fallback:
+            fallback = text
+        # Prefer the JavaScript that actually contains the HyperHive wire contract.
+        if (
+            'method:"play"' in text
+            or 'bet_type:"betting"' in text
+            or 'purchased_feature:"' in text
+        ):
+            return text
+    return fallback
 
 
 def discover_modes_from_bundle(
