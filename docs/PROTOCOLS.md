@@ -1617,3 +1617,91 @@ El débito observado se deriva del primer estado de la ronda y el saldo final; e
 No tratar `layout.rows` como altura fija para Megaways/Trueways. En esos motores la cantidad de símbolos por reel puede variar. Para layouts dinámicos se valida que cada reel sea no vacío, pero no una altura exacta.
 
 Durante `command=freespin`, `outcome.bet` tampoco es un invariante universal entre juegos BGaming. La autoridad es débito cero + evolución correcta del balance. Por ello no se compara `outcome.bet` contra la apuesta base en continuaciones.
+
+
+## 7.12 API v2 con `rows` — BigAtlantisFrenzy
+
+HAR manual 2026-09-09 confirma una variante API v2 donde `layout.rows`
+también forma parte del request wire.
+
+Init relevante:
+
+```text
+options.default_bet = 30
+options.layout.reels = 5
+options.layout.rows  = 5
+feature_options.feature_multipliers:
+  freespin_chance = 200
+  freespin_buy    = 8000
+```
+
+Spin normal observado:
+
+```json
+{
+  "command": "spin",
+  "options": {
+    "bet": 30,
+    "rows": 5
+  }
+}
+```
+
+Compra de free spins:
+
+```json
+{
+  "command": "spin",
+  "options": {
+    "bet": 30,
+    "rows": 5,
+    "purchased_feature": "freespin_buy"
+  }
+}
+```
+
+Compra de mayor chance:
+
+```json
+{
+  "command": "spin",
+  "options": {
+    "bet": 30,
+    "rows": 5,
+    "purchased_feature": "freespin_chance"
+  }
+}
+```
+
+Durante la feature:
+
+```json
+{
+  "command": "freespin",
+  "options": {
+    "rows": 5
+  }
+}
+```
+
+Tester-Spin no aplica `rows` indiscriminadamente a todos los juegos.
+Si un comando API v2 falla con HTTP 422, existe `layout.rows` y el request
+todavía no contiene `rows`, se reintenta una vez usando ese valor. Si el
+retry funciona, el perfil `rows-required` queda aprendido para el resto de
+la sesión y se aplica a spins, compras y continuaciones.
+
+Este HAR también confirma una segunda escala de
+`feature_multipliers`. Cuando no existe `base_bet` explícito, esta familia
+usa base porcentual 100:
+
+```text
+freespin_buy:
+8000 / 100 = x80
+bet 30 → débito 2400
+
+freespin_chance:
+200 / 100 = x2
+bet 30 → débito 60
+```
+
+Los débitos son confirmados por la evolución del balance del HAR.
