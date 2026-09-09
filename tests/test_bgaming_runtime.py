@@ -4,8 +4,10 @@ import unittest
 
 from tester_spin.providers.bgaming.runtime import (
     balance_total,
+    discover_purchase_modes,
     extract_options,
     pending_flow_actions,
+    purchase_expected_debit,
     resolve_base_bet,
     sanitize_error_text,
     sanitize_options,
@@ -165,6 +167,152 @@ class BGamingRuntimeTests(unittest.TestCase):
         self.assertEqual(
             pending_flow_actions(spin),
             ["buy_feature", "select_bonus"],
+        )
+
+    def test_discovers_har_observed_purchase_modes_and_costs(self) -> None:
+        init = {
+            "options": {
+                "feature_options": {
+                    "feature_multipliers": {
+                        "bonus_buy": 2000,
+                        "bonus_chance": 30,
+                        "base_bet": 20,
+                    },
+                    "disabled_features": [],
+                }
+            }
+        }
+        modes = discover_purchase_modes(init)
+        self.assertEqual(
+            [(mode["name"], mode["cost_multiplier"]) for mode in modes],
+            [("bonus_buy", 100.0), ("bonus_chance", 1.5)],
+        )
+        self.assertEqual(purchase_expected_debit(200, modes[0]), 20000.0)
+        self.assertEqual(purchase_expected_debit(200, modes[1]), 300.0)
+
+    def test_accepts_alien_fruits_seeded_purchase_result(self) -> None:
+        purchase = {
+            "name": "bonus_buy",
+            "feature_multiplier": 2000,
+            "base_multiplier": 20,
+            "cost_multiplier": 100.0,
+        }
+        response = {
+            "api_version": "2",
+            "outcome": {
+                "screen": None,
+                "special_symbols": None,
+                "bet": 200,
+                "win": 6950,
+                "wins": [],
+                "storage": {"seed": 77018, "mode": "1"},
+            },
+            "balance": {"game": 6950, "wallet": 80000},
+            "flow": {
+                "round_id": 17238408022,
+                "last_action_id": "17238408022_1",
+                "state": "closed",
+                "command": "spin",
+                "available_actions": ["init", "spin"],
+                "purchased_feature": {"name": "bonus_buy"},
+            },
+        }
+        self.assertEqual(
+            validate_spin(
+                response,
+                requested_bet=200,
+                previous_balance_total=100000,
+                expected_reels=1,
+                expected_rows=1,
+                command="spin",
+                expected_debit=purchase_expected_debit(200, purchase),
+            ),
+            [],
+        )
+
+    def test_validates_treasure_of_anubis_freespin_continuation(self) -> None:
+        response = {
+            "api_version": "2",
+            "features": {
+                "freespins_issued": 11,
+                "freespins_left": 10,
+            },
+            "outcome": {
+                "screen": [
+                    ["1", "2", "3"],
+                    ["1", "2", "3"],
+                    ["1", "2", "3"],
+                    ["1", "2", "3"],
+                    ["1", "2", "3"],
+                ],
+                "bet": 90,
+                "win": 0,
+                "wins": [],
+                "storage": {},
+            },
+            "balance": {"game": 0, "wallet": 100040},
+            "flow": {
+                "round_id": 17238373765,
+                "last_action_id": "17238373765_2",
+                "state": "freespins",
+                "command": "freespin",
+                "available_actions": ["init", "freespin"],
+            },
+        }
+        self.assertEqual(
+            validate_spin(
+                response,
+                requested_bet=90,
+                previous_balance_total=100040,
+                expected_reels=5,
+                expected_rows=3,
+                command="freespin",
+                expected_debit=0,
+            ),
+            [],
+        )
+        self.assertEqual(pending_flow_actions(response), [])
+
+    def test_validates_terminal_freespin_without_charging_bet(self) -> None:
+        response = {
+            "api_version": "2",
+            "features": {
+                "freespins_issued": 22,
+                "freespins_left": 0,
+            },
+            "outcome": {
+                "screen": [
+                    ["1", "2", "3"],
+                    ["1", "2", "3"],
+                    ["1", "2", "3"],
+                    ["1", "2", "3"],
+                    ["1", "2", "3"],
+                ],
+                "bet": 90,
+                "win": 0,
+                "wins": [],
+                "storage": {},
+            },
+            "balance": {"game": 3090, "wallet": 100040},
+            "flow": {
+                "round_id": 17238373765,
+                "last_action_id": "17238373765_23",
+                "state": "closed",
+                "command": "freespin",
+                "available_actions": ["init", "spin"],
+            },
+        }
+        self.assertEqual(
+            validate_spin(
+                response,
+                requested_bet=90,
+                previous_balance_total=103130,
+                expected_reels=5,
+                expected_rows=3,
+                command="freespin",
+                expected_debit=0,
+            ),
+            [],
         )
 
     def test_remote_proof_changes_with_server_round_identity(self) -> None:
