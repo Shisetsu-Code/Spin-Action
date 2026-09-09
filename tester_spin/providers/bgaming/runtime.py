@@ -236,6 +236,46 @@ def balance_total(payload: dict[str, Any]) -> int | float | None:
     return wallet + game
 
 
+def resolve_base_bet(data: dict[str, Any]) -> tuple[int | float | None, str]:
+    options = data.get("options")
+    if not isinstance(options, dict):
+        return None, ""
+
+    default_bet = options.get("default_bet")
+    if isinstance(default_bet, (int, float)) and default_bet > 0:
+        return default_bet, "default_bet"
+
+    available = options.get("available_bets")
+    if isinstance(available, list):
+        numeric = [
+            value
+            for value in available
+            if isinstance(value, (int, float)) and value > 0
+        ]
+        if numeric:
+            return min(numeric), "available_bets:min"
+
+    bet = options.get("bet")
+    if isinstance(bet, (int, float)) and bet > 0:
+        return bet, "options.bet"
+
+    return None, ""
+
+
+def flow_available_actions(data: dict[str, Any]) -> list[str]:
+    flow = data.get("flow")
+    if not isinstance(flow, dict):
+        return []
+    actions = flow.get("available_actions")
+    if not isinstance(actions, list):
+        return []
+    return [str(action) for action in actions if str(action)]
+
+
+def pending_flow_actions(data: dict[str, Any]) -> list[str]:
+    return sorted(set(flow_available_actions(data)) - {"init", "spin"})
+
+
 def validate_init(data: dict[str, Any]) -> list[str]:
     warnings: list[str] = []
     if str(data.get("api_version") or "") != "2":
@@ -248,10 +288,16 @@ def validate_init(data: dict[str, Any]) -> list[str]:
 
     default_bet = options.get("default_bet")
     available_bets = options.get("available_bets")
-    if not isinstance(default_bet, (int, float)):
-        warnings.append("init sin default_bet numérico")
-    if not isinstance(available_bets, list) or not available_bets:
-        warnings.append("init sin available_bets")
+    resolved_bet, _source = resolve_base_bet(data)
+    if resolved_bet is None:
+        warnings.append(
+            "init sin apuesta utilizable: no hay default_bet ni available_bets positivos"
+        )
+    if (
+        not isinstance(default_bet, (int, float))
+        and (not isinstance(available_bets, list) or not available_bets)
+    ):
+        warnings.append("init sin metadata de apuestas")
 
     flow = data.get("flow")
     if not isinstance(flow, dict):
@@ -317,15 +363,10 @@ def validate_spin(
     else:
         command = str(flow.get("command") or "")
         state = str(flow.get("state") or "")
-        actions = flow.get("available_actions")
         if command != "spin":
             warnings.append(f"flow.command no observado: {command!r}")
         if state != "closed":
             warnings.append(f"flow.state no terminal/no observado: {state!r}")
-        if isinstance(actions, list):
-            unknown = sorted(set(str(action) for action in actions) - {"init", "spin"})
-            if unknown:
-                warnings.append(f"acciones BGaming no clasificadas: {unknown}")
 
     current_total = balance_total(data)
     if (
