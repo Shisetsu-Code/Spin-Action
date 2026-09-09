@@ -230,6 +230,21 @@ def discover_modes_from_bundle(
             )
 
     if 'purchased_feature:"buy_bonus"' in bundle and not variants_found:
+        multiplier_matches = [
+            float(value)
+            for value in re.findall(
+                r"buyBonusMultiplier\s*=\s*([0-9]+(?:\.[0-9]+)?)",
+                bundle,
+            )
+        ]
+        positive_multipliers = [
+            value for value in multiplier_matches if value > 0
+        ]
+        expected_buy_bonus_multiplier = (
+            max(positive_multipliers)
+            if positive_multipliers
+            else None
+        )
         modes.append(
             {
                 "id": "PURCHASE_BUY_BONUS",
@@ -238,17 +253,7 @@ def discover_modes_from_bundle(
                     **({"bet_type": bet_type} if bet_type else {}),
                     "purchased_feature": "buy_bonus",
                 },
-                "expected_multiplier": (
-                    float(re.search(
-                        r"buyBonusMultiplier\s*=\s*([0-9]+(?:\.[0-9]+)?)",
-                        bundle,
-                    ).group(1))
-                    if re.search(
-                        r"buyBonusMultiplier\s*=\s*([0-9]+(?:\.[0-9]+)?)",
-                        bundle,
-                    )
-                    else None
-                ),
+                "expected_multiplier": expected_buy_bonus_multiplier,
                 "source": "game_bundle_source",
             }
         )
