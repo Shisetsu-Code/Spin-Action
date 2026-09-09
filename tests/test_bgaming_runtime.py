@@ -4,8 +4,11 @@ import unittest
 
 from tester_spin.providers.bgaming.runtime import (
     balance_total,
+    build_line_bets,
     discover_purchase_modes,
     extract_options,
+    is_line_bet_init,
+    line_bet_count,
     pending_flow_actions,
     preselection_multiplier,
     purchase_expected_debit,
@@ -15,6 +18,7 @@ from tester_spin.providers.bgaming.runtime import (
     sanitize_session_url,
     spin_remote_proof,
     validate_init,
+    validate_line_spin,
     validate_spin,
 )
 
@@ -397,6 +401,69 @@ class BGamingRuntimeTests(unittest.TestCase):
             [],
         )
         self.assertEqual(pending_flow_actions(reveal), [])
+
+    def test_deep_sea_legacy_line_bet_contract(self) -> None:
+        init = {
+            "options": {
+                "line_bets": [10, 25, 50, 75, 100],
+                "default_bet": 10,
+                "lines": [[1, 1, 1, 1, 1] for _ in range(15)],
+            },
+            "balance": 100000,
+            "available_commands": ["init", "spin"],
+        }
+        self.assertTrue(is_line_bet_init(init))
+        self.assertEqual(line_bet_count(init), 15)
+        self.assertEqual(validate_init(init), [])
+        self.assertEqual(
+            build_line_bets(init, 10),
+            {str(index): 10 for index in range(15)},
+        )
+
+        spin = {
+            "bets": {
+                "lines": {str(index): 10 for index in range(15)}
+            },
+            "game": {
+                "state": "closed",
+                "action": "spin",
+                "span_indices": [85, 188, 176, 77, 34],
+            },
+            "balance": 99850,
+            "available_commands": ["init", "spin"],
+            "extra_data": {
+                "provable_data": [
+                    {"hash": "abc"},
+                    {"client_seed": "43533"},
+                ]
+            },
+        }
+        warnings, inferred_win = validate_line_spin(
+            spin,
+            requested_line_bet=10,
+            line_count=15,
+            previous_balance_total=100000,
+        )
+        self.assertEqual(warnings, [])
+        self.assertEqual(inferred_win, 0)
+
+    def test_line_bet_infers_win_from_balance_delta(self) -> None:
+        spin = {
+            "bets": {
+                "lines": {str(index): 10 for index in range(15)}
+            },
+            "game": {"state": "closed", "action": "spin"},
+            "balance": 99900,
+            "available_commands": ["init", "spin"],
+        }
+        warnings, inferred_win = validate_line_spin(
+            spin,
+            requested_line_bet=10,
+            line_count=15,
+            previous_balance_total=100000,
+        )
+        self.assertEqual(warnings, [])
+        self.assertEqual(inferred_win, 50)
 
     def test_remote_proof_changes_with_server_round_identity(self) -> None:
         first = {
