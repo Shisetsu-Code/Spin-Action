@@ -827,6 +827,7 @@ class BGamingProvider(ProviderAdapter):
                                 command="spin",
                                 expected_debit=expected_debit,
                                 variable_layout=variable_layout,
+                                trust_returned_bet=(purchase is None),
                             )
                         )
 
