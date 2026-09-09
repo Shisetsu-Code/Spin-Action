@@ -469,11 +469,34 @@ def run_hyperhive_test(
 
                 final_balance = final_summary.get("balance")
                 total_win = final_summary.get("total_win")
+                expected_multiplier = mode.get("expected_multiplier")
                 if not isinstance(final_balance, (int, float)):
                     warnings.append("HyperHive resultado final sin balance")
                 if not isinstance(total_win, (int, float)):
-                    warnings.append("HyperHive resultado final sin totalWin")
-                    total_win = 0
+                    if (
+                        steps == 1
+                        and isinstance(final_balance, (int, float))
+                        and isinstance(expected_multiplier, (int, float))
+                    ):
+                        expected_debit_for_inference = (
+                            float(default_bet) * float(expected_multiplier)
+                        )
+                        inferred_win = (
+                            float(final_balance)
+                            - before_balance
+                            + expected_debit_for_inference
+                        )
+                        if inferred_win >= -1e-9:
+                            total_win = max(0.0, inferred_win)
+                        else:
+                            warnings.append(
+                                "HyperHive resultado final sin totalWin "
+                                "y no pudo inferirse por balance"
+                            )
+                            total_win = 0
+                    else:
+                        warnings.append("HyperHive resultado final sin totalWin")
+                        total_win = 0
 
                 if bool(final_summary.get("final")) and isinstance(final_balance, (int, float)):
                     if steps > 1:
@@ -493,7 +516,6 @@ def run_hyperhive_test(
                             f"actual={final_balance}, esperado={expected_final}"
                         )
 
-                    expected_multiplier = mode.get("expected_multiplier")
                     if isinstance(expected_multiplier, (int, float)):
                         expected_debit = float(default_bet) * float(expected_multiplier)
                         if abs(observed_debit - expected_debit) > 1e-9:
