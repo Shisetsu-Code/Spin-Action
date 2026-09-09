@@ -398,7 +398,7 @@ class BGamingProvider(ProviderAdapter):
                 requested_spins=repetitions,
                 successful_spins=0,
                 failed_spins=repetitions,
-                status="PARCIAL",
+                status="SIN_DEMO",
                 symbol=game.symbol,
                 started_at=started_iso,
                 finished_at=utc_now_iso(),
