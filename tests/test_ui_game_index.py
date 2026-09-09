@@ -24,7 +24,6 @@ class GameIndexTests(unittest.TestCase):
             self.game("Good", "OK"),
             self.game("Partial", "PARCIAL"),
             self.game("Broken", "ERROR"),
-            self.game("NoDemo", "SIN_DEMO"),
             self.game("Never", "PENDIENTE"),
             self.game("NoDemo", "SIN_DEMO"),
             self.game("Blank", ""),
@@ -41,6 +40,7 @@ class GameIndexTests(unittest.TestCase):
             self.game("Never", "PENDIENTE"),
             self.game("Partial", "PARCIAL"),
             self.game("Broken", "ERROR"),
+            self.game("NoDemo", "SIN_DEMO"),
         ]
         ordered = sorted(games, key=lambda game: game_sort_key(game, "status"))
         self.assertEqual(
