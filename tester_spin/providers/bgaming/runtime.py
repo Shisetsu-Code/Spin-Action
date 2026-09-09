@@ -347,6 +347,17 @@ def purchase_expected_debit(
     return float(requested_bet) * float(multiplier)
 
 
+def preselection_multiplier(data: dict[str, Any]) -> int | float | None:
+    features = data.get("features")
+    if not isinstance(features, dict):
+        return None
+    bonus_data = features.get("bonus_data")
+    if not isinstance(bonus_data, dict):
+        return None
+    value = bonus_data.get("multiplier")
+    return value if isinstance(value, (int, float)) else None
+
+
 def result_has_authoritative_shape(data: dict[str, Any]) -> bool:
     """Accept both server-grid and seeded-client result shapes observed in HARs."""
     outcome = data.get("outcome")
@@ -372,8 +383,13 @@ def flow_available_actions(data: dict[str, Any]) -> list[str]:
 
 
 def pending_flow_actions(data: dict[str, Any]) -> list[str]:
-    # freespin is a continuation observed and automated from TreasureOfAnubis HAR.
-    return sorted(set(flow_available_actions(data)) - {"init", "spin", "freespin"})
+    # Observed and automated continuations:
+    # - freespin: TreasureOfAnubis HAR
+    # - preselection_game: AlwaysUp HAR (rocket bonus reveal)
+    return sorted(
+        set(flow_available_actions(data))
+        - {"init", "spin", "freespin", "preselection_game"}
+    )
 
 
 def validate_init(data: dict[str, Any]) -> list[str]:
@@ -472,11 +488,16 @@ def validate_spin(
                 f"flow.command inesperado para {command}: {flow_command!r}"
             )
         if command == "spin":
-            if state not in {"closed", "freespins"}:
+            if state not in {"closed", "freespins", "preselection_game"}:
                 warnings.append(f"flow.state spin no observado: {state!r}")
         elif command == "freespin":
             if state not in {"freespins", "closed"}:
                 warnings.append(f"flow.state freespin no observado: {state!r}")
+        elif command == "preselection_game":
+            if state != "closed":
+                warnings.append(
+                    f"flow.state preselection_game no terminal: {state!r}"
+                )
         elif state != "closed":
             warnings.append(f"flow.state no terminal/no observado: {state!r}")
 
