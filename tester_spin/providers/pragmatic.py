@@ -229,6 +229,10 @@ class PragmaticProvider(ProviderAdapter):
     key = "pragmatic"
     display_name = "Pragmatic Play"
     catalog_url = "https://www.pragmaticplay.com/en/games/"
+    # Pragmatic's catalogue is large and a 40% drop is not a plausible normal
+    # update. Fail closed unless an authoritative crawl retains at least 90% of
+    # the previously known rows.
+    min_catalog_reconcile_ratio = 0.90
 
     def __init__(self, data_root: Path, base_bet: float = 2.0) -> None:
         self.data_root = data_root
