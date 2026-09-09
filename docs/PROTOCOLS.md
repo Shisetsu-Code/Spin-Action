@@ -1087,3 +1087,238 @@ Non-authoritative evidence:
 - partial site rendering under WAF/CDN/5xx conditions.
 
 A DOM fallback can recover or add game candidates but cannot establish that missing titles were removed by Pragmatic. Reconciliation therefore requires both an authoritative source and the provider-specific shrink threshold.
+
+
+---
+
+# 7. BGaming — HAR 2026-09-09
+
+## 7.1 Catálogo
+
+Ruta pública observada:
+
+```text
+https://bgaming.com/game-type/slots
+```
+
+La primera página contiene 25 tarjetas `[data-catalog-card]`.
+
+Las páginas siguientes se cargan por:
+
+```text
+GET https://bgaming.com/wp-json/bg/v1/games/search
+```
+
+Parámetros observados:
+
+```text
+sort=release_date
+order=DESC
+posts_per_page=25
+format=html
+columns_style=1
+game_type=1
+game_label=1
+most_popular=0
+ver=105
+filter=game
+page=N
+lang=en
+```
+
+Respuesta:
+
+```json
+{
+  "page": 2,
+  "total": 13,
+  "hasMore": true,
+  "html": "..."
+}
+```
+
+Terminación autoritativa:
+
+```text
+hasMore=false
+```
+
+No considerar un crawl limitado manualmente o una página REST fallida como autoritativo.
+
+Campos extraídos de cada tarjeta:
+
+```text
+name
+slug
+public_url
+demo_url
+identifier
+thumbnail
+RTP
+volatility
+game_type
+availability
+```
+
+En la captura se observaron enlaces demo normales y algunos links con `play_token` efímero. Los links tokenizados no se persisten.
+
+## 7.2 Bootstrap de juego
+
+El demo estable tiene forma observada:
+
+```text
+https://demo.bgaming-network.com/play/<Identifier>/FUN?server=demo
+```
+
+El navegador termina en una página:
+
+```text
+/games/<Identifier>/FUN?...launch_token...
+```
+
+El HTML expone:
+
+```javascript
+window.__OPTIONS__ = {...}
+```
+
+Campos usados por Tester-Spin:
+
+```text
+identifier
+api
+csrfTokenHeaderName
+csrfTokenHeaderValue
+currency
+resources_path
+math
+rules
+```
+
+También puede existir `websocket_url`, pero el HAR de referencia demuestra que el spin base capturado usa HTTP JSON; no se usa el WS para inventar una máquina de estados.
+
+Tokens/CSRF se usan sólo durante la sesión y se redactan de artefactos/logs persistentes.
+
+## 7.3 Init
+
+Request observado:
+
+```json
+{
+  "command": "init",
+  "extra_data": {
+    "round_series_id": 1788943009571
+  }
+}
+```
+
+Respuesta relevante:
+
+```text
+api_version=2
+options.available_bets
+options.default_bet
+options.paytable/paytables
+options.special_symbols
+options.lines
+options.reels
+options.layout
+options.currency
+options.screen
+balance.wallet
+balance.game
+flow.state
+flow.command
+flow.available_actions
+```
+
+Caso de referencia Treasure of Anubis:
+
+```text
+layout.reels = 5
+layout.rows  = 3
+default_bet  = 90
+currency     = FUN
+subunits     = 100
+flow.state   = ready
+flow.command = init
+available_actions = [init, spin]
+```
+
+## 7.4 Spin
+
+Request observado:
+
+```json
+{
+  "command": "spin",
+  "options": {
+    "bet": 90
+  },
+  "extra_data": {
+    "round_series_id": 1788943009571
+  }
+}
+```
+
+Respuesta:
+
+```text
+outcome.screen
+outcome.special_symbols
+outcome.bet
+outcome.win
+outcome.wins
+balance.wallet
+balance.game
+flow.round_id
+flow.last_action_id
+flow.state
+flow.command
+flow.available_actions
+```
+
+Terminal base observado:
+
+```text
+flow.command = spin
+flow.state   = closed
+available_actions = [init, spin]
+```
+
+## 7.5 Validación contable
+
+BGaming separa saldo en:
+
+```text
+balance.wallet
+balance.game
+```
+
+Para el spin base observado:
+
+```text
+balance_total = wallet + game
+balance_total_n = balance_total_(n-1) - bet + win
+```
+
+No validar únicamente `wallet`, porque una ganancia puede permanecer temporalmente en `balance.game`.
+
+## 7.6 Features no observadas
+
+El bundle contiene referencias a comandos adicionales, pero el HAR suministrado no ejecuta esos flujos. Por lo tanto NO implementar automáticamente todavía:
+
+```text
+freespin
+respin
+gamble
+select_bonus
+buy_feature / purchased_feature
+```
+
+Si una respuesta de runtime expone un `flow.state` o `available_actions` fuera de `init/spin/ready/closed`:
+
+1. guardar request/response;
+2. marcar intento como `PARCIAL`;
+3. registrar la acción/estado desconocido;
+4. añadir handler sólo con evidencia HAR/runtime específica.
