@@ -12,7 +12,11 @@ import requests
 
 from tester_spin.models import Game, GameTestResult, SpinAttempt, utc_now_iso
 from tester_spin.providers.base import GameCallback, Progress, ProviderAdapter
-from tester_spin.providers.bgaming.catalog import BGamingCatalogRecord, parse_catalog_html
+from tester_spin.providers.bgaming.catalog import (
+    BGamingCatalogRecord,
+    filter_records_by_game_type,
+    parse_catalog_html,
+)
 from tester_spin.providers.bgaming.runtime import (
     balance_total,
     bootstrap_game,
@@ -177,13 +181,23 @@ class BGamingProvider(ProviderAdapter):
         response = self.http.get(self.catalog_url, timeout=30.0, allow_redirects=True)
         response.raise_for_status()
         (raw_dir / "page-001.html").write_text(response.text, encoding="utf-8")
-        first_records = parse_catalog_html(response.text)
-        if not first_records:
+        first_records_raw = parse_catalog_html(response.text)
+        first_records, first_rejected = filter_records_by_game_type(
+            first_records_raw,
+            "Slots",
+        )
+        if not first_records_raw:
             self.set_catalog_authority(
                 False,
                 "la página inicial no produjo tarjetas [data-catalog-card]",
             )
             raise RuntimeError("BGaming: catálogo inicial vacío/no parseable.")
+        if not first_records:
+            self.set_catalog_authority(
+                False,
+                "la página inicial no produjo tarjetas Slots válidas",
+            )
+            raise RuntimeError("BGaming: catálogo inicial sin juegos tipo Slots.")
 
         self._consume_records(
             first_records,
@@ -191,7 +205,10 @@ class BGamingProvider(ProviderAdapter):
             progress=progress,
             on_game=on_game,
         )
-        progress(f"BGaming catálogo página 1: {len(first_records)} juegos.")
+        progress(
+            f"BGaming catálogo página 1: recibidos={len(first_records_raw)}, "
+            f"slots={len(first_records)}, descartados_no_slot={len(first_rejected)}."
+        )
 
         if limit == 1:
             self.set_catalog_authority(False, "crawl limitado manualmente a 1 página")
@@ -230,7 +247,11 @@ class BGamingProvider(ProviderAdapter):
                         encoding="utf-8",
                     )
                     html = str(payload.get("html") or "")
-                    records = parse_catalog_html(html)
+                    records_raw = parse_catalog_html(html)
+                    records, rejected = filter_records_by_game_type(
+                        records_raw,
+                        "Slots",
+                    )
                     reported_page = int(payload.get("page") or page)
                     if reported_page != page:
                         raise ValueError(
@@ -251,7 +272,8 @@ class BGamingProvider(ProviderAdapter):
                     )
                     has_more = bool(payload.get("hasMore"))
                     progress(
-                        f"BGaming catálogo página {page}: recibidos={len(records)}, "
+                        f"BGaming catálogo página {page}: recibidos={len(records_raw)}, "
+                        f"slots={len(records)}, descartados_no_slot={len(rejected)}, "
                         f"nuevos={added}, acumulados={len(by_slug)}, hasMore={has_more}"
                         + (
                             f", total_paginas_reportado={expected_total}"
@@ -260,7 +282,7 @@ class BGamingProvider(ProviderAdapter):
                         )
                     )
 
-                    if has_more and not records:
+                    if has_more and not records_raw:
                         self.set_catalog_authority(
                             False,
                             f"página {page} vacía pero hasMore=true",
