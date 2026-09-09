@@ -13,7 +13,13 @@ from tkinter import messagebox, ttk
 from PIL import Image, ImageTk
 
 from tester_spin.models import Game, GameTestResult
-from tester_spin.providers import BelatraProvider, OneSpin4WinProvider, PragmaticProvider, ProviderRegistry
+from tester_spin.providers import (
+    BGamingProvider,
+    BelatraProvider,
+    OneSpin4WinProvider,
+    PragmaticProvider,
+    ProviderRegistry,
+)
 from tester_spin.scheduler import run_game_tests
 from tester_spin.storage import Storage
 
@@ -34,6 +40,7 @@ class TesterSpinApp(tk.Tk):
         self.registry.register(PragmaticProvider(self.data_root))
         self.registry.register(OneSpin4WinProvider(self.data_root))
         self.registry.register(BelatraProvider(self.data_root))
+        self.registry.register(BGamingProvider(self.data_root))
         self._display_to_key = {provider.display_name: provider.key for provider in self.registry.all()}
 
         self._events: queue.Queue[tuple[str, object]] = queue.Queue()
@@ -115,7 +122,8 @@ class TesterSpinApp(tk.Tk):
             text=(
                 "Cada adaptador ejecuta sólo protocolos observados. Pragmatic prueba SPIN/ante-bet/compras; "
                 "1spin4win (D1) ejecuta SPIN directamente por WebSocket; Belatra ejecuta SPIN base por HTTP cifrado "
-                "(enter/start/finish) y conserva features no clasificadas como PARCIAL."
+                "(enter/start/finish); BGaming usa WordPress REST para catálogo y HTTP JSON API v2 para init/spin. "
+                "Features no observadas se conservan como PARCIAL."
             ),
             wraplength=1400,
         ).pack(anchor="w", pady=(8, 0))
