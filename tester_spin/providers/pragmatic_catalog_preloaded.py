@@ -139,6 +139,20 @@ MUTATION_JS = r"""
 """
 
 
+NO_GROWTH_STREAK_LIMIT = 8
+
+
+def _continue_after_no_growth(*, hidden_preloaded: int, button_present: bool, streak: int) -> bool:
+    """Keep probing while Load More survives, even if the first click only reveals preloaded DOM.
+
+    Hidden cards are useful discovery evidence, but they do not prove that later clicks
+    cannot trigger another network batch. This is especially important during the
+    non-authoritative 502/WAF fallback path.
+    """
+    _ = hidden_preloaded  # retained in the contract to make the safety invariant explicit
+    return bool(button_present) and int(streak) < NO_GROWTH_STREAK_LIMIT
+
+
 def _all_cards(page) -> list[dict[str, Any]]:
     try:
         value = page.evaluate(ALL_GAME_CARDS_JS)
@@ -319,38 +333,39 @@ def crawl_pragmatic_catalog_preloaded(
 
                 no_growth_streak += 1
 
-                # Strong case: we already saw hidden game cards before clicking. If a
-                # click changes no structure, it is only revealing/lazy-loading cards
-                # we already captured, so further clicks add no catalog information.
-                if hidden_preloaded > 0:
-                    preloaded_complete = True
-                    progress(
-                        "Sin estructuras nuevas y ya había tarjetas ocultas precargadas: "
-                        "catálogo obtenido sin recorrer todas las tandas visuales."
-                    )
-                    break
-
-                # Inconclusive DOM: do NOT repeat the old premature-stop bug. Keep
-                # clicking while the button survives, allowing intermittent no-op or
-                # animation-only batches. Eight consecutive no-growth clicks is the
-                # safety guard, not one or two.
-                if _find_load_more(page) is None:
-                    progress("Sin crecimiento y el botón desapareció: catálogo agotado.")
-                    break
-                if no_growth_streak >= 8:
-                    progress("Ocho clicks consecutivos sin estructuras nuevas; se detiene por guardia de seguridad.")
-                    provider._write_json(diag / f"stall-{loads_done:04d}.json", after)
-                    try:
-                        (diag / f"dom-stall-{loads_done:04d}.html").write_text(
-                            page.content(), encoding="utf-8"
+                # Hidden/preloaded cards do NOT prove exhaustion. A click can merely
+                # reveal already-present cards and a later click can still trigger the
+                # next network batch. Keep probing while the Load More control survives.
+                button_present = _find_load_more(page) is not None
+                if not _continue_after_no_growth(
+                    hidden_preloaded=hidden_preloaded,
+                    button_present=button_present,
+                    streak=no_growth_streak,
+                ):
+                    if not button_present:
+                        preloaded_complete = hidden_preloaded > 0
+                        progress("Sin crecimiento y el botón desapareció: catálogo agotado.")
+                    else:
+                        progress(
+                            f"{NO_GROWTH_STREAK_LIMIT} clicks consecutivos sin estructuras nuevas; "
+                            "se detiene por guardia de seguridad."
                         )
-                    except Exception:
-                        pass
+                        provider._write_json(diag / f"stall-{loads_done:04d}.json", after)
+                        try:
+                            (diag / f"dom-stall-{loads_done:04d}.html").write_text(
+                                page.content(), encoding="utf-8"
+                            )
+                        except Exception:
+                            pass
                     break
 
                 progress(
-                    f"Click sin crecimiento concluyente ({no_growth_streak}/8); "
-                    "el botón sigue activo, se continúa."
+                    f"Click sin crecimiento concluyente ({no_growth_streak}/{NO_GROWTH_STREAK_LIMIT}); "
+                    + (
+                        "había tarjetas precargadas pero Load More sigue activo; se continúa."
+                        if hidden_preloaded > 0
+                        else "el botón sigue activo, se continúa."
+                    )
                 )
 
             last_all = all_cards
