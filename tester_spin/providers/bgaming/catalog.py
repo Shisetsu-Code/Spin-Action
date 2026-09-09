@@ -58,6 +58,23 @@ def _rtp(card) -> float | None:
     return None
 
 
+def filter_records_by_game_type(
+    records: list[BGamingCatalogRecord],
+    expected: str,
+) -> tuple[list[BGamingCatalogRecord], list[BGamingCatalogRecord]]:
+    target = str(expected or "").strip().casefold()
+    if not target:
+        return list(records), []
+    accepted: list[BGamingCatalogRecord] = []
+    rejected: list[BGamingCatalogRecord] = []
+    for record in records:
+        if record.game_type.strip().casefold() == target:
+            accepted.append(record)
+        else:
+            rejected.append(record)
+    return accepted, rejected
+
+
 def parse_catalog_html(html: str) -> list[BGamingCatalogRecord]:
     soup = BeautifulSoup(html or "", "html.parser")
     records: list[BGamingCatalogRecord] = []
