@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 import requests
 
 from tester_spin.providers.bgaming.hyperhive import (
     _result_summary,
+    discover_modes_from_bundle,
     is_hyperhive_runtime,
 )
 from tester_spin.providers.bgaming.runtime import BGamingRuntime, validate_spin
@@ -28,6 +30,75 @@ class BGamingHyperHiveTests(unittest.TestCase):
             round_series_id=1,
         )
         self.assertTrue(is_hyperhive_runtime(runtime))
+
+    def test_does_not_misclassify_normal_game_bundle_as_hyperhive(self) -> None:
+        runtime = BGamingRuntime(
+            session=requests.Session(),
+            launch_url="https://demo.bgaming-network.com/games/BeastBand/FUN?launch_token=x",
+            api_url="https://demo.bgaming-network.com/api/BeastBand/1/session",
+            identifier="BeastBand",
+            csrf_header_name="X-CSRF-Token",
+            csrf_header_value="secret",
+            options={
+                "game": "slots/beast_band",
+                "version": "1.0.0",
+                "game_bundle_source": "https://example.test/bundle.js",
+            },
+            round_series_id=1,
+        )
+        self.assertFalse(is_hyperhive_runtime(runtime))
+
+    def test_blazing_bundle_discovers_betting_actions_and_purchases(self) -> None:
+        runtime = BGamingRuntime(
+            session=requests.Session(),
+            launch_url="https://blazing-firepots.demo.bgaming-network.com/hyperhive",
+            api_url="https://unused.example/api/session",
+            identifier="BlazingFirepots",
+            csrf_header_name="X-CSRF-Token",
+            csrf_header_value="secret",
+            options={"game_bundle_source": "https://example.test/main.js"},
+            round_series_id=1,
+        )
+        bundle = (
+            'bet_type:"betting" action:"spin" action:"bonus" '
+            'purchased_feature:"buy_bonus" purchased_feature:"buy_chance" '
+            'state_lock'
+        )
+        with patch(
+            "tester_spin.providers.bgaming.hyperhive._download_bundle",
+            return_value=bundle,
+        ):
+            modes = discover_modes_from_bundle(runtime, timeout_s=1)
+        by_id = {mode["id"]: mode for mode in modes}
+        self.assertEqual(
+            by_id["SPIN"]["request"],
+            {"bet_type": "betting", "action": "spin"},
+        )
+        self.assertEqual(
+            by_id["PURCHASE_BUY_CHANCE"]["request"],
+            {"purchased_feature": "buy_chance", "bet_type": "betting"},
+        )
+        self.assertEqual(
+            by_id["PURCHASE_BUY_BONUS"]["request"],
+            {"purchased_feature": "buy_bonus", "bet_type": "betting"},
+        )
+
+    def test_nested_hyperhive_game_total_win_is_accepted(self) -> None:
+        data = {
+            "result": {
+                "final": True,
+                "balance": 86860,
+                "state_lock": "lock-2",
+                "resp": {
+                    "nextAction": "SPIN",
+                    "game": {"totalWin": 160},
+                },
+            }
+        }
+        summary = _result_summary(data)
+        self.assertEqual(summary["total_win"], 160)
+        self.assertEqual(summary["state_lock"], "lock-2")
+        self.assertEqual(summary["next_action"], "SPIN")
 
     def test_hyperhive_result_summary_uses_final_balance_and_round_step(self) -> None:
         data = {
