@@ -1503,3 +1503,117 @@ La continuación `preselection_game` tiene débito cero. En la captura:
 saldo previo total=83400, win=20000, saldo final total=103400.
 
 Tester-Spin automatiza esta continuación como parte del mismo intento de compra.
+
+
+## 7.10 HyperHive JSON-RPC
+
+HAR 2026-09-09 de Blackbeard's Bounty confirma una segunda familia runtime BGaming.
+
+El HTML sigue exponiendo `window.__OPTIONS__`, pero aunque `options.api` contiene una URL del estilo:
+
+```text
+/api/<Identifier>/<internal-id>/<session>
+```
+
+el cliente HyperHive NO juega contra esa URL. El transporte efectivo observado es:
+
+```text
+POST <origin>/api
+Content-Type: application/json
+```
+
+con JSON-RPC 2.0.
+
+Detección actual:
+
+- launch final `/hyperhive`; o
+- `game_bundle_source` presente + `game=slots/...` + `version=1.0.0`.
+
+Init:
+
+```json
+{
+  "id": "<uuid>",
+  "jsonrpc": "2.0",
+  "method": "init",
+  "params": {
+    "token": "<play_token>"
+  }
+}
+```
+
+El resultado expone:
+
+```text
+config.bet_limits
+config.default_bet
+config.purchased_features
+balance
+currency_attributes
+state_lock
+```
+
+Spin normal:
+
+```json
+{
+  "method": "play",
+  "params": {
+    "token": "<play_token>",
+    "req": {
+      "bet": 100,
+      "bet_type": "bet"
+    }
+  }
+}
+```
+
+La respuesta usa:
+
+```text
+result.final
+result.balance
+result.resp.commonGame
+result.resp.freespins
+result.resp.freespinsGame
+result.resp.totalWin
+result.resp.roundStep
+result.resp.bet
+```
+
+Si `result.final=false`, el HAR confirma que la ronda continúa mediante otro `method=play` con `bet` + `bet_type=bet`. El runner repite hasta `final=true` con guard de 256 pasos.
+
+Blackbeard's Bounty confirma:
+
+```text
+buy_chance:
+  purchased_feature=buy_chance
+  bet_type=bet
+  coste observado x1.5
+
+buy_bonus/freeSpin:
+  purchased_feature=buy_bonus
+  bonus_multiplier_type=freeSpin
+  coste observado x100
+
+buy_bonus/freeSpinRandom:
+  purchased_feature=buy_bonus
+  bonus_multiplier_type=freeSpinRandom
+  coste observado x200
+```
+
+Los modos HyperHive se descubren desde literales realmente presentes en `game_bundle_source`, no desde la lista genérica `config.purchased_features`.
+
+Validación de balance HyperHive:
+
+```text
+final_balance = balance_previo - debito_observado + totalWin
+```
+
+El débito observado se deriva del primer estado de la ronda y el saldo final; el balance del servidor es autoridad.
+
+## 7.11 Geometría dinámica y free spins
+
+No tratar `layout.rows` como altura fija para Megaways/Trueways. En esos motores la cantidad de símbolos por reel puede variar. Para layouts dinámicos se valida que cada reel sea no vacío, pero no una altura exacta.
+
+Durante `command=freespin`, `outcome.bet` tampoco es un invariante universal entre juegos BGaming. La autoridad es débito cero + evolución correcta del balance. Por ello no se compara `outcome.bet` contra la apuesta base en continuaciones.
