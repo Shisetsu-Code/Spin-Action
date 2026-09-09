@@ -1322,3 +1322,121 @@ Si una respuesta de runtime expone un `flow.state` o `available_actions` fuera d
 2. marcar intento como `PARCIAL`;
 3. registrar la acción/estado desconocido;
 4. añadir handler sólo con evidencia HAR/runtime específica.
+
+
+## 7.7 Compras observadas — AlienFruits3
+
+HAR 2026-09-09 confirma compras BGaming mediante el mismo command `spin`.
+
+```json
+{
+  "command": "spin",
+  "options": {
+    "bet": 200,
+    "purchased_feature": "bonus_buy"
+  }
+}
+```
+
+El `init` publica:
+
+```json
+{
+  "feature_options": {
+    "feature_multipliers": {
+      "bonus_buy": 2000,
+      "bonus_chance": 30,
+      "base_bet": 20
+    },
+    "disabled_features": []
+  }
+}
+```
+
+Los nombres distintos de `base_bet` son candidatos de compra explícitamente publicados.
+El débito observado se deriva como:
+
+```text
+cost_multiplier = feature_multiplier / base_bet
+expected_debit  = requested_bet * cost_multiplier
+```
+
+En la captura:
+
+```text
+bonus_buy:    2000 / 20 = x100  → bet 200 descuenta 20000
+bonus_chance:   30 / 20 = x1.5  → bet 200 descuenta 300
+```
+
+La respuesta confirma el modo mediante:
+
+```json
+"flow": {
+  "state": "closed",
+  "command": "spin",
+  "purchased_feature": {"name": "bonus_buy"}
+}
+```
+
+AlienFruits3 usa además resultado seed-driven:
+
+```json
+"outcome": {
+  "screen": null,
+  "storage": {
+    "seed": 77018,
+    "mode": "1"
+  }
+}
+```
+
+Por tanto `screen=null` no es error si `outcome.storage.seed` está presente.
+
+## 7.8 Free spins observados — TreasureOfAnubis
+
+Un spin normal puede abrir free spins:
+
+```text
+spin
+→ flow.state=freespins
+→ available_actions=[init,freespin]
+```
+
+La continuación exacta observada es:
+
+```json
+{
+  "command": "freespin",
+  "extra_data": {
+    "round_series_id": "<misma serie>"
+  }
+}
+```
+
+Durante toda la feature se conserva el mismo `round_id` y avanza `last_action_id`:
+
+```text
+<round>_2
+<round>_3
+...
+<round>_23
+```
+
+`features.freespins_left` decrece y puede aumentar por retrigger. El HAR observado pasó de 11 tiradas emitidas a 22.
+
+Terminal:
+
+```text
+flow.state=closed
+flow.command=freespin
+available_actions=[init,spin]
+freespins_left=0
+```
+
+Las free spins no vuelven a cobrar `outcome.bet`; para validación contable:
+
+```text
+balance_total_n = balance_total_(n-1) + win
+```
+
+Tester-Spin sigue automáticamente `freespin` hasta terminal con guard de 256 pasos.
