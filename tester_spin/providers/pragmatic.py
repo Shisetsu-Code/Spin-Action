@@ -436,6 +436,7 @@ class PragmaticProvider(ProviderAdapter):
                     "policy": "original bytes from highest/native image URL exposed by catalog; no resize/re-encode",
                 },
                 "discovered_at": metadata.get("discovered_at", game.discovered_at),
+                "catalog_recovery_disabled": False,
                 "updated_at": utc_now_iso(),
             }
         )
@@ -479,6 +480,8 @@ class PragmaticProvider(ProviderAdapter):
             if not isinstance(metadata, dict):
                 continue
             if str(metadata.get("provider_key") or "").strip() != self.key:
+                continue
+            if bool(metadata.get("catalog_recovery_disabled")):
                 continue
 
             slug = str(metadata.get("provider_slug") or "").strip().lower()
@@ -585,8 +588,74 @@ class PragmaticProvider(ProviderAdapter):
         overall_error = ""
 
         try:
-            progress("Descubriendo ID interno y protocolo con el cliente oficial...")
-            discovery = self._browser_bootstrap(game.url, timeout_s=max(60.0, timeout_s), progress=progress)
+            discovery: BrowserBootstrap
+            bootstrap_timeout = max(60.0, timeout_s)
+
+            if symbol:
+                progress(
+                    f"Usando ID interno conocido del catálogo: symbol={symbol}; "
+                    "bootstrap directo sin depender de la ficha pública."
+                )
+                known_bootstrap: HttpBootstrap | None = None
+                try:
+                    known_bootstrap = self._http_bootstrap(
+                        game.url,
+                        symbol,
+                        None,
+                        self.base_bet,
+                        bootstrap_timeout,
+                    )
+                    cookies = [
+                        {
+                            "name": cookie.name,
+                            "value": cookie.value,
+                            "domain": cookie.domain,
+                            "path": cookie.path,
+                        }
+                        for cookie in known_bootstrap.session.cookies
+                    ]
+                    headers = {
+                        str(key): str(value)
+                        for key, value in known_bootstrap.session.headers.items()
+                    }
+                    discovery = BrowserBootstrap(
+                        symbol=known_bootstrap.symbol,
+                        mgckey=known_bootstrap.mgckey,
+                        cver=known_bootstrap.cver,
+                        endpoint=known_bootstrap.endpoint,
+                        launch_url=known_bootstrap.launch_url,
+                        headers=headers,
+                        cookies=cookies,
+                        init_request_raw=known_bootstrap.init_request_raw,
+                        init_response_raw=known_bootstrap.init_response_raw,
+                        init_response=dict(known_bootstrap.init_response),
+                        calibration_request_raw=known_bootstrap.calibration_request_raw,
+                        calibration_response_raw=known_bootstrap.calibration_response_raw,
+                        calibration_response=dict(known_bootstrap.calibration_response),
+                    )
+                    progress(f"ID conocido validado directamente: symbol={discovery.symbol}")
+                except Exception as known_exc:
+                    progress(
+                        "El ID conocido no pudo bootstrappear "
+                        f"({type(known_exc).__name__}: {known_exc}); "
+                        "se intenta resolver nuevamente desde la ficha pública."
+                    )
+                    discovery = self._browser_bootstrap(
+                        game.url,
+                        timeout_s=bootstrap_timeout,
+                        progress=progress,
+                    )
+                finally:
+                    if known_bootstrap is not None:
+                        known_bootstrap.session.close()
+            else:
+                progress("Descubriendo ID interno y protocolo con el cliente oficial...")
+                discovery = self._browser_bootstrap(
+                    game.url,
+                    timeout_s=bootstrap_timeout,
+                    progress=progress,
+                )
+
             symbol = discovery.symbol
             game.symbol = symbol
             catalog = discover_modes(discovery.init_response, requested_base_bet=self.base_bet)
