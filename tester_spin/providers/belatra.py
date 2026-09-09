@@ -938,15 +938,25 @@ class BelatraProvider(ProviderAdapter):
             raise RuntimeError("Belatra enter response does not contain gs.")
 
         lines_assortment = gs.get("linesAssortment")
-        if isinstance(lines_assortment, list) and lines_assortment:
-            valid_lines = [
+        valid_lines = (
+            [
                 int(value)
                 for value in lines_assortment
                 if isinstance(value, (int, float)) and int(value) > 0
             ]
-            nlines = min(valid_lines) if valid_lines else int(gs.get("nlines") or 0)
+            if isinstance(lines_assortment, list)
+            else []
+        )
+
+        # Preserve the server-authoritative current line count. Older Belatra
+        # titles expose line-dependent bet tables; choosing min(linesAssortment)
+        # while keeping the current bet can create an invalid pair such as
+        # nlines=1 + betPerLine=5 when line 1 only accepts >=10.
+        current_nlines = int(gs.get("nlines") or 0)
+        if current_nlines > 0 and (not valid_lines or current_nlines in valid_lines):
+            nlines = current_nlines
         else:
-            nlines = int(gs.get("nlines") or 0)
+            nlines = valid_lines[0] if valid_lines else current_nlines
 
         bet_per_line = int(gs.get("betPerLine") or 0)
         denom = int(gs.get("gdenom") or 0)
@@ -954,6 +964,29 @@ class BelatraProvider(ProviderAdapter):
             assortment = gs.get("betAssortment")
             if isinstance(assortment, list) and assortment:
                 bet_per_line = int(assortment[0])
+
+        # If the chosen line count has an explicit line-dependent bet table,
+        # validate the pair and fall back to a value the server advertised for
+        # that exact line count.
+        dependent = gs.get("betDependOnLines")
+        if isinstance(dependent, list):
+            for row in dependent:
+                if not isinstance(row, dict):
+                    continue
+                try:
+                    row_lines = int(row.get("lines") or 0)
+                except (TypeError, ValueError):
+                    continue
+                if row_lines != nlines:
+                    continue
+                allowed = [
+                    int(value)
+                    for value in (row.get("betAssort") or [])
+                    if isinstance(value, (int, float)) and int(value) > 0
+                ]
+                if allowed and bet_per_line not in allowed:
+                    bet_per_line = allowed[0]
+                break
         if denom <= 0:
             assortment = gs.get("denomAssortment_cents")
             if isinstance(assortment, list) and assortment:
@@ -988,16 +1021,19 @@ class BelatraProvider(ProviderAdapter):
         }
 
         # Some Belatra games expose game-specific math/volatility selectors.
-        # Slattors Battle uses isMathElf. Keep the rule generic so newer titles
-        # such as Cops vs Robs can reuse the same client convention without a
-        # hard-coded game-name exception.
+        # Slattors Battle uses isMathElf; Cops vs Robs publishes mathType directly.
+        # Preserve only explicitly advertised scalar selector fields.
         for key, value in gs.items():
-            if not re.fullmatch(r"isMath[A-Za-z0-9_]*", str(key)):
+            name = str(key)
+            if not (
+                re.fullmatch(r"isMath[A-Za-z0-9_]*", name)
+                or name == "mathType"
+            ):
                 continue
             if isinstance(value, bool):
-                request[str(key)] = int(value)
+                request[name] = int(value)
             elif isinstance(value, (int, float)):
-                request[str(key)] = int(value)
+                request[name] = int(value)
 
         return request
 
@@ -1449,7 +1485,10 @@ class BelatraProvider(ProviderAdapter):
             math_fields = [
                 (str(key), value)
                 for key, value in enter_gs.items()
-                if re.fullmatch(r"isMath[A-Za-z0-9_]*", str(key))
+                if (
+                    re.fullmatch(r"isMath[A-Za-z0-9_]*", str(key))
+                    or str(key) == "mathType"
+                )
                 and isinstance(value, (bool, int, float))
             ]
             for key, value in math_fields:
