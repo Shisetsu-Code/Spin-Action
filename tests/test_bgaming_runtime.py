@@ -5,6 +5,8 @@ import unittest
 from tester_spin.providers.bgaming.runtime import (
     balance_total,
     extract_options,
+    pending_flow_actions,
+    resolve_base_bet,
     sanitize_error_text,
     sanitize_options,
     sanitize_session_url,
@@ -115,6 +117,56 @@ class BGamingRuntimeTests(unittest.TestCase):
             [],
         )
 
+    def test_resolves_base_bet_from_available_bets_when_default_missing(self) -> None:
+        init = {
+            "options": {
+                "available_bets": [500, 100, 200],
+            }
+        }
+        bet, source = resolve_base_bet(init)
+        self.assertEqual(bet, 100)
+        self.assertEqual(source, "available_bets:min")
+        self.assertEqual(validate_init({
+            "api_version": "2",
+            "options": {"available_bets": [500, 100, 200]},
+            "flow": {
+                "state": "ready",
+                "command": "init",
+                "available_actions": ["init", "spin"],
+            },
+        }), [])
+
+    def test_optional_actions_are_coverage_not_base_spin_failures(self) -> None:
+        spin = {
+            "api_version": "2",
+            "outcome": {
+                "screen": [["1", "2", "3"]] * 5,
+                "bet": 90,
+                "win": 0,
+                "wins": [],
+            },
+            "balance": {"game": 0, "wallet": 99910},
+            "flow": {
+                "state": "closed",
+                "command": "spin",
+                "available_actions": ["init", "spin", "buy_feature", "select_bonus"],
+            },
+        }
+        self.assertEqual(
+            validate_spin(
+                spin,
+                requested_bet=90,
+                previous_balance_total=100000,
+                expected_reels=5,
+                expected_rows=3,
+            ),
+            [],
+        )
+        self.assertEqual(
+            pending_flow_actions(spin),
+            ["buy_feature", "select_bonus"],
+        )
+
     def test_remote_proof_changes_with_server_round_identity(self) -> None:
         first = {
             "outcome": {
@@ -171,7 +223,7 @@ class BGamingRuntimeTests(unittest.TestCase):
             expected_rows=3,
         )
         self.assertTrue(any("flow.state" in warning for warning in warnings))
-        self.assertTrue(any("select_bonus" in warning for warning in warnings))
+        self.assertEqual(pending_flow_actions(spin), ["select_bonus"])
         self.assertTrue(any("balance inconsistente" in warning for warning in warnings))
 
 
