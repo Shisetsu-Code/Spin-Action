@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import time
@@ -179,6 +180,47 @@ def post_command(
     if not isinstance(data, dict):
         raise ValueError("BGaming: respuesta JSON inesperada.")
     return response, payload, data
+
+
+def response_fingerprint(payload: dict[str, Any]) -> str:
+    raw = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()[:16]
+
+
+def spin_remote_proof(payload: dict[str, Any]) -> dict[str, Any]:
+    flow = payload.get("flow")
+    outcome = payload.get("outcome")
+    if not isinstance(flow, dict):
+        flow = {}
+    if not isinstance(outcome, dict):
+        outcome = {}
+    screen = outcome.get("screen")
+    screen_hash = ""
+    if isinstance(screen, list):
+        screen_hash = hashlib.sha256(
+            json.dumps(
+                screen,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()[:12]
+    return {
+        "round_id": flow.get("round_id"),
+        "last_action_id": flow.get("last_action_id"),
+        "flow_state": flow.get("state"),
+        "flow_command": flow.get("command"),
+        "bet": outcome.get("bet"),
+        "win": outcome.get("win"),
+        "balance_total": balance_total(payload),
+        "screen_sha256": screen_hash,
+        "response_sha256": response_fingerprint(payload),
+    }
 
 
 def balance_total(payload: dict[str, Any]) -> int | float | None:
