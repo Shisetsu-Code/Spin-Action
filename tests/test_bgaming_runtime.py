@@ -13,6 +13,7 @@ from tester_spin.providers.bgaming.runtime import (
     pending_flow_actions,
     preselection_multiplier,
     purchase_expected_debit,
+    purchase_names_equivalent,
     resolve_base_bet,
     sanitize_error_text,
     sanitize_options,
@@ -522,6 +523,89 @@ class BGamingRuntimeTests(unittest.TestCase):
                 expected_rows=3,
                 command="spin",
                 expected_debit=16000,
+            ),
+            [],
+        )
+
+    def test_purchase_variant_name_can_normalize_to_base_feature(self) -> None:
+        self.assertTrue(
+            purchase_names_equivalent("bonus_buy_0_chance", "bonus_buy")
+        )
+        self.assertTrue(
+            purchase_names_equivalent("bonus_buy_1_chance", "bonus_buy")
+        )
+        self.assertFalse(
+            purchase_names_equivalent("freespin_buy", "bonus_buy")
+        )
+
+    def test_preselection_alias_uses_server_advertised_play_command(self) -> None:
+        response = {
+            "flow": {
+                "state": "preselection_game",
+                "available_actions": ["init", "play_preselection_game"],
+            }
+        }
+        self.assertEqual(
+            flow_continuation_command(response),
+            "play_preselection_game",
+        )
+        self.assertEqual(pending_flow_actions(response), [])
+
+    def test_freespin_can_transition_to_respin_without_false_warning(self) -> None:
+        response = {
+            "api_version": "2",
+            "outcome": {
+                "screen": None,
+                "bet": 0,
+                "win": 4200,
+                "storage": None,
+            },
+            "balance": {"wallet": 96340, "game": 0},
+            "flow": {
+                "state": "respin",
+                "command": "freespin",
+                "available_actions": ["init", "respin"],
+            },
+        }
+        self.assertEqual(flow_continuation_command(response), "respin")
+        self.assertEqual(
+            validate_spin(
+                response,
+                requested_bet=100,
+                previous_balance_total=92140,
+                expected_reels=5,
+                expected_rows=3,
+                command="freespin",
+                expected_debit=0,
+            ),
+            [],
+        )
+
+    def test_balance_only_freespin_continuation_does_not_require_screen(self) -> None:
+        response = {
+            "api_version": "2",
+            "outcome": {
+                "screen": None,
+                "bet": 0,
+                "win": 120,
+                "storage": None,
+            },
+            "balance": {"wallet": 95980, "game": 120},
+            "flow": {
+                "state": "freespins",
+                "command": "freespin",
+                "available_actions": ["init", "freespin"],
+            },
+        }
+        self.assertEqual(
+            validate_spin(
+                response,
+                requested_bet=60,
+                previous_balance_total=95980,
+                expected_reels=5,
+                expected_rows=3,
+                command="freespin",
+                expected_debit=0,
             ),
             [],
         )
