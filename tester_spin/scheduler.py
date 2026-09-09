@@ -28,7 +28,13 @@ def run_game_tests(
     if not queue:
         return
 
-    concurrency = max(1, int(concurrency))
+    requested_concurrency = max(1, int(concurrency))
+    concurrency = provider.effective_test_concurrency(requested_concurrency)
+    if concurrency != requested_concurrency:
+        progress(
+            f"{provider.display_name}: concurrencia solicitada={requested_concurrency}, "
+            f"límite seguro del proveedor={concurrency}; se ejecutará en serie."
+        )
     spins_per_game = max(1, int(spins_per_game))
     delay_between_starts_s = max(0.0, float(delay_between_starts_s))
     timeout_s = max(1.0, float(timeout_s))
