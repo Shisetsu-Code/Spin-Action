@@ -5,7 +5,6 @@ import json
 import re
 import threading
 import time
-import uuid
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -61,11 +60,11 @@ def _rpc(
     *,
     timeout_s: float,
     params: dict[str, Any],
-    rpc_id: str | None = None,
+    rpc_id: int | str | None = None,
 ) -> tuple[requests.Response, dict[str, Any], dict[str, Any]]:
     api_url = _origin(runtime.launch_url) + "/api"
     payload = {
-        "id": rpc_id or str(uuid.uuid4()),
+        "id": 0 if rpc_id is None else rpc_id,
         "jsonrpc": "2.0",
         "method": method,
         "params": params,
@@ -99,11 +98,46 @@ def _rpc(
 
 
 def _download_bundle(runtime: BGamingRuntime, timeout_s: float) -> str:
+    origin = _origin(runtime.launch_url)
     candidates: list[str] = []
+
     configured = str(runtime.options.get("game_bundle_source") or "").strip()
     if configured:
         candidates.append(configured)
-    candidates.append(_origin(runtime.launch_url) + "/main.js")
+
+    # HyperHive loaders rewrite game_bundle_source at runtime.  Big Bucks
+    # Saloon, for example, loads /loader.js first; its "res" value selects the
+    # actual versioned /<res>/bundle.js.
+    loader_candidates = [
+        origin + "/loader.js",
+        str(runtime.options.get("games_loader_source") or "").strip(),
+    ]
+    for loader_url in loader_candidates:
+        if not loader_url:
+            continue
+        try:
+            loader_response = runtime.session.get(loader_url, timeout=timeout_s)
+            loader_response.raise_for_status()
+            loader_text = loader_response.text
+        except Exception:
+            continue
+        match = re.search(
+            r'res(?::|=)[^"']*["']([^"']+?)["']',
+            loader_text,
+        )
+        if match:
+            version = match.group(1).strip()
+            if version:
+                candidates.append(f"{origin}/{version}/bundle.js")
+                resources_path = str(
+                    runtime.options.get("resources_path") or ""
+                ).rstrip("/")
+                if resources_path:
+                    candidates.append(
+                        f"{resources_path}/{version}/bundle.js"
+                    )
+
+    candidates.append(origin + "/main.js")
 
     fallback = ""
     seen: set[str] = set()
@@ -119,9 +153,8 @@ def _download_bundle(runtime: BGamingRuntime, timeout_s: float) -> str:
             continue
         if text and not fallback:
             fallback = text
-        # Prefer the JavaScript that actually contains the HyperHive wire contract.
         if (
-            'method:"play"' in text
+            "jsonrpc" in text
             or 'bet_type:"betting"' in text
             or 'purchased_feature:"' in text
         ):
@@ -136,9 +169,11 @@ def discover_modes_from_bundle(
 ) -> list[dict[str, Any]]:
     """Discover the exact HyperHive request vocabulary from the loaded bundle."""
     bundle = _download_bundle(runtime, timeout_s)
-    bet_type = "betting" if 'bet_type:"betting"' in bundle else "bet"
+    bet_type = "betting" if 'bet_type:"betting"' in bundle else ""
 
-    spin_request: dict[str, Any] = {"bet_type": bet_type}
+    spin_request: dict[str, Any] = {}
+    if bet_type:
+        spin_request["bet_type"] = bet_type
     if 'action:"spin"' in bundle:
         spin_request["action"] = "spin"
 
@@ -160,8 +195,8 @@ def discover_modes_from_bundle(
                 "id": "PURCHASE_BUY_CHANCE",
                 "kind": "PURCHASE",
                 "request": {
+                    **({"bet_type": bet_type} if bet_type else {}),
                     "purchased_feature": "buy_chance",
-                    "bet_type": bet_type,
                 },
                 "expected_multiplier": None,
                 "source": "game_bundle_source",
@@ -185,9 +220,9 @@ def discover_modes_from_bundle(
                     "id": mode_id,
                     "kind": "PURCHASE",
                     "request": {
+                        **({"bet_type": bet_type} if bet_type else {}),
                         "purchased_feature": "buy_bonus",
                         "bonus_multiplier_type": variant,
-                        "bet_type": bet_type,
                     },
                     "expected_multiplier": None,
                     "source": "game_bundle_source",
@@ -200,10 +235,20 @@ def discover_modes_from_bundle(
                 "id": "PURCHASE_BUY_BONUS",
                 "kind": "PURCHASE",
                 "request": {
+                    **({"bet_type": bet_type} if bet_type else {}),
                     "purchased_feature": "buy_bonus",
-                    "bet_type": bet_type,
                 },
-                "expected_multiplier": None,
+                "expected_multiplier": (
+                    float(re.search(
+                        r"buyBonusMultiplier\s*=\s*([0-9]+(?:\.[0-9]+)?)",
+                        bundle,
+                    ).group(1))
+                    if re.search(
+                        r"buyBonusMultiplier\s*=\s*([0-9]+(?:\.[0-9]+)?)",
+                        bundle,
+                    )
+                    else None
+                ),
                 "source": "game_bundle_source",
             }
         )
@@ -223,8 +268,8 @@ def discover_modes_from_bundle(
                 "id": f"PURCHASE_{feature.upper()}",
                 "kind": "PURCHASE",
                 "request": {
+                    **({"bet_type": bet_type} if bet_type else {}),
                     "purchased_feature": feature,
-                    "bet_type": bet_type,
                 },
                 "expected_multiplier": None,
                 "source": "game_bundle_source",
@@ -260,6 +305,18 @@ def _result_summary(data: dict[str, Any]) -> dict[str, Any]:
     total_win = resp.get("totalWin")
     if not isinstance(total_win, (int, float)):
         total_win = game.get("totalWin")
+    if not isinstance(total_win, (int, float)):
+        round_data = resp.get("round")
+        if isinstance(round_data, dict):
+            round_win = round_data.get("win")
+            try:
+                total_win = (
+                    float(round_win)
+                    if round_win is not None
+                    else None
+                )
+            except (TypeError, ValueError):
+                total_win = None
     return {
         "final": bool(result.get("final")),
         "balance": result.get("balance"),
@@ -296,12 +353,12 @@ def run_hyperhive_test(
     )
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    rpc_id = str(uuid.uuid4())
+    rpc_id = 0
     init_response, init_request, init_data = _rpc(
         runtime,
         "init",
         timeout_s=timeout_s,
-        params={"token": token, "id": ""},
+        params={"token": token},
         rpc_id=rpc_id,
     )
     init_result = init_data["result"]
@@ -424,16 +481,18 @@ def run_hyperhive_test(
                     if steps >= guard:
                         warnings.append(f"HyperHive guard alcanzado ({guard})")
                         break
-                    base_bet_type = str(
-                        dict(modes[0]["request"]).get("bet_type") or "bet"
-                    )
+                    base_request = dict(modes[0]["request"])
                     next_action = str(
                         final_summary.get("next_action") or ""
                     ).strip().casefold()
-                    continuation_req: dict[str, Any] = {
-                        "bet": default_bet,
-                        "bet_type": base_bet_type,
-                    }
+                    continuation_req: dict[str, Any] = {"bet": default_bet}
+                    for key, value in base_request.items():
+                        if key not in {
+                            "action",
+                            "purchased_feature",
+                            "bonus_multiplier_type",
+                        }:
+                            continuation_req[key] = value
                     if next_action:
                         continuation_req["action"] = next_action
                     play_params = {
