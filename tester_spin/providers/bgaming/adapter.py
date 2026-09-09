@@ -27,6 +27,7 @@ from tester_spin.providers.bgaming.runtime import (
     bootstrap_game,
     build_line_bets,
     discover_purchase_modes,
+    flow_continuation_command,
     is_line_bet_init,
     line_bet_count,
     pending_flow_actions,
@@ -796,11 +797,7 @@ class BGamingProvider(ProviderAdapter):
 
                         trigger_round_id = flow.get("round_id")
                         continuation_guard = 256
-                        while (
-                            str(flow.get("state") or "")
-                            in {"freespins", "preselection_game"}
-                            and not stop_event.is_set()
-                        ):
+                        while not stop_event.is_set():
                             state = str(flow.get("state") or "")
                             actions = flow.get("available_actions")
                             action_names = (
@@ -808,11 +805,11 @@ class BGamingProvider(ProviderAdapter):
                                 if isinstance(actions, list)
                                 else set()
                             )
-                            continuation_command = (
-                                "freespin"
-                                if state == "freespins"
-                                else "preselection_game"
+                            continuation_command = flow_continuation_command(
+                                {"flow": flow}
                             )
+                            if not continuation_command:
+                                break
                             if continuation_command not in action_names:
                                 warnings.append(
                                     f"estado {state} sin available_actions="
@@ -935,7 +932,7 @@ class BGamingProvider(ProviderAdapter):
                                     f"win={cont_proof.get('win') if cont_proof.get('win') is not None else '—'}, "
                                     f"balance={current_total if current_total is not None else '—'}"
                                 )
-                            else:
+                            elif continuation_command == "preselection_game":
                                 multiplier = preselection_multiplier(cont_data)
                                 progress(
                                     f"[{game.name}] {mode_id} PRESELECTION "
@@ -943,6 +940,17 @@ class BGamingProvider(ProviderAdapter):
                                     f"round={cont_proof.get('round_id') or '—'}, "
                                     f"action={cont_proof.get('last_action_id') or '—'}, "
                                     f"multiplier={multiplier if multiplier is not None else '—'}, "
+                                    f"win={cont_proof.get('win') if cont_proof.get('win') is not None else '—'}, "
+                                    f"balance={current_total if current_total is not None else '—'}"
+                                )
+                            else:
+                                progress(
+                                    f"[{game.name}] {mode_id} "
+                                    f"{continuation_command.upper()} "
+                                    f"step={wire_steps}, "
+                                    f"round={cont_proof.get('round_id') or '—'}, "
+                                    f"action={cont_proof.get('last_action_id') or '—'}, "
+                                    f"state={cont_proof.get('flow_state') or '—'}, "
                                     f"win={cont_proof.get('win') if cont_proof.get('win') is not None else '—'}, "
                                     f"balance={current_total if current_total is not None else '—'}"
                                 )
