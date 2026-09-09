@@ -11,16 +11,22 @@ STATUS_ORDER = {
     "PARCIAL": 1,
     "PENDIENTE": 2,
     "": 2,
-    "OK": 3,
+    "SIN_DEMO": 3,
+    "OK": 4,
 }
 
 
 def retryable_games(games: Iterable[Game]) -> list[Game]:
-    """Return games whose latest persisted result is not OK."""
+    """Return games that are worth retrying from the GUI.
+
+    SIN_DEMO is intentionally excluded: those rows were catalogued but have no
+    usable Play Demo endpoint, so repeatedly scheduling them only adds noise.
+    """
     return [
         game
         for game in games
-        if str(game.last_status or "PENDIENTE").strip().upper() != "OK"
+        if str(game.last_status or "PENDIENTE").strip().upper()
+        not in {"OK", "SIN_DEMO"}
     ]
 
 
