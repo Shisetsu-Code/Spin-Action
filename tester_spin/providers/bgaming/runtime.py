@@ -200,6 +200,12 @@ def spin_remote_proof(payload: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(outcome, dict):
         outcome = {}
     screen = outcome.get("screen")
+    storage = outcome.get("storage")
+    features = payload.get("features")
+    if not isinstance(storage, dict):
+        storage = {}
+    if not isinstance(features, dict):
+        features = {}
     screen_hash = ""
     if isinstance(screen, list):
         screen_hash = hashlib.sha256(
@@ -210,15 +216,26 @@ def spin_remote_proof(payload: dict[str, Any]) -> dict[str, Any]:
                 separators=(",", ":"),
             ).encode("utf-8")
         ).hexdigest()[:12]
+    purchased = flow.get("purchased_feature")
+    purchased_name = (
+        str(purchased.get("name") or "")
+        if isinstance(purchased, dict)
+        else ""
+    )
     return {
         "round_id": flow.get("round_id"),
         "last_action_id": flow.get("last_action_id"),
         "flow_state": flow.get("state"),
         "flow_command": flow.get("command"),
+        "purchased_feature": purchased_name,
         "bet": outcome.get("bet"),
         "win": outcome.get("win"),
         "balance_total": balance_total(payload),
         "screen_sha256": screen_hash,
+        "storage_seed": storage.get("seed"),
+        "storage_mode": storage.get("mode"),
+        "freespins_issued": features.get("freespins_issued"),
+        "freespins_left": features.get("freespins_left"),
         "response_sha256": response_fingerprint(payload),
     }
 
