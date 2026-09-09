@@ -24,7 +24,9 @@ class GameIndexTests(unittest.TestCase):
             self.game("Good", "OK"),
             self.game("Partial", "PARCIAL"),
             self.game("Broken", "ERROR"),
+            self.game("NoDemo", "SIN_DEMO"),
             self.game("Never", "PENDIENTE"),
+            self.game("NoDemo", "SIN_DEMO"),
             self.game("Blank", ""),
         ]
         retry = retryable_games(games)
@@ -43,7 +45,7 @@ class GameIndexTests(unittest.TestCase):
         ordered = sorted(games, key=lambda game: game_sort_key(game, "status"))
         self.assertEqual(
             [game.last_status for game in ordered],
-            ["ERROR", "PARCIAL", "PENDIENTE", "OK"],
+            ["ERROR", "PARCIAL", "PENDIENTE", "SIN_DEMO", "OK"],
         )
 
     def test_timestamp_sort_is_chronological(self) -> None:
