@@ -151,7 +151,10 @@ class CurrentTesterSpinApp(LiveTesterSpinApp):
         provider = self._provider()
         games = retryable_games(self.storage.list_games(provider.key))
         if not games:
-            messagebox.showinfo("Tester-Spin", "No hay juegos pendientes: todos están OK.")
+            messagebox.showinfo(
+                "Tester-Spin",
+                "No hay juegos reintentables: los restantes están OK o SIN_DEMO.",
+            )
             return
 
         counts: dict[str, int] = {}
@@ -289,15 +292,23 @@ class CurrentTesterSpinApp(LiveTesterSpinApp):
             self.tree.move(iid, "", position)
 
     def _update_count_summary(self) -> None:
-        counts = {"OK": 0, "PARCIAL": 0, "ERROR": 0, "PENDIENTE": 0}
+        counts = {
+            "OK": 0,
+            "PARCIAL": 0,
+            "ERROR": 0,
+            "SIN_DEMO": 0,
+            "PENDIENTE": 0,
+        }
         for game in self._games.values():
             status = str(game.last_status or "PENDIENTE").strip().upper() or "PENDIENTE"
             if status not in counts:
                 status = "PENDIENTE"
             counts[status] += 1
         self.count_var.set(
-            f"{len(self._games)} juegos | OK {counts['OK']} | PARCIAL {counts['PARCIAL']} | "
-            f"ERROR {counts['ERROR']} | PENDIENTE {counts['PENDIENTE']}"
+            f"{len(self._games)} juegos | OK {counts['OK']} | "
+            f"PARCIAL {counts['PARCIAL']} | ERROR {counts['ERROR']} | "
+            f"SIN_DEMO {counts['SIN_DEMO']} | "
+            f"PENDIENTE {counts['PENDIENTE']}"
         )
 
     def _refresh_games(self) -> None:
