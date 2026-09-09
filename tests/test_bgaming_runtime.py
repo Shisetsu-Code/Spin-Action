@@ -8,6 +8,7 @@ from tester_spin.providers.bgaming.runtime import (
     sanitize_error_text,
     sanitize_options,
     sanitize_session_url,
+    spin_remote_proof,
     validate_init,
     validate_spin,
 )
@@ -113,6 +114,38 @@ class BGamingRuntimeTests(unittest.TestCase):
             ),
             [],
         )
+
+    def test_remote_proof_changes_with_server_round_identity(self) -> None:
+        first = {
+            "outcome": {
+                "screen": [["1", "2", "3"]] * 5,
+                "bet": 90,
+                "win": 0,
+            },
+            "balance": {"wallet": 99910, "game": 0},
+            "flow": {
+                "round_id": 1001,
+                "last_action_id": "1001_1",
+                "state": "closed",
+                "command": "spin",
+            },
+        }
+        second = {
+            **first,
+            "flow": {
+                "round_id": 1002,
+                "last_action_id": "1002_1",
+                "state": "closed",
+                "command": "spin",
+            },
+        }
+        proof1 = spin_remote_proof(first)
+        proof2 = spin_remote_proof(second)
+        self.assertEqual(proof1["round_id"], 1001)
+        self.assertEqual(proof1["last_action_id"], "1001_1")
+        self.assertEqual(len(proof1["screen_sha256"]), 12)
+        self.assertEqual(len(proof1["response_sha256"]), 16)
+        self.assertNotEqual(proof1["response_sha256"], proof2["response_sha256"])
 
     def test_flags_balance_and_unknown_flow_without_inventing_handlers(self) -> None:
         spin = {
