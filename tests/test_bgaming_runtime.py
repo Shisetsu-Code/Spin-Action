@@ -5,6 +5,7 @@ import unittest
 from tester_spin.providers.bgaming.runtime import (
     balance_total,
     extract_options,
+    sanitize_error_text,
     sanitize_options,
     sanitize_session_url,
     validate_init,
@@ -47,6 +48,16 @@ class BGamingRuntimeTests(unittest.TestCase):
             ),
             "https://demo.bgaming-network.com/games/TreasureOfAnubis/FUN",
         )
+
+    def test_redacts_tokens_from_runtime_errors(self) -> None:
+        message = sanitize_error_text(
+            "403 https://demo.bgaming-network.com/api/TreasureOfAnubis/2367150/session-secret"
+            "?play_token=secret-play"
+        )
+        self.assertNotIn("session-secret", message)
+        self.assertNotIn("secret-play", message)
+        self.assertIn("<session>", message)
+        self.assertIn("<redacted>", message)
 
     def test_validates_observed_init_and_spin_contract(self) -> None:
         init = {
