@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import unittest
 
-from tester_spin.providers.bgaming.catalog import parse_catalog_html
+from tester_spin.providers.bgaming.catalog import (
+    filter_records_by_game_type,
+    parse_catalog_html,
+)
 
 
 HTML = """
@@ -32,13 +35,18 @@ HTML = """
   </a>
   <div class="game-type-text">Slots</div>
 </div>
+<div data-catalog-card data-image="https://bgaming.com/wp-content/uploads/roulette.webp">
+  <a href="https://bgaming.com/games/american-roulette"><img alt="American Roulette"></a>
+  <div class="game-type-text">Roulette</div>
+  <a href="https://demo.bgaming-network.com/play/AmericanRoulette/FUN?server=demo">Play Demo</a>
+</div>
 """
 
 
 class BGamingCatalogTests(unittest.TestCase):
     def test_parses_demo_identifier_and_metadata(self) -> None:
         records = parse_catalog_html(HTML)
-        self.assertEqual(len(records), 3)
+        self.assertEqual(len(records), 4)
 
         first = records[0]
         self.assertEqual(first.game.provider, "bgaming")
@@ -50,6 +58,14 @@ class BGamingCatalogTests(unittest.TestCase):
         self.assertEqual(first.volatility, "Very-high")
         self.assertEqual(first.game_type, "Slots")
         self.assertEqual(first.availability, "DEMO")
+
+    def test_filters_non_slot_families_from_slots_catalog(self) -> None:
+        records = parse_catalog_html(HTML)
+        accepted, rejected = filter_records_by_game_type(records, "Slots")
+        self.assertEqual(len(accepted), 3)
+        self.assertEqual(len(rejected), 1)
+        self.assertEqual(rejected[0].game.name, "American Roulette")
+        self.assertEqual(rejected[0].game_type, "Roulette")
 
     def test_does_not_persist_ephemeral_demo_tokens(self) -> None:
         records = parse_catalog_html(HTML)
