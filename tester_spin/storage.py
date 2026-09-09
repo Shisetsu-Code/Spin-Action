@@ -150,6 +150,42 @@ class Storage:
             con.execute("DROP TABLE _current_catalog_slugs")
         return removed
 
+    def delete_games(self, provider: str, slugs: set[str]) -> int:
+        """Delete explicitly identified catalogue rows only.
+
+        Historical test_results and provider artifact folders are untouched.
+        Callers must supply slugs already proven invalid by provider-specific
+        structural validation; this is not a broad reconciliation API.
+        """
+        normalized = sorted(
+            {str(slug).strip() for slug in slugs if str(slug).strip()}
+        )
+        if not normalized:
+            return 0
+        with self._lock, self._connect() as con:
+            con.execute(
+                "CREATE TEMP TABLE IF NOT EXISTS _delete_catalog_slugs (slug TEXT PRIMARY KEY)"
+            )
+            con.execute("DELETE FROM _delete_catalog_slugs")
+            con.executemany(
+                "INSERT OR IGNORE INTO _delete_catalog_slugs(slug) VALUES (?)",
+                ((slug,) for slug in normalized),
+            )
+            cursor = con.execute(
+                """
+                DELETE FROM games
+                WHERE provider=?
+                  AND EXISTS (
+                      SELECT 1 FROM _delete_catalog_slugs doomed
+                      WHERE doomed.slug=games.slug
+                  )
+                """,
+                (provider,),
+            )
+            removed = max(0, int(cursor.rowcount or 0))
+            con.execute("DROP TABLE _delete_catalog_slugs")
+        return removed
+
     def list_games(self, provider: str) -> list[Game]:
         with self._lock, self._connect() as con:
             rows = con.execute(

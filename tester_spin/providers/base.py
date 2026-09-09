@@ -27,6 +27,15 @@ class ProviderAdapter(ABC):
         self.catalog_crawl_authoritative = bool(authoritative)
         self.catalog_crawl_reason = str(reason or "")
 
+    def catalog_record_invalid_reason(self, game: Game) -> str:
+        """Return a reason only for records that are provably malformed.
+
+        This hook is intentionally conservative. It is not a replacement for
+        provider reconciliation and must never be used to infer that a merely
+        old/unreachable game has been removed from the provider.
+        """
+        return ""
+
     def effective_test_concurrency(self, requested: int) -> int:
         value = max(1, int(requested))
         cap = self.max_test_concurrency
