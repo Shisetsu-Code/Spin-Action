@@ -610,6 +610,44 @@ class BGamingRuntimeTests(unittest.TestCase):
             [],
         )
 
+    def test_big_atlantis_percent_basis_feature_multipliers(self) -> None:
+        init = {
+            "options": {
+                "default_bet": 30,
+                "layout": {"reels": 5, "rows": 5},
+                "feature_options": {
+                    "feature_multipliers": {
+                        "freespin_chance": 200,
+                        "freespin_buy": 8000,
+                    },
+                    "disabled_features": [],
+                },
+            }
+        }
+        modes = discover_purchase_modes(init)
+        by_name = {mode["name"]: mode for mode in modes}
+        self.assertEqual(by_name["freespin_chance"]["base_multiplier"], 100)
+        self.assertEqual(
+            by_name["freespin_chance"]["base_source"],
+            "implicit_percent_basis",
+        )
+        self.assertEqual(
+            by_name["freespin_chance"]["cost_multiplier"],
+            2.0,
+        )
+        self.assertEqual(
+            by_name["freespin_buy"]["cost_multiplier"],
+            80.0,
+        )
+        self.assertEqual(
+            purchase_expected_debit(30, by_name["freespin_chance"]),
+            60.0,
+        )
+        self.assertEqual(
+            purchase_expected_debit(30, by_name["freespin_buy"]),
+            2400.0,
+        )
+
     def test_remote_proof_changes_with_server_round_identity(self) -> None:
         first = {
             "outcome": {
