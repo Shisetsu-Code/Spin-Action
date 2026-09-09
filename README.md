@@ -161,6 +161,13 @@ Cada proveedor implementa el contrato `ProviderAdapter`:
 
 La GUI, SQLite y el scheduler no conocen `openGame`, `doInit`, `doSpin`, `bl`, `pur` ni ninguna particularidad de Pragmatic. Para BGaming/RubyPlay se agrega otro adaptador y se registra en `ProviderRegistry`. 1spin4win y Belatra ya siguen este mismo contrato.
 
+### Mantenimiento manual del catálogo
+
+La GUI activa incluye dos controles para corregir detecciones erróneas sin tocar el historial de pruebas:
+
+- `BORRAR SELECCIONADOS`: elimina las filas elegidas y crea una exclusión manual persistente por `provider+slug`. Un crawl posterior no puede reinsertarlas, incluso si un fallback vuelve a detectar el mismo falso positivo.
+- `VACIAR CATÁLOGO`: reinicia completamente el catálogo del proveedor seleccionado. Elimina filas, exclusiones manuales, `catalog.json`, páginas/diagnósticos de catálogo, `game.json` de recuperación y miniaturas. Conserva `test_results`, carpetas `tests/` y demás evidencia runtime.
+
 ### Seguridad de catálogo Pragmatic
 
 - El crawler AJAX oficial es la única fuente Pragmatic considerada autoritativa para reconciliar/borrar filas.
