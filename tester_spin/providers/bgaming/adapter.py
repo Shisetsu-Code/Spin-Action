@@ -17,6 +17,10 @@ from tester_spin.providers.bgaming.catalog import (
     filter_records_by_game_type,
     parse_catalog_html,
 )
+from tester_spin.providers.bgaming.hyperhive import (
+    is_hyperhive_runtime,
+    run_hyperhive_test,
+)
 from tester_spin.providers.bgaming.runtime import (
     balance_total,
     bootstrap_game,
@@ -399,6 +403,7 @@ class BGamingProvider(ProviderAdapter):
         previous_total: int | float | None = None
         expected_reels: int | None = None
         expected_rows: int | None = None
+        variable_layout = False
         purchase_modes: list[dict[str, Any]] = []
         mode_specs: list[dict[str, Any]] = [
             {"id": "SPIN", "kind": "SPIN", "purchase": None}
@@ -429,6 +434,23 @@ class BGamingProvider(ProviderAdapter):
                 },
             )
 
+            if is_hyperhive_runtime(runtime):
+                progress(
+                    f"[{game.name}] runtime HyperHive detectado; "
+                    "cambiando a JSON-RPC /api."
+                )
+                return run_hyperhive_test(
+                    game=game,
+                    runtime=runtime,
+                    spins=repetitions,
+                    timeout_s=timeout_s,
+                    stop_event=stop_event,
+                    progress=progress,
+                    run_dir=run_dir,
+                    started_iso=started_iso,
+                    started_monotonic=started,
+                )
+
             _init_response, init_request, init_data = post_command(
                 runtime,
                 "init",
@@ -453,6 +475,13 @@ class BGamingProvider(ProviderAdapter):
                         expected_rows = int(layout.get("rows"))
                     except (TypeError, ValueError):
                         expected_rows = None
+
+            name_lower = game.name.casefold()
+            variable_layout = (
+                (expected_rows or 0) >= 7
+                or "megaways" in name_lower
+                or "trueways" in name_lower
+            )
 
             if not isinstance(default_bet, (int, float)):
                 raise ValueError("BGaming init no entregó una apuesta utilizable.")
@@ -586,6 +615,7 @@ class BGamingProvider(ProviderAdapter):
                                 expected_rows=expected_rows,
                                 command="spin",
                                 expected_debit=expected_debit,
+                                variable_layout=variable_layout,
                             )
                         )
 
@@ -714,6 +744,7 @@ class BGamingProvider(ProviderAdapter):
                                 expected_rows=expected_rows,
                                 command=continuation_command,
                                 expected_debit=0,
+                                variable_layout=variable_layout,
                             )
                             warnings.extend(cont_warnings)
 
@@ -861,7 +892,12 @@ class BGamingProvider(ProviderAdapter):
                             f"balance={previous_total if previous_total is not None else '—'}, "
                             f"seed={final_proof.get('storage_seed') if final_proof.get('storage_seed') is not None else '—'}, "
                             f"resp={final_proof.get('response_sha256') or '—'}"
-                            + (f", warnings={len(warnings)}" if warnings else "")
+                            + (
+                                f", warnings={len(warnings)}, "
+                                f"diagnóstico={' | '.join(warnings[:3])}"
+                                if warnings
+                                else ""
+                            )
                         )
                     except Exception as exc:
                         elapsed_ms = (time.monotonic() - attempt_started) * 1000.0
