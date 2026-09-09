@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import secrets
 import threading
 import time
 from pathlib import Path
@@ -24,7 +25,10 @@ from tester_spin.providers.bgaming.hyperhive import (
 from tester_spin.providers.bgaming.runtime import (
     balance_total,
     bootstrap_game,
+    build_line_bets,
     discover_purchase_modes,
+    is_line_bet_init,
+    line_bet_count,
     pending_flow_actions,
     post_command,
     preselection_multiplier,
@@ -35,6 +39,7 @@ from tester_spin.providers.bgaming.runtime import (
     sanitize_session_url,
     spin_remote_proof,
     validate_init,
+    validate_line_spin,
     validate_spin,
 )
 
@@ -404,6 +409,8 @@ class BGamingProvider(ProviderAdapter):
         expected_reels: int | None = None
         expected_rows: int | None = None
         variable_layout = False
+        legacy_line_bets = False
+        legacy_line_count = 0
         purchase_modes: list[dict[str, Any]] = []
         mode_specs: list[dict[str, Any]] = [
             {"id": "SPIN", "kind": "SPIN", "purchase": None}
@@ -486,6 +493,12 @@ class BGamingProvider(ProviderAdapter):
             if not isinstance(default_bet, (int, float)):
                 raise ValueError("BGaming init no entregó una apuesta utilizable.")
 
+            legacy_line_bets = is_line_bet_init(init_data)
+            legacy_line_count = line_bet_count(init_data)
+            if legacy_line_bets:
+                bet_source = f"line_bets:{legacy_line_count} líneas"
+                variable_layout = False
+
             previous_total = balance_total(init_data)
             register_mode(
                 {
@@ -496,7 +509,11 @@ class BGamingProvider(ProviderAdapter):
                 }
             )
 
-            purchase_modes = discover_purchase_modes(init_data)
+            purchase_modes = (
+                []
+                if legacy_line_bets
+                else discover_purchase_modes(init_data)
+            )
             for purchase in purchase_modes:
                 name = str(purchase["name"])
                 mode_id = f"PURCHASE_{name.upper()}"
@@ -526,6 +543,7 @@ class BGamingProvider(ProviderAdapter):
                 f"bet={default_bet} ({bet_source or 'unknown'}), "
                 f"layout={expected_reels or '?'}x{expected_rows or '?'}, "
                 f"balance_total={previous_total if previous_total is not None else '—'}, "
+                f"perfil={'line-bets' if legacy_line_bets else 'api-v2'}, "
                 f"compras={len(purchase_modes)}"
                 + (
                     f", warnings={len(init_warnings)}"
@@ -576,19 +594,33 @@ class BGamingProvider(ProviderAdapter):
                     first_response_received = False
 
                     try:
-                        spin_options: dict[str, Any] = {"bet": default_bet}
-                        if purchase_name:
-                            spin_options["purchased_feature"] = purchase_name
+                        if legacy_line_bets:
+                            spin_options = {
+                                "bets": build_line_bets(init_data, default_bet)
+                            }
+                            request_extra_data = {
+                                "client_seed": secrets.randbelow(100000),
+                                "round_series_id": runtime.round_series_id,
+                            }
+                            expected_debit = (
+                                float(default_bet) * float(legacy_line_count)
+                            )
+                        else:
+                            spin_options = {"bet": default_bet}
+                            if purchase_name:
+                                spin_options["purchased_feature"] = purchase_name
+                            request_extra_data = None
+                            expected_debit = purchase_expected_debit(
+                                default_bet,
+                                purchase if isinstance(purchase, dict) else None,
+                            )
 
-                        expected_debit = purchase_expected_debit(
-                            default_bet,
-                            purchase if isinstance(purchase, dict) else None,
-                        )
                         response, request_payload, data = post_command(
                             runtime,
                             "spin",
                             timeout_s=timeout_s,
                             options=spin_options,
+                            extra_data=request_extra_data,
                         )
                         first_response_received = True
                         responded_attempts += 1
@@ -605,6 +637,89 @@ class BGamingProvider(ProviderAdapter):
                             attempt_dir / f"step-{wire_steps:03d}-response.json",
                             data,
                         )
+
+                        if legacy_line_bets:
+                            line_warnings, inferred_win = validate_line_spin(
+                                data,
+                                requested_line_bet=default_bet,
+                                line_count=legacy_line_count,
+                                previous_balance_total=previous_total,
+                            )
+                            warnings.extend(line_warnings)
+                            current_total = balance_total(data)
+                            if current_total is not None:
+                                previous_total = current_total
+                            game_state = data.get("game")
+                            if not isinstance(game_state, dict):
+                                game_state = {}
+                            commands = data.get("available_commands")
+                            command_names = (
+                                {str(item) for item in commands}
+                                if isinstance(commands, list)
+                                else set()
+                            )
+                            terminal = (
+                                str(game_state.get("state") or "") == "closed"
+                                and str(game_state.get("action") or "") == "spin"
+                                and "spin" in command_names
+                            )
+                            proof = {
+                                "runtime": "legacy-line-bets",
+                                "mode_id": mode_id,
+                                "step": wire_steps,
+                                "line_bet": default_bet,
+                                "line_count": legacy_line_count,
+                                "total_debit": expected_debit,
+                                "inferred_win": inferred_win,
+                                "balance_total": current_total,
+                                "game_state": game_state.get("state"),
+                                "game_action": game_state.get("action"),
+                                "response_sha256": spin_remote_proof(data).get(
+                                    "response_sha256"
+                                ),
+                            }
+                            self._write_json(
+                                attempt_dir / "remote-proof.json",
+                                proof,
+                            )
+                            validated = terminal and not warnings
+                            successes += int(validated)
+                            global_warnings.extend(warnings)
+                            elapsed_ms = (
+                                time.monotonic() - attempt_started
+                            ) * 1000.0
+                            attempts.append(
+                                SpinAttempt(
+                                    number=repetition,
+                                    ok=True,
+                                    mode_id=mode_id,
+                                    mode_kind=mode_kind,
+                                    status_code=last_status_code,
+                                    elapsed_ms=elapsed_ms,
+                                    symbol=runtime.identifier,
+                                    endpoint=sanitize_session_url(runtime.api_url),
+                                    na=str(game_state.get("state") or ""),
+                                    terminal=terminal,
+                                    wire_steps=wire_steps,
+                                    warning="; ".join(warnings),
+                                    artifact_dir=str(attempt_dir),
+                                )
+                            )
+                            progress(
+                                f"[{game.name}] {mode_id} {repetition}/{repetitions}: "
+                                f"{'OK' if validated else 'PARCIAL'} "
+                                f"{elapsed_ms:.0f} ms, perfil=line-bets, "
+                                f"líneas={legacy_line_count}, line_bet={default_bet}, "
+                                f"debit={expected_debit:g}, "
+                                f"win_inferido={inferred_win if inferred_win is not None else '—'}, "
+                                f"balance={current_total if current_total is not None else '—'}"
+                                + (
+                                    f", diagnóstico={' | '.join(warnings[:3])}"
+                                    if warnings
+                                    else ""
+                                )
+                            )
+                            continue
 
                         warnings.extend(
                             validate_spin(
