@@ -20,7 +20,9 @@ from tester_spin.providers.bgaming.catalog import (
 from tester_spin.providers.bgaming.runtime import (
     balance_total,
     bootstrap_game,
+    pending_flow_actions,
     post_command,
+    resolve_base_bet,
     sanitize_error_text,
     sanitize_options,
     sanitize_session_url,
@@ -364,6 +366,8 @@ class BGamingProvider(ProviderAdapter):
         responded = 0
         successes = 0
         discovered_modes: list[dict[str, Any]] = []
+        discovered_mode_ids: set[str] = set()
+        pending_actions: set[str] = set()
         previous_remote_identity: tuple[Any, Any, str] | None = None
 
         if not self._looks_like_demo_url(game.url):
@@ -422,8 +426,9 @@ class BGamingProvider(ProviderAdapter):
             init_warnings = validate_init(init_data)
             global_warnings.extend(init_warnings)
             options = init_data.get("options")
+            bet_source = ""
             if isinstance(options, dict):
-                default_bet = options.get("default_bet")
+                default_bet, bet_source = resolve_base_bet(init_data)
                 layout = options.get("layout")
                 if isinstance(layout, dict):
                     try:
@@ -436,7 +441,7 @@ class BGamingProvider(ProviderAdapter):
                         expected_rows = None
 
             if not isinstance(default_bet, (int, float)):
-                raise ValueError("BGaming init no entregó default_bet utilizable.")
+                raise ValueError("BGaming init no entregó una apuesta utilizable.")
 
             previous_total = balance_total(init_data)
             flow = init_data.get("flow")
@@ -445,17 +450,28 @@ class BGamingProvider(ProviderAdapter):
                 if isinstance(actions, list):
                     for action in actions:
                         action_name = str(action)
-                        discovered_modes.append(
-                            {
-                                "id": action_name.upper(),
-                                "kind": "SPIN" if action_name == "spin" else "CONTROL",
-                                "observed": action_name in {"init", "spin"},
-                            }
-                        )
+                        mode_id = action_name.upper()
+                        if mode_id not in discovered_mode_ids:
+                            discovered_modes.append(
+                                {
+                                    "id": mode_id,
+                                    "kind": (
+                                        "SPIN"
+                                        if action_name == "spin"
+                                        else "CONTROL"
+                                        if action_name == "init"
+                                        else "FEATURE"
+                                    ),
+                                    "observed": action_name in {"init", "spin"},
+                                }
+                            )
+                            discovered_mode_ids.add(mode_id)
+            pending_actions.update(pending_flow_actions(init_data))
 
             progress(
                 f"[{game.name}] INIT OK: identifier={runtime.identifier}, "
-                f"bet={default_bet}, layout={expected_reels or '?'}x{expected_rows or '?'}, "
+                f"bet={default_bet} ({bet_source or 'unknown'}), "
+                f"layout={expected_reels or '?'}x{expected_rows or '?'}, "
                 f"balance_total={previous_total if previous_total is not None else '—'}"
                 + (
                     f", warnings={len(init_warnings)}"
@@ -505,6 +521,19 @@ class BGamingProvider(ProviderAdapter):
                     expected_reels=expected_reels,
                     expected_rows=expected_rows,
                 )
+
+                for action_name in pending_flow_actions(data):
+                    pending_actions.add(action_name)
+                    mode_id = action_name.upper()
+                    if mode_id not in discovered_mode_ids:
+                        discovered_modes.append(
+                            {
+                                "id": mode_id,
+                                "kind": "FEATURE",
+                                "observed": False,
+                            }
+                        )
+                        discovered_mode_ids.add(mode_id)
 
                 proof = spin_remote_proof(data)
                 remote_identity = (
@@ -594,15 +623,25 @@ class BGamingProvider(ProviderAdapter):
 
         elapsed_total = (time.monotonic() - started) * 1000.0
         attempted = len(attempts)
-        if attempted and successes == attempted and not global_warnings:
+        if (
+            attempted
+            and successes == attempted
+            and not global_warnings
+            and not pending_actions
+        ):
             status = "OK"
             error = ""
         elif responded:
             status = "PARCIAL"
             detail: list[str] = [
                 f"BGaming respondió {responded}/{attempted}; "
-                f"tiradas validadas={successes}/{attempted}."
+                f"tiradas base validadas={successes}/{attempted}."
             ]
+            if pending_actions:
+                detail.append(
+                    "SPIN base OK; modos adicionales anunciados pero todavía no "
+                    "ejecutados: " + ", ".join(sorted(pending_actions)) + "."
+                )
             if global_warnings:
                 unique = list(dict.fromkeys(global_warnings))
                 detail.append("Diagnóstico: " + " | ".join(unique[:5]))
