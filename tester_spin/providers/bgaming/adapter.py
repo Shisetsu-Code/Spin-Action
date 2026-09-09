@@ -20,6 +20,7 @@ from tester_spin.providers.bgaming.runtime import (
     sanitize_error_text,
     sanitize_options,
     sanitize_session_url,
+    spin_remote_proof,
     validate_init,
     validate_spin,
 )
@@ -341,6 +342,7 @@ class BGamingProvider(ProviderAdapter):
         responded = 0
         successes = 0
         discovered_modes: list[dict[str, Any]] = []
+        previous_remote_identity: tuple[Any, Any, str] | None = None
 
         if not self._looks_like_demo_url(game.url):
             elapsed = (time.monotonic() - started) * 1000.0
@@ -481,6 +483,24 @@ class BGamingProvider(ProviderAdapter):
                     expected_reels=expected_reels,
                     expected_rows=expected_rows,
                 )
+
+                proof = spin_remote_proof(data)
+                remote_identity = (
+                    proof.get("round_id"),
+                    proof.get("last_action_id"),
+                    str(proof.get("response_sha256") or ""),
+                )
+                if (
+                    previous_remote_identity is not None
+                    and remote_identity == previous_remote_identity
+                ):
+                    warnings.append(
+                        "respuesta remota idéntica a la tirada anterior "
+                        "(round_id/action_id/hash sin cambios)"
+                    )
+                previous_remote_identity = remote_identity
+                self._write_json(attempt_dir / "remote-proof.json", proof)
+
                 current_total = balance_total(data)
                 if current_total is not None:
                     previous_total = current_total
@@ -516,7 +536,14 @@ class BGamingProvider(ProviderAdapter):
                 progress(
                     f"[{game.name}] SPIN {number}/{repetitions}: "
                     f"{'OK' if validated else 'PARCIAL'} {elapsed_ms:.0f} ms, "
-                    f"balance={current_total if current_total is not None else '—'}"
+                    f"HTTP={response.status_code}, "
+                    f"round={proof.get('round_id') or '—'}, "
+                    f"action={proof.get('last_action_id') or '—'}, "
+                    f"bet={proof.get('bet') if proof.get('bet') is not None else '—'}, "
+                    f"win={proof.get('win') if proof.get('win') is not None else '—'}, "
+                    f"balance={current_total if current_total is not None else '—'}, "
+                    f"screen={proof.get('screen_sha256') or '—'}, "
+                    f"resp={proof.get('response_sha256') or '—'}"
                     + (f", warnings={len(warnings)}" if warnings else "")
                 )
             except Exception as exc:
