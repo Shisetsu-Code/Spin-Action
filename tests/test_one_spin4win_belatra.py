@@ -628,7 +628,7 @@ class BelatraCatalogTests(unittest.TestCase):
             {
                 "q": "start",
                 "betPerLine": 10,
-                "nlines": 5,
+                "nlines": 10,
                 "denom": 1,
                 "buyBonus": None,
                 "selectId": None,
@@ -638,6 +638,45 @@ class BelatraCatalogTests(unittest.TestCase):
                 "curModeID": 0,
             },
         )
+
+    def test_base_spin_request_preserves_valid_current_line_bet_pair(self) -> None:
+        request = self.provider._base_spin_request(
+            {
+                "gs": {
+                    "betPerLine": 5,
+                    "nlines": 10,
+                    "linesAssortment": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+                    "betDependOnLines": [
+                        {"lines": 1, "betAssort": [10, 20, 50]},
+                        {"lines": 2, "betAssort": [5, 10, 20]},
+                        {"lines": 3, "betAssort": [5, 10, 20]},
+                    ],
+                    "gdenom": 1,
+                    "other": {"showingInMoney": 0},
+                }
+            }
+        )
+        self.assertEqual(request["nlines"], 10)
+        self.assertEqual(request["betPerLine"], 5)
+
+    def test_base_spin_request_repairs_explicit_invalid_line_bet_pair(self) -> None:
+        request = self.provider._base_spin_request(
+            {
+                "gs": {
+                    "betPerLine": 5,
+                    "nlines": 1,
+                    "linesAssortment": [1, 2, 3],
+                    "betDependOnLines": [
+                        {"lines": 1, "betAssort": [10, 20, 50]},
+                        {"lines": 2, "betAssort": [5, 10, 20]},
+                    ],
+                    "gdenom": 1,
+                    "other": {"showingInMoney": 0},
+                }
+            }
+        )
+        self.assertEqual(request["nlines"], 1)
+        self.assertEqual(request["betPerLine"], 10)
 
     def test_base_spin_request_preserves_math_selector_when_present(self) -> None:
         request = self.provider._base_spin_request(
@@ -652,11 +691,13 @@ class BelatraCatalogTests(unittest.TestCase):
                     "other": {"showingInMoney": 0},
                     "isMathElf": 1,
                     "isMathRobber": 0,
+                    "mathType": 1,
                 }
             }
         )
         self.assertEqual(request["isMathElf"], 1)
         self.assertEqual(request["isMathRobber"], 0)
+        self.assertEqual(request["mathType"], 1)
         self.assertEqual(request["vipOn"], 0)
 
     def test_http_500_preserves_request_and_raw_response_artifacts(self) -> None:
