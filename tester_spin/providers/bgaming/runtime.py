@@ -442,6 +442,20 @@ def preselection_multiplier(data: dict[str, Any]) -> int | float | None:
     return value if isinstance(value, (int, float)) else None
 
 
+def purchase_names_equivalent(requested: str, actual: str) -> bool:
+    requested_name = str(requested or "")
+    actual_name = str(actual or "")
+    if requested_name == actual_name:
+        return True
+    # Some BGaming games publish variant-specific feature multiplier keys such
+    # as bonus_buy_0_chance / bonus_buy_1_chance, while flow normalizes the
+    # executed feature back to purchased_feature.name=bonus_buy.
+    return bool(
+        actual_name
+        and requested_name.startswith(actual_name + "_")
+    )
+
+
 def result_has_authoritative_shape(data: dict[str, Any]) -> bool:
     """Accept both server-grid and seeded-client result shapes observed in HARs."""
     outcome = data.get("outcome")
@@ -595,9 +609,13 @@ def validate_spin(
                 if bad:
                     warnings.append(f"screen rows inesperadas en reels={bad}")
     elif not result_has_authoritative_shape(data):
-        warnings.append(
-            f"{command} sin screen ni outcome.storage.seed autoritativos"
-        )
+        # Continuations may be balance/flow-only. FrozenFruit and Hottest666,
+        # for example, return valid freespin steps without screen/seed while
+        # still providing numeric win, balance and an authoritative flow.
+        if command == "spin":
+            warnings.append(
+                f"{command} sin screen ni outcome.storage.seed autoritativos"
+            )
 
     flow = data.get("flow")
     if not isinstance(flow, dict):
@@ -616,7 +634,10 @@ def validate_spin(
             ):
                 warnings.append(f"flow.state spin no observado: {state!r}")
         elif command == "freespin":
-            if state not in {"freespins", "closed"}:
+            if (
+                state not in {"freespins", "closed"}
+                and not flow_continuation_command(data)
+            ):
                 warnings.append(f"flow.state freespin no observado: {state!r}")
         elif command == "preselection_game":
             if state != "closed":
