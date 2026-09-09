@@ -248,6 +248,27 @@ class PragmaticProvider(ProviderAdapter):
     def game_dir(self, game: Game) -> Path:
         return self.provider_root / _safe_human_folder(game.name)
 
+    def catalog_record_invalid_reason(self, game: Game) -> str:
+        slug = str(game.slug or "").strip().lower()
+        if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{1,100}", slug):
+            return "slug Pragmatic malformado"
+
+        parsed = urlparse(str(game.url or ""))
+        if (parsed.hostname or "").casefold() not in {
+            "pragmaticplay.com",
+            "www.pragmaticplay.com",
+        }:
+            return "host de ficha no pertenece a Pragmatic"
+        match = GAME_PATH_RE.match(parsed.path)
+        if not match or match.group(1).strip().lower() != slug:
+            return "URL de ficha no coincide con el slug"
+
+        thumb = str(game.thumbnail_url or "").strip()
+        if thumb.casefold().startswith("data:"):
+            return "thumbnail data URI: no es una tarjeta de juego"
+
+        return ""
+
     def crawl_catalog(
         self,
         *,
