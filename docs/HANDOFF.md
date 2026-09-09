@@ -1153,3 +1153,23 @@ Cops vs Robs exposes gs.mathType directly:
 - analInfo.mathTypeRobs=1.
 
 mathType is now propagated to start alongside existing isMath* selectors.
+
+## Pragmatic catalog fail-closed
+
+Incident observed 2026-09-08:
+- official HTTP catalog returned 502;
+- crawler fell back to preloaded DOM;
+- fallback saw 96 image/card structures but only 61 game-like records;
+- one false positive was named 日本語 and used a data:image thumbnail;
+- the app treated that partial fallback as authoritative and deleted 641 existing Pragmatic rows.
+
+Current invariants:
+1. AJAX official crawl starts non-authoritative and becomes authoritative only after reaching a confirmed terminal page.
+2. DOM/preloaded fallback is always non-authoritative.
+3. Non-authoritative crawls may add/update validated games but never reconcile deletions.
+4. App blocks reconciliation on catastrophic shrink: previous >=100 and current <60% of previous.
+5. Pragmatic thumbnail-only slug recovery requires a normal HTTP(S) wp-content/uploads asset with an explicit WxH filename token.
+6. data: images cannot create games.
+7. external hosts cannot create Pragmatic /games/ records.
+8. thumbnail-only recovery does not borrow broad ancestor/navigation text as the game name.
+9. During non-authoritative fallback, preserved per-game game.json artifacts are scanned and merged back into the result so temporary site failures do not erase known catalog state.
