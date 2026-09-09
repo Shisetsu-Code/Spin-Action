@@ -7,6 +7,7 @@ from tester_spin.providers.bgaming.runtime import (
     build_line_bets,
     discover_purchase_modes,
     extract_options,
+    flow_continuation_command,
     is_line_bet_init,
     line_bet_count,
     pending_flow_actions,
@@ -464,6 +465,66 @@ class BGamingRuntimeTests(unittest.TestCase):
         )
         self.assertEqual(warnings, [])
         self.assertEqual(inferred_win, 50)
+
+    def test_server_advertised_respin_is_a_valid_continuation(self) -> None:
+        spin = {
+            "api_version": "2",
+            "outcome": {
+                "screen": [["1", "2", "3"]] * 5,
+                "bet": 100,
+                "win": 0,
+            },
+            "balance": {"wallet": 96000, "game": 0},
+            "flow": {
+                "state": "respin",
+                "command": "spin",
+                "available_actions": ["init", "respin"],
+            },
+        }
+        self.assertEqual(flow_continuation_command(spin), "respin")
+        self.assertEqual(pending_flow_actions(spin), [])
+        self.assertEqual(
+            validate_spin(
+                spin,
+                requested_bet=100,
+                previous_balance_total=100000,
+                expected_reels=5,
+                expected_rows=3,
+                command="spin",
+                expected_debit=4000,
+            ),
+            [],
+        )
+
+    def test_server_advertised_play_bonus_is_a_valid_continuation(self) -> None:
+        purchase = {
+            "api_version": "2",
+            "outcome": {
+                "screen": [["1", "2", "3"]] * 3,
+                "bet": 200,
+                "win": 0,
+            },
+            "balance": {"wallet": 84000, "game": 0},
+            "flow": {
+                "state": "play_bonus",
+                "command": "spin",
+                "available_actions": ["init", "play_bonus"],
+            },
+        }
+        self.assertEqual(flow_continuation_command(purchase), "play_bonus")
+        self.assertEqual(pending_flow_actions(purchase), [])
+        self.assertEqual(
+            validate_spin(
+                purchase,
+                requested_bet=200,
+                previous_balance_total=100000,
+                expected_reels=3,
+                expected_rows=3,
+                command="spin",
+                expected_debit=16000,
+            ),
+            [],
+        )
 
     def test_remote_proof_changes_with_server_round_identity(self) -> None:
         first = {
