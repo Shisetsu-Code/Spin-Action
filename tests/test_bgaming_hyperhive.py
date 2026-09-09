@@ -83,6 +83,65 @@ class BGamingHyperHiveTests(unittest.TestCase):
             {"purchased_feature": "buy_bonus", "bet_type": "betting"},
         )
 
+    def test_big_bucks_bundle_uses_bet_only_and_buy_bonus_x120(self) -> None:
+        runtime = BGamingRuntime(
+            session=requests.Session(),
+            launch_url="https://big-bucks-saloon.demo.bgaming-network.com/hyperhive",
+            api_url="https://unused.example/api/session",
+            identifier="BigBucksSaloon",
+            csrf_header_name="X-CSRF-Token",
+            csrf_header_value="secret",
+            options={"game_bundle_source": "https://example.test/bundle.js"},
+            round_series_id=1,
+        )
+        bundle = (
+            'var a={req:{bet:s.A.data.bet}};'
+            'this.isFreebets&&(a.req.bet_type="freebet");'
+            'buyBonus(){this.spin(!0,{purchased_feature:"buy_bonus"})}'
+            'this.buyBonusMultiplier=120;'
+            'jsonrpc:"2.0"'
+        )
+        with patch(
+            "tester_spin.providers.bgaming.hyperhive._download_bundle",
+            return_value=bundle,
+        ):
+            modes = discover_modes_from_bundle(runtime, timeout_s=1)
+        by_id = {mode["id"]: mode for mode in modes}
+        self.assertEqual(by_id["SPIN"]["request"], {})
+        self.assertEqual(
+            by_id["PURCHASE_BUY_BONUS"]["request"],
+            {"purchased_feature": "buy_bonus"},
+        )
+        self.assertEqual(
+            by_id["PURCHASE_BUY_BONUS"]["expected_multiplier"],
+            120.0,
+        )
+
+    def test_big_bucks_round_win_is_used_as_cumulative_total(self) -> None:
+        data = {
+            "id": 0,
+            "jsonrpc": "2.0",
+            "result": {
+                "final": True,
+                "balance": 102614,
+                "state_lock": "lock",
+                "resp": {
+                    "round": {
+                        "mid": "SHOP",
+                        "csid": 12,
+                        "win": "7454",
+                        "bet": {
+                            "tb": "40",
+                            "cmx": "120.000",
+                        },
+                    }
+                },
+            },
+        }
+        summary = _result_summary(data)
+        self.assertEqual(summary["total_win"], 7454.0)
+        self.assertEqual(summary["balance"], 102614)
+
     def test_nested_hyperhive_game_total_win_is_accepted(self) -> None:
         data = {
             "result": {
