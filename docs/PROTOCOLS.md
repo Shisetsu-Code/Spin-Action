@@ -1440,3 +1440,66 @@ balance_total_n = balance_total_(n-1) + win
 ```
 
 Tester-Spin sigue automáticamente `freespin` hasta terminal con guard de 256 pasos.
+
+
+## 7.9 Preselection game — AlwaysUp
+
+HAR 2026-09-09 confirma una continuación adicional después de comprar `bonus_buy`.
+
+La compra:
+
+```json
+{
+  "command": "spin",
+  "options": {
+    "bet": 200,
+    "purchased_feature": "bonus_buy"
+  }
+}
+```
+
+responde:
+
+```text
+flow.state=preselection_game
+flow.command=spin
+available_actions=[init, preselection_game]
+purchased_feature.name=bonus_buy
+```
+
+El cliente muestra una selección visual de cohete, pero el índice elegido NO se envía al backend.
+El bundle guarda `rocket_index` sólo localmente para UI/animación y al confirmar manda:
+
+```json
+{
+  "command": "preselection_game",
+  "extra_data": {
+    "round_series_id": "<misma serie>"
+  }
+}
+```
+
+Sin `options`, sin nombre de cohete y sin índice.
+
+La respuesta conserva el mismo `round_id`, avanza `last_action_id` y termina:
+
+```text
+flow.state=closed
+flow.command=preselection_game
+available_actions=[init, spin]
+```
+
+El multiplicador real llega desde servidor:
+
+```json
+"features": {
+  "bonus_data": {
+    "multiplier": 100
+  }
+}
+```
+
+La continuación `preselection_game` tiene débito cero. En la captura:
+saldo previo total=83400, win=20000, saldo final total=103400.
+
+Tester-Spin automatiza esta continuación como parte del mismo intento de compra.
