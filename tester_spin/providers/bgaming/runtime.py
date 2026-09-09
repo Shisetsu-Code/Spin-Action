@@ -493,6 +493,11 @@ def flow_continuation_command(data: dict[str, Any]) -> str:
     )
     if state == "freespins" and "freespin" in action_names:
         return "freespin"
+    if (
+        state == "preselection_game"
+        and "play_preselection_game" in action_names
+    ):
+        return "play_preselection_game"
     if state in {"", "closed", "ready", "init", "spin"}:
         return ""
     if state in action_names:
