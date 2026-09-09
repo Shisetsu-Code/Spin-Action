@@ -34,6 +34,7 @@ from tester_spin.providers.bgaming.runtime import (
     post_command,
     preselection_multiplier,
     purchase_expected_debit,
+    purchase_names_equivalent,
     resolve_base_bet,
     sanitize_error_text,
     sanitize_options,
@@ -744,7 +745,13 @@ class BGamingProvider(ProviderAdapter):
                             if isinstance(purchased, dict)
                             else ""
                         )
-                        if purchase_name and actual_purchase != purchase_name:
+                        if (
+                            purchase_name
+                            and not purchase_names_equivalent(
+                                purchase_name,
+                                actual_purchase,
+                            )
+                        ):
                             warnings.append(
                                 f"purchased_feature devuelta={actual_purchase!r}, "
                                 f"solicitada={purchase_name!r}"
