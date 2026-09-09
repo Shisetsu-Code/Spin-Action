@@ -7,6 +7,7 @@ from tester_spin.providers.bgaming.runtime import (
     discover_purchase_modes,
     extract_options,
     pending_flow_actions,
+    preselection_multiplier,
     purchase_expected_debit,
     resolve_base_bet,
     sanitize_error_text,
@@ -314,6 +315,88 @@ class BGamingRuntimeTests(unittest.TestCase):
             ),
             [],
         )
+
+    def test_always_up_purchase_enters_preselection_without_false_partial(self) -> None:
+        purchase_spin = {
+            "api_version": "2",
+            "outcome": {
+                "screen": [
+                    ["2", "0", "8"],
+                    ["5", "8", "5"],
+                    ["8", "3", "3"],
+                ],
+                "bet": 200,
+                "win": 0,
+                "wins": [],
+                "storage": None,
+            },
+            "balance": {"game": 0, "wallet": 83400},
+            "flow": {
+                "round_id": 17238938227,
+                "last_action_id": "17238938227_1",
+                "state": "preselection_game",
+                "command": "spin",
+                "available_actions": ["init", "preselection_game"],
+                "purchased_feature": {"name": "bonus_buy"},
+            },
+        }
+        self.assertEqual(
+            validate_spin(
+                purchase_spin,
+                requested_bet=200,
+                previous_balance_total=99400,
+                expected_reels=3,
+                expected_rows=3,
+                command="spin",
+                expected_debit=16000,
+            ),
+            [],
+        )
+        self.assertEqual(pending_flow_actions(purchase_spin), [])
+
+    def test_always_up_preselection_reveal_is_zero_debit_terminal(self) -> None:
+        reveal = {
+            "api_version": "2",
+            "features": {
+                "bonus_data": {
+                    "multiplier": 100,
+                }
+            },
+            "outcome": {
+                "screen": [
+                    ["2", "0", "8"],
+                    ["5", "8", "5"],
+                    ["8", "3", "3"],
+                ],
+                "bet": 200,
+                "win": 20000,
+                "wins": [],
+                "storage": None,
+            },
+            "balance": {"game": 20000, "wallet": 83400},
+            "flow": {
+                "round_id": 17238938227,
+                "last_action_id": "17238938227_2",
+                "state": "closed",
+                "command": "preselection_game",
+                "available_actions": ["init", "spin"],
+                "purchased_feature": {"name": "bonus_buy"},
+            },
+        }
+        self.assertEqual(preselection_multiplier(reveal), 100)
+        self.assertEqual(
+            validate_spin(
+                reveal,
+                requested_bet=200,
+                previous_balance_total=83400,
+                expected_reels=3,
+                expected_rows=3,
+                command="preselection_game",
+                expected_debit=0,
+            ),
+            [],
+        )
+        self.assertEqual(pending_flow_actions(reveal), [])
 
     def test_remote_proof_changes_with_server_round_identity(self) -> None:
         first = {
