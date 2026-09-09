@@ -22,6 +22,10 @@ class ProviderAdapter(ABC):
     # validated rows but must never delete existing catalog rows.
     catalog_crawl_authoritative: bool = True
     catalog_crawl_reason: str = ""
+    # Reconciliation safety threshold. A provider may tighten this when its
+    # catalogue is large/stable and temporary WAF/parser failures are more likely
+    # than large legitimate removals.
+    min_catalog_reconcile_ratio: float = 0.60
 
     def set_catalog_authority(self, authoritative: bool, reason: str = "") -> None:
         self.catalog_crawl_authoritative = bool(authoritative)
