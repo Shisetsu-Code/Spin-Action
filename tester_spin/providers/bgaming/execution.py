@@ -212,7 +212,27 @@ class BGamingExecutionMixin:
                     timeout_s=timeout_s,
                 )
                 if not fresh_demo_url or fresh_demo_url == execution_url:
-                    raise
+                    session.close()
+                    elapsed = (time.monotonic() - started) * 1000.0
+                    return GameTestResult(
+                        provider=self.key,
+                        slug=game.slug,
+                        game_name=game.name,
+                        game_url=game.url,
+                        requested_spins=repetitions,
+                        successful_spins=0,
+                        failed_spins=repetitions,
+                        status="SIN_DEMO",
+                        symbol=game.symbol,
+                        started_at=started_iso,
+                        finished_at=utc_now_iso(),
+                        elapsed_ms=elapsed,
+                        error=(
+                            "BGaming: launch demo guardado expiró y la ficha "
+                            "pública no expuso otro demo validable."
+                        ),
+                        run_dir=str(run_dir),
+                    )
                 execution_url = fresh_demo_url
                 runtime = bootstrap_game(
                     session,
