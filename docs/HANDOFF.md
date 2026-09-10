@@ -774,12 +774,12 @@ La respuesta expone `page`, `total`, `hasMore` y HTML. El crawler:
 
 - filtra exclusivamente `Slots`;
 - exige coherencia de `page`;
-- exige que `total`, cuando está presente en varias páginas, permanezca estable;
-- sólo conserva autoridad al terminar normalmente con `hasMore=false`;
+- exige que `total`, observado por HAR como cantidad total de páginas, permanezca estable;
+- sólo conserva autoridad al terminar normalmente con `hasMore=false` y con la página terminal igual a `total`;
 - límite manual, stop, HTTP error, JSON inválido, página inconsistente o `total` cambiante degradan el crawl a no autoritativo;
 - un crawl no autoritativo nunca debe autorizar reconciliación destructiva.
 
-No se asume si `total` representa items o páginas: sólo se usa como señal de consistencia hasta contar con un contrato remoto inequívoco.
+El HAR de referencia confirma la semántica de `total`: en página 2 se observó `total=13` con 25 tarjetas/página y `hasMore=true`, por lo que se trata como total de páginas. No se compara `total` contra la cantidad de juegos.
 
 ### Demo y credenciales efímeras
 
