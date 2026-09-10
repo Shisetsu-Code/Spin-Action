@@ -635,11 +635,11 @@ def discover_purchase_modes(data: dict[str, Any]) -> list[dict[str, Any]]:
     base = multipliers.get("base_bet")
     base_source = "feature_multipliers.base_bet"
     if not isinstance(base, (int, float)) or base <= 0:
-        # BigAtlantisFrenzy HAR: freespin_buy=8000 => x80 and
-        # freespin_chance=200 => x2, with no explicit base_bet.
-        # This family publishes multipliers in percent basis (100 == x1).
-        base = 100
-        base_source = "implicit_percent_basis"
+        # Do not assume a denominator when the provider does not publish one.
+        # The executor learns the effective cost from the authoritative balance
+        # delta after the first successful demo purchase.
+        base = None
+        base_source = "unreported;learn-from-balance"
 
     disabled_raw = feature_options.get("disabled_features")
     disabled: set[str] = set()
@@ -665,7 +665,11 @@ def discover_purchase_modes(data: dict[str, Any]) -> list[dict[str, Any]]:
                 "feature_multiplier": raw_multiplier,
                 "base_multiplier": base,
                 "base_source": base_source,
-                "cost_multiplier": float(raw_multiplier) / float(base),
+                "cost_multiplier": (
+                    float(raw_multiplier) / float(base)
+                    if isinstance(base, (int, float)) and base > 0
+                    else None
+                ),
             }
         )
     return modes
@@ -674,13 +678,29 @@ def discover_purchase_modes(data: dict[str, Any]) -> list[dict[str, Any]]:
 def purchase_expected_debit(
     requested_bet: int | float,
     purchase_mode: dict[str, Any] | None,
-) -> float:
+) -> float | None:
     if not purchase_mode:
         return float(requested_bet)
     multiplier = purchase_mode.get("cost_multiplier")
     if not isinstance(multiplier, (int, float)) or multiplier <= 0:
-        return float(requested_bet)
+        return None
     return float(requested_bet) * float(multiplier)
+
+
+def infer_observed_debit(
+    data: dict[str, Any],
+    previous_balance_total: int | float | None,
+) -> float | None:
+    if previous_balance_total is None:
+        return None
+    current_total = balance_total(data)
+    outcome = data.get("outcome")
+    if current_total is None or not isinstance(outcome, dict):
+        return None
+    win = outcome.get("win")
+    if not isinstance(win, (int, float)):
+        return None
+    return float(previous_balance_total) + float(win) - float(current_total)
 
 
 def preselection_multiplier(data: dict[str, Any]) -> int | float | None:
@@ -819,6 +839,7 @@ def validate_spin(
     command: str = "spin",
     expected_debit: int | float | None = None,
     variable_layout: bool = False,
+    allow_observed_debit: bool = False,
 ) -> list[str]:
     warnings: list[str] = []
 
@@ -903,22 +924,29 @@ def validate_spin(
             warnings.append(f"flow.state no terminal/no observado: {state!r}")
 
     current_total = balance_total(data)
-    debit = (
-        float(expected_debit)
-        if isinstance(expected_debit, (int, float))
-        else (0.0 if command == "freespin" else float(actual_bet or 0))
-    )
     if (
         previous_balance_total is not None
         and current_total is not None
         and isinstance(win, (int, float))
     ):
-        expected = float(previous_balance_total) - debit + float(win)
-        if abs(float(current_total) - expected) > 1e-9:
-            warnings.append(
-                f"balance inconsistente: actual={current_total}, esperado={expected}, "
-                f"debito={debit}"
+        if allow_observed_debit and expected_debit is None:
+            observed_debit = infer_observed_debit(data, previous_balance_total)
+            if observed_debit is not None and observed_debit < -1e-9:
+                warnings.append(
+                    f"balance implica débito negativo imposible={observed_debit:g}"
+                )
+        else:
+            debit = (
+                float(expected_debit)
+                if isinstance(expected_debit, (int, float))
+                else (0.0 if command == "freespin" else float(actual_bet or 0))
             )
+            expected = float(previous_balance_total) - debit + float(win)
+            if abs(float(current_total) - expected) > 1e-9:
+                warnings.append(
+                    f"balance inconsistente: actual={current_total}, esperado={expected}, "
+                    f"debito={debit}"
+                )
 
     return warnings
 
