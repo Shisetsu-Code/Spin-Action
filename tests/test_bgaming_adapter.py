@@ -180,7 +180,9 @@ class BGamingAdapterContractTests(unittest.TestCase):
                     "bet": 100,
                     "win": 0,
                 },
-                "balance": {"wallet": 94900, "game": 0},
+                # Purchase runs in a fresh isolated demo session. A x50
+                # debit from 100000 therefore finishes at 95000.
+                "balance": {"wallet": 95000, "game": 0},
                 "flow": {
                     "round_id": 2,
                     "last_action_id": "2_1",
