@@ -436,13 +436,18 @@ def run_hyperhive_test(
     )
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    rpc_id = 0
+    bundle_text = _download_bundle(runtime, timeout_s)
+    engine_contract = _download_engine_contract(
+        runtime,
+        timeout_s=timeout_s,
+    )
+
     init_response, init_request, init_data = _rpc(
         runtime,
         "init",
         timeout_s=timeout_s,
         params={"token": token},
-        rpc_id=rpc_id,
+        rpc_id=_hyperhive_rpc_id(engine_contract),
     )
     init_result = init_data["result"]
     config = init_result.get("config")
@@ -477,7 +482,12 @@ def run_hyperhive_test(
         encoding="utf-8",
     )
 
-    modes = discover_modes_from_bundle(runtime, timeout_s=timeout_s)
+    modes = discover_modes_from_bundle(
+        runtime,
+        timeout_s=timeout_s,
+        bundle_text=bundle_text,
+        engine_contract=engine_contract,
+    )
     state_lock = init_result.get("state_lock")
     discovered_modes = [
         {
@@ -524,6 +534,18 @@ def run_hyperhive_test(
             try:
                 before_balance = float(current_balance)
                 request_spec = {"bet": default_bet, **dict(mode["request"])}
+                currency_attributes = init_result.get("currency_attributes")
+                exponent = 2
+                if isinstance(currency_attributes, dict):
+                    raw_exponent = currency_attributes.get("exponent")
+                    if isinstance(raw_exponent, int):
+                        exponent = raw_exponent
+                if mode.get("custom_req_profile") == "pz-per-line":
+                    request_spec["custom_req"] = _pz_custom_req(
+                        bet=default_bet,
+                        exponent=exponent,
+                        action="spin",
+                    )
                 play_params: dict[str, Any] = {
                     "token": token,
                     "req": request_spec,
@@ -535,7 +557,7 @@ def run_hyperhive_test(
                     "play",
                     timeout_s=timeout_s,
                     params=play_params,
-                    rpc_id=rpc_id,
+                    rpc_id=_hyperhive_rpc_id(engine_contract),
                 )
                 responded += 1
                 steps = 1
@@ -578,6 +600,14 @@ def run_hyperhive_test(
                             continuation_req[key] = value
                     if next_action:
                         continuation_req["action"] = next_action
+                    if modes[0].get("custom_req_profile") == "pz-per-line":
+                        action = next_action or "spin"
+                        continuation_req.pop("action", None)
+                        continuation_req["custom_req"] = _pz_custom_req(
+                            bet=default_bet,
+                            exponent=exponent,
+                            action=action,
+                        )
                     play_params = {
                         "token": token,
                         "req": continuation_req,
@@ -589,7 +619,7 @@ def run_hyperhive_test(
                         "play",
                         timeout_s=timeout_s,
                         params=play_params,
-                        rpc_id=rpc_id,
+                        rpc_id=_hyperhive_rpc_id(engine_contract),
                     )
                     steps += 1
                     last_status = int(response.status_code)
