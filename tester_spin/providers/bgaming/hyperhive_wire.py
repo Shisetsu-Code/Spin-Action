@@ -87,7 +87,7 @@ def apply_observed_play_wire(
     req = dict(raw_req)
 
     if profile.bet_type:
-        req.setdefault("bet_type", profile.bet_type)
+        req["bet_type"] = profile.bet_type
 
     if profile.custom_req and "custom_req" not in req:
         action = str(req.pop("action", "") or "spin")
