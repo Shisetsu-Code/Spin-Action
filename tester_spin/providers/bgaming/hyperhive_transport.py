@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import weakref
 from typing import Any
 from urllib.parse import quote, urlparse
 
@@ -9,7 +10,9 @@ from tester_spin.providers.bgaming.runtime import extract_script_urls
 
 _install_lock = threading.Lock()
 _installed = False
-_hydrated_runtime_ids: set[int] = set()
+# Cache by the actual live HTTP session, not id(runtime). Python may reuse object
+# ids after GC, which could incorrectly skip iframe discovery for a later game.
+_hydrated_clients: weakref.WeakKeyDictionary[Any, str] = weakref.WeakKeyDictionary()
 
 
 def hyperhive_client_url(runtime: Any) -> str:
@@ -48,17 +51,22 @@ def prepare_hyperhive_client(
     """Load the live inner client and merge its referenced scripts into runtime.
 
     This is deliberately runtime-only discovery. No HAR data is consulted.
-    A runtime is marked hydrated only after the iframe GET succeeds, so a
-    transient failure can be retried later.
+    Hydration is cached by the live requests.Session plus client URL. A failed
+    iframe GET is never cached, so transient failures remain retryable.
     """
     client_url = hyperhive_client_url(runtime)
     outer_url = str(getattr(runtime, "launch_url", "") or "")
-    runtime_id = id(runtime)
+    session = getattr(runtime, "session", None)
 
     if not client_url or client_url == outer_url:
         return client_url
-    if runtime_id in _hydrated_runtime_ids and not force:
-        return client_url
+    if session is not None and not force:
+        try:
+            if _hydrated_clients.get(session) == client_url:
+                return client_url
+        except TypeError:
+            # Unexpected non-weakrefable session-like objects simply skip cache.
+            pass
 
     response = runtime.session.get(
         client_url,
@@ -70,7 +78,8 @@ def prepare_hyperhive_client(
     )
     response.raise_for_status()
 
-    discovered = extract_script_urls(response.text, response.url or client_url)
+    response_url = str(getattr(response, "url", "") or client_url)
+    discovered = extract_script_urls(response.text, response_url)
     existing = list(getattr(runtime, "script_urls", None) or [])
     seen = set(existing)
     for url in discovered:
@@ -80,8 +89,12 @@ def prepare_hyperhive_client(
         seen.add(url)
     runtime.script_urls = existing
 
-    _hydrated_runtime_ids.add(runtime_id)
-    return response.url or client_url
+    if session is not None:
+        try:
+            _hydrated_clients[session] = client_url
+        except TypeError:
+            pass
+    return response_url
 
 
 def _hydrate_inner_client(runtime: Any, client_url: str, timeout_s: float) -> None:
