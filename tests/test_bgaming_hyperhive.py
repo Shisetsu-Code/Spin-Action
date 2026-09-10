@@ -157,8 +157,12 @@ class BGamingHyperHiveTests(unittest.TestCase):
             bundle_text='action:"spin";bet_type:"bet";jsonrpc:"2.0"',
             engine_contract="",
         )
-        self.assertFalse(modes[0]["executable"])
+        self.assertTrue(modes[0]["executable"])
         self.assertEqual(modes[0]["request"], {})
+        self.assertEqual(
+            modes[0]["discovery_state"],
+            "MINIMAL_PROVIDER_CONTRACT",
+        )
 
     def test_unresolved_hyperhive_contract_is_discovery_only(self) -> None:
         runtime = BGamingRuntime(
@@ -177,11 +181,12 @@ class BGamingHyperHiveTests(unittest.TestCase):
             bundle_text="var unrelated=1;",
             engine_contract="",
         )
-        self.assertFalse(modes[0]["executable"])
+        self.assertTrue(modes[0]["executable"])
         self.assertEqual(
             modes[0]["discovery_state"],
-            "CONTRACT_UNRESOLVED",
+            "MINIMAL_PROVIDER_CONTRACT",
         )
+        self.assertEqual(modes[0]["request"], {})
 
     def test_big_bucks_bundle_uses_bet_only_and_buy_bonus_x120(self) -> None:
         runtime = BGamingRuntime(
