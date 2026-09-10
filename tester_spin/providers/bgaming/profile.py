@@ -43,12 +43,18 @@ class RuntimeClassification:
 
 @dataclass(slots=True)
 class BGamingProfile:
+    capability_version: int = 2
     family: str = UNKNOWN
     confidence: float = 0.0
     evidence: list[str] = field(default_factory=list)
     spin_options: dict[str, Any] = field(default_factory=dict)
     command_options: dict[str, dict[str, Any]] = field(default_factory=dict)
     request_extra_data: dict[str, Any] = field(default_factory=dict)
+    spin_option_choices: dict[str, list[Any]] = field(default_factory=dict)
+    effective_bet_selector: str = ""
+    effective_bet_multipliers: dict[str, float] = field(default_factory=dict)
+    dynamic_purchased_feature: bool = False
+    purchase_feature_level_supported: bool = False
     purchase_features: list[str] = field(default_factory=list)
     rows_required: bool = False
     line_count: int = 0
@@ -62,6 +68,7 @@ class BGamingProfile:
     def to_dict(self) -> dict[str, Any]:
         return {
             "schema": PROFILE_SCHEMA,
+            "capability_version": self.capability_version,
             "family": self.family,
             "confidence": self.confidence,
             "evidence": list(self.evidence),
@@ -72,6 +79,15 @@ class BGamingProfile:
                 if isinstance(options, dict)
             },
             "request_extra_data": dict(self.request_extra_data),
+            "spin_option_choices": {
+                str(name): list(values)
+                for name, values in self.spin_option_choices.items()
+                if isinstance(values, list)
+            },
+            "effective_bet_selector": self.effective_bet_selector,
+            "effective_bet_multipliers": dict(self.effective_bet_multipliers),
+            "dynamic_purchased_feature": self.dynamic_purchased_feature,
+            "purchase_feature_level_supported": self.purchase_feature_level_supported,
             "purchase_features": list(self.purchase_features),
             "rows_required": self.rows_required,
             "line_count": self.line_count,
@@ -89,15 +105,19 @@ class BGamingProfile:
             return None
         if value.get("schema") not in {None, PROFILE_SCHEMA}:
             return None
+        capability_version = int(value.get("capability_version") or 0)
         family = str(value.get("family") or UNKNOWN)
         options = value.get("spin_options")
         command_options = value.get("command_options")
         request_extra_data = value.get("request_extra_data")
+        spin_option_choices = value.get("spin_option_choices")
+        effective_bet_multipliers = value.get("effective_bet_multipliers")
         purchase_features = value.get("purchase_features")
         continuations = value.get("allowed_continuations")
         evidence = value.get("evidence")
         diagnostics = value.get("discovery_diagnostics")
         return cls(
+            capability_version=capability_version,
             family=family,
             confidence=float(value.get("confidence") or 0.0),
             evidence=[str(x) for x in evidence] if isinstance(evidence, list) else [],
@@ -110,6 +130,21 @@ class BGamingProfile:
             request_extra_data=dict(request_extra_data)
             if isinstance(request_extra_data, dict)
             else {},
+            spin_option_choices={
+                str(name): list(values)
+                for name, values in spin_option_choices.items()
+                if isinstance(values, list)
+            } if isinstance(spin_option_choices, dict) else {},
+            effective_bet_selector=str(value.get("effective_bet_selector") or ""),
+            effective_bet_multipliers={
+                str(key): float(multiplier)
+                for key, multiplier in effective_bet_multipliers.items()
+                if isinstance(multiplier, (int, float))
+            } if isinstance(effective_bet_multipliers, dict) else {},
+            dynamic_purchased_feature=bool(value.get("dynamic_purchased_feature")),
+            purchase_feature_level_supported=bool(
+                value.get("purchase_feature_level_supported")
+            ),
             purchase_features=[
                 str(item) for item in purchase_features if str(item)
             ] if isinstance(purchase_features, list) else [],
@@ -254,6 +289,7 @@ def discover_profile(
         persisted is not None
         and persisted.family == API_V2
         and persisted.validated
+        and persisted.capability_version >= 2
     ):
         advertised_purchases = discover_purchase_modes(init_data)
         persisted_source = str(persisted.source or "")
@@ -273,6 +309,18 @@ def discover_profile(
         }
         if not profile.request_extra_data:
             profile.request_extra_data = dict(persisted.request_extra_data)
+        profile.spin_option_choices = {
+            name: list(values)
+            for name, values in persisted.spin_option_choices.items()
+        }
+        profile.effective_bet_selector = persisted.effective_bet_selector
+        profile.effective_bet_multipliers = dict(
+            persisted.effective_bet_multipliers
+        )
+        profile.dynamic_purchased_feature = persisted.dynamic_purchased_feature
+        profile.purchase_feature_level_supported = (
+            persisted.purchase_feature_level_supported
+        )
         profile.purchase_features = list(persisted.purchase_features)
         profile.rows_required = persisted.rows_required
         profile.allowed_continuations = [
@@ -307,6 +355,29 @@ def discover_profile(
     if isinstance(options, dict):
         profile.spin_options.update(options)
 
+    option_choices = wire.get("spin_option_choices")
+    if isinstance(option_choices, dict):
+        profile.spin_option_choices = {
+            str(name): list(values)
+            for name, values in option_choices.items()
+            if isinstance(values, list) and values
+        }
+
+    effective_multipliers = wire.get("effective_bet_multipliers")
+    if isinstance(effective_multipliers, dict):
+        profile.effective_bet_multipliers = {
+            str(key): float(multiplier)
+            for key, multiplier in effective_multipliers.items()
+            if isinstance(multiplier, (int, float)) and multiplier > 0
+        }
+
+    profile.dynamic_purchased_feature = bool(
+        wire.get("dynamic_purchased_feature")
+    )
+    profile.purchase_feature_level_supported = bool(
+        wire.get("purchase_feature_level_supported")
+    )
+
     required_fields = wire.get("required_option_fields")
     init_options = init_data.get("options")
     init_layout = (
@@ -327,12 +398,42 @@ def discover_profile(
                 profile.evidence.append(
                     f"client.additionalSpinOptions.{field}"
                 )
+                continue
+
+            choices = profile.spin_option_choices.get(field)
+            if isinstance(choices, list) and choices:
+                # Choose one value deterministically from client-proven choices.
+                # Tester-Spin is validating protocol reachability, not mimicking
+                # a user's persisted UI preference.
+                profile.spin_options[field] = choices[0]
+                profile.evidence.append(
+                    f"client.additionalSpinOptions.{field}:choice"
+                )
+
+    selector_candidates: list[str] = []
+    multiplier_keys = set(profile.effective_bet_multipliers)
+    if multiplier_keys:
+        for field, choices in profile.spin_option_choices.items():
+            choice_keys = {str(value) for value in choices}
+            if len(multiplier_keys & choice_keys) >= 2:
+                selector_candidates.append(field)
+    if len(selector_candidates) == 1:
+        profile.effective_bet_selector = selector_candidates[0]
+        profile.evidence.append(
+            f"client.effective_bet_selector.{profile.effective_bet_selector}"
+        )
 
     purchase_features = wire.get("purchase_features")
-    if isinstance(purchase_features, list):
-        profile.purchase_features = sorted(
-            {str(item) for item in purchase_features if str(item)}
+    discovered_purchase_features = {
+        str(item) for item in purchase_features if str(item)
+    } if isinstance(purchase_features, list) else set()
+    if profile.dynamic_purchased_feature:
+        discovered_purchase_features.update(
+            str(mode.get("name") or "")
+            for mode in discover_purchase_modes(init_data)
+            if str(mode.get("name") or "")
         )
+    profile.purchase_features = sorted(discovered_purchase_features)
     profile.source = str(wire.get("source") or "init")
     profile.bundle_sha256 = str(wire.get("bundle_sha256") or "")
     diagnostics = wire.get("diagnostics")
