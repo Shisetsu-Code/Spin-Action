@@ -12,7 +12,7 @@ _FUN_SCALE = Decimal("100")
 _AMOUNT = re.compile(
     r"(?P<prefix>\b(?:balance_total|balance|bet|debit|win|line_bet|win_inferido)=)"
     r"(?P<value>-?\d+(?:\.\d+)?)"
-    r"(?!\s*FUN\b)",
+    r"(?![\d.]|\s*FUN\b)",
     re.IGNORECASE,
 )
 _install_lock = threading.Lock()
@@ -35,6 +35,8 @@ def humanize_bgaming_progress(message: str) -> str:
     values returned by BGaming.
     """
     text = str(message or "")
+    if " FUN (raw=" in text:
+        return text
 
     def replace(match: re.Match[str]) -> str:
         return match.group("prefix") + _human_amount(match.group("value"))
