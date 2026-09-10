@@ -20,6 +20,7 @@ from tester_spin.providers.bgaming.runtime import (
     purchase_expected_debit,
     purchase_names_equivalent,
     resolve_base_bet,
+    resolve_fresh_demo_url,
     sanitize_error_text,
     sanitize_options,
     sanitize_session_url,
@@ -712,6 +713,37 @@ class BGamingRuntimeTests(unittest.TestCase):
 
         self.assertEqual(profile["spin_options"], {"mode": "60"})
         self.assertEqual(profile["kind"], "selectable-lines-mode")
+
+    def test_resolves_ephemeral_demo_from_public_page_without_persisting_it(self) -> None:
+        class Response:
+            url = "https://bgaming.com/games/example"
+            text = (
+                '<a href="https://demo.bgaming-network.com/games/Example/FUN'
+                '?play_token=ephemeral-secret">Play Demo</a>'
+            )
+
+            def raise_for_status(self) -> None:
+                return None
+
+        session = requests.Session()
+        with patch.object(session, "get", return_value=Response()):
+            resolved = resolve_fresh_demo_url(
+                session,
+                "https://bgaming.com/games/example",
+                timeout_s=1,
+            )
+        self.assertIn("bgaming-network.com/games/Example/FUN", resolved)
+        self.assertIn("play_token=ephemeral-secret", resolved)
+
+    def test_unknown_advertised_state_is_not_auto_executed(self) -> None:
+        payload = {
+            "flow": {
+                "state": "choose_bonus",
+                "available_actions": ["init", "choose_bonus"],
+            }
+        }
+        self.assertEqual(flow_continuation_command(payload), "")
+        self.assertEqual(pending_flow_actions(payload), ["choose_bonus"])
 
     def test_remote_proof_changes_with_server_round_identity(self) -> None:
         first = {
