@@ -19,6 +19,7 @@ from tester_spin.providers.rubyplay.catalog import (
     updated_query_meta,
 )
 from tester_spin.providers.rubyplay.execution import RubyPlayExecutionMixin
+from tester_spin.providers.rubyplay.http import mount_rubyplay_system_trust
 
 
 def _safe_folder(value: str) -> str:
@@ -44,6 +45,7 @@ class RubyPlayProvider(RubyPlayExecutionMixin, ProviderAdapter):
     @staticmethod
     def _new_session() -> requests.Session:
         session = requests.Session()
+        mount_rubyplay_system_trust(session)
         session.headers.update(
             {
                 "User-Agent": (
