@@ -650,6 +650,19 @@ class BGamingRuntimeTests(unittest.TestCase):
             purchase_names_equivalent("freespin_buy", "bonus_buy")
         )
 
+    def test_preselection_direct_command_uses_server_advertised_state_command(self) -> None:
+        response = {
+            "flow": {
+                "state": "preselection_game",
+                "available_actions": ["init", "preselection_game"],
+            }
+        }
+        self.assertEqual(
+            flow_continuation_command(response),
+            "preselection_game",
+        )
+        self.assertEqual(pending_flow_actions(response), [])
+
     def test_preselection_alias_uses_server_advertised_play_command(self) -> None:
         response = {
             "flow": {
