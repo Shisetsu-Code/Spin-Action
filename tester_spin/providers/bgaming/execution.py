@@ -647,10 +647,85 @@ class BGamingExecutionMixin:
                     )
                     return result
 
+        def refresh_api_session(reason: str) -> None:
+            nonlocal session, runtime, init_data, default_bet
+            nonlocal previous_total, expected_reels, expected_rows
+
+            if runtime is None or active_profile is None or active_profile.family != API_V2:
+                return
+
+            new_session = self._new_session()
+            try:
+                new_runtime = bootstrap_game(
+                    new_session,
+                    execution_url,
+                    timeout_s=timeout_s,
+                )
+                _response, init_request, new_init = post_command(
+                    new_runtime,
+                    "init",
+                    timeout_s=timeout_s,
+                )
+                new_classification = classify_runtime(new_runtime, new_init)
+                if new_classification.family != API_V2:
+                    raise ValueError(
+                        "BGaming: runtime cambió de familia durante aislamiento "
+                        f"de modo: {new_classification.family!r}"
+                    )
+                if runtime.identifier and new_runtime.identifier != runtime.identifier:
+                    raise ValueError(
+                        "BGaming: identifier cambió durante aislamiento de modo: "
+                        f"{runtime.identifier!r}→{new_runtime.identifier!r}"
+                    )
+                new_bet, _source = resolve_base_bet(new_init)
+                if not isinstance(new_bet, (int, float)):
+                    raise ValueError(
+                        "BGaming: init fresco sin apuesta utilizable durante "
+                        "aislamiento de modo."
+                    )
+
+                new_options = new_init.get("options")
+                new_reels: int | None = None
+                new_rows: int | None = None
+                if isinstance(new_options, dict):
+                    layout = new_options.get("layout")
+                    if isinstance(layout, dict):
+                        try:
+                            new_reels = int(layout.get("reels"))
+                        except (TypeError, ValueError):
+                            new_reels = None
+                        try:
+                            new_rows = int(layout.get("rows"))
+                        except (TypeError, ValueError):
+                            new_rows = None
+
+                old_session = session
+                session = new_session
+                runtime = new_runtime
+                init_data = new_init
+                default_bet = new_bet
+                previous_total = balance_total(new_init)
+                expected_reels = new_reels
+                expected_rows = new_rows
+                old_session.close()
+
+                _write_json(run_dir / "last-refresh-init-request.json", init_request)
+                _write_json(run_dir / "last-refresh-init-response.json", new_init)
+                progress(
+                    f"[{game.name}] sesión API-v2 fresca para {reason}; "
+                    f"balance={previous_total if previous_total is not None else '—'}."
+                )
+            except Exception:
+                new_session.close()
+                raise
+
         requested_total = repetitions * len(mode_specs)
 
         if runtime is not None and isinstance(default_bet, (int, float)):
-            for mode_spec in mode_specs:
+            runtime_needs_refresh = False
+            for mode_index, mode_spec in enumerate(mode_specs):
+                if mode_index > 0 and active_profile is not None and active_profile.family == API_V2:
+                    runtime_needs_refresh = True
                 mode_id = str(mode_spec["id"])
                 mode_kind = str(mode_spec["kind"])
                 purchase = mode_spec.get("purchase")
@@ -679,6 +754,10 @@ class BGamingExecutionMixin:
                     first_response_received = False
 
                     try:
+                        if runtime_needs_refresh:
+                            refresh_api_session(f"modo {mode_id}")
+                            runtime_needs_refresh = False
+
                         if legacy_line_bets:
                             spin_options = {
                                 "bets": build_line_bets(init_data, default_bet)
@@ -1204,6 +1283,8 @@ class BGamingExecutionMixin:
                             )
                         )
                     except Exception as exc:
+                        if active_profile is not None and active_profile.family == API_V2:
+                            runtime_needs_refresh = True
                         elapsed_ms = (time.monotonic() - attempt_started) * 1000.0
                         message = sanitize_error_text(f"{type(exc).__name__}: {exc}")
                         errors.append(message)
