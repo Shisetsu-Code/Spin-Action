@@ -23,6 +23,27 @@ from tester_spin.providers.bgaming.runtime import (
 )
 
 
+class HyperHiveRPCError(ValueError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        request_payload: dict[str, Any],
+        response_payload: dict[str, Any],
+        status_code: int,
+    ) -> None:
+        super().__init__(message)
+        self.request_payload = request_payload
+        self.response_payload = response_payload
+        self.status_code = status_code
+        error = response_payload.get("error")
+        self.error_code = (
+            error.get("code")
+            if isinstance(error, dict)
+            else None
+        )
+
+
 def is_hyperhive_runtime(runtime: BGamingRuntime) -> bool:
     # game_bundle_source/version also exist in normal API-v2 launches.
     # The HAR-confirmed discriminator is the final /hyperhive route.
@@ -93,7 +114,12 @@ def _rpc(
     if not isinstance(data, dict):
         raise ValueError("BGaming HyperHive: respuesta JSON-RPC inesperada.")
     if data.get("error") is not None:
-        raise ValueError(f"BGaming HyperHive RPC error: {data.get('error')!r}")
+        raise HyperHiveRPCError(
+            f"BGaming HyperHive RPC error: {data.get('error')!r}",
+            request_payload=_safe_json(payload),
+            response_payload=_safe_json(data),
+            status_code=int(response.status_code),
+        )
     if not isinstance(data.get("result"), dict):
         raise ValueError("BGaming HyperHive: respuesta sin result.")
     return response, payload, data
@@ -604,6 +630,30 @@ def run_hyperhive_test(
     action_vocabulary = discover_action_vocabulary(bundle_text, engine_contract)
     state_lock = init_result.get("state_lock")
     modes_to_run = [mode for mode in modes if bool(mode.get("executable"))]
+    rpc_id_probe = _hyperhive_rpc_id(engine_contract)
+    contract_diagnostic = {
+        "runtime": "hyperhive-jsonrpc",
+        "script_urls": [
+            sanitize_session_url(url)
+            for url in runtime.script_urls
+            if _provider_script_url(runtime, url)
+        ],
+        "bundle_sha256": hashlib.sha256(
+            bundle_text.encode("utf-8", errors="replace")
+        ).hexdigest() if bundle_text else "",
+        "engine_sha256": hashlib.sha256(
+            engine_contract.encode("utf-8", errors="replace")
+        ).hexdigest() if engine_contract else "",
+        "rpc_id_profile": "uuid" if isinstance(rpc_id_probe, str) else "zero",
+        "action_vocabulary": sorted(action_vocabulary),
+        "base_request": dict(modes[0].get("request") or {}),
+        "custom_req_profile": str(modes[0].get("custom_req_profile") or ""),
+        "base_discovery_state": str(modes[0].get("discovery_state") or ""),
+    }
+    (run_dir / "contract-diagnostic.json").write_text(
+        json.dumps(contract_diagnostic, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
     discovered_modes = [
         {
             "id": mode["id"],
@@ -622,7 +672,10 @@ def run_hyperhive_test(
     progress(
         f"[{game.name}] HyperHive JSON-RPC detectado: /api, "
         f"bet={default_bet}, balance={current_balance}, "
-        f"descubiertos={len(modes)}, ejecutables={len(modes_to_run)}."
+        f"descubiertos={len(modes)}, ejecutables={len(modes_to_run)}, "
+        f"base_req={sorted(contract_diagnostic['base_request'])}, "
+        f"custom={contract_diagnostic['custom_req_profile'] or 'no'}, "
+        f"rpc_id={contract_diagnostic['rpc_id_profile']}."
     )
     for mode in modes[1:]:
         progress(
@@ -907,6 +960,33 @@ def run_hyperhive_test(
                     )
                 )
             except Exception as exc:
+                if isinstance(exc, HyperHiveRPCError):
+                    last_status = exc.status_code
+                    (attempt_dir / "rpc-error-request.json").write_text(
+                        json.dumps(
+                            exc.request_payload,
+                            ensure_ascii=False,
+                            indent=2,
+                        ),
+                        encoding="utf-8",
+                    )
+                    (attempt_dir / "rpc-error-response.json").write_text(
+                        json.dumps(
+                            exc.response_payload,
+                            ensure_ascii=False,
+                            indent=2,
+                        ),
+                        encoding="utf-8",
+                    )
+                    if exc.error_code == 51100:
+                        mode["executable"] = False
+                        mode["discovery_state"] = "REJECTED_51100"
+                        for discovered in discovered_modes:
+                            if discovered.get("id") == mode_id:
+                                discovered["executable"] = False
+                                discovered["discovery_state"] = "REJECTED_51100"
+                                break
+
                 message = sanitize_error_text(f"{type(exc).__name__}: {exc}")
                 errors.append(message)
                 elapsed_ms = (time.monotonic() - attempt_started) * 1000.0
@@ -929,6 +1009,15 @@ def run_hyperhive_test(
                     f"[{game.name}] {mode_id} {repetition}/{repetitions}: "
                     f"ERROR {message}"
                 )
+                if (
+                    isinstance(exc, HyperHiveRPCError)
+                    and exc.error_code == 51100
+                ):
+                    progress(
+                        f"[{game.name}] {mode_id}: contrato marcado REJECTED_51100; "
+                        "no se repetirá el mismo wire-shape en esta corrida."
+                    )
+                    break
 
         if stop_event.is_set():
             break
