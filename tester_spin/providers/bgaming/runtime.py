@@ -837,6 +837,102 @@ def effective_bet_for_options(
         return float(requested_bet)
     return float(requested_bet) * float(multiplier)
 
+def _provider_script_references(
+    runtime: BGamingRuntime,
+    *,
+    parent_url: str,
+    text: str,
+) -> list[str]:
+    """Discover static provider-owned JS references from another JS resource."""
+    refs: list[str] = []
+    patterns = [
+        r'["\']([^"\']+\.js(?:\?[^"\']*)?)["\']',
+        r'import\(\s*["\']([^"\']+)["\']\s*\)',
+    ]
+    seen: set[str] = set()
+    for pattern in patterns:
+        for raw in re.findall(pattern, text or ""):
+            value = str(raw or "").strip()
+            if not value:
+                continue
+            url = urljoin(parent_url, value)
+            if not _provider_script_url(runtime, url):
+                continue
+            if url in seen:
+                continue
+            seen.add(url)
+            refs.append(url)
+    return refs
+
+
+def _collect_provider_script_contracts(
+    runtime: BGamingRuntime,
+    *,
+    timeout_s: float,
+    seeds: list[str],
+    diagnostics: list[dict[str, Any]],
+    max_depth: int = 2,
+    max_scripts: int = 32,
+    max_total_bytes: int = 12 * 1024 * 1024,
+) -> list[tuple[int, str, str]]:
+    """Walk a bounded graph of provider-owned scripts and keep protocol-bearing ones."""
+    queue: list[tuple[str, int]] = [(url, 0) for url in seeds if url]
+    seen: set[str] = set()
+    contracts: list[tuple[int, str, str]] = []
+    total_bytes = 0
+
+    while queue and len(seen) < max_scripts and total_bytes < max_total_bytes:
+        url, depth = queue.pop(0)
+        if url in seen or not _provider_script_url(runtime, url):
+            continue
+        seen.add(url)
+        try:
+            response = runtime.session.get(url, timeout=timeout_s)
+            response.raise_for_status()
+            script_text = response.text or ""
+            encoded_size = len(script_text.encode("utf-8", errors="replace"))
+            total_bytes += encoded_size
+            score = _bundle_contract_score(script_text)
+            diagnostics.append(
+                {
+                    "kind": "bundle",
+                    "url": sanitize_session_url(url),
+                    "status": int(getattr(response, "status_code", 200)),
+                    "ok": True,
+                    "bytes": encoded_size,
+                    "contract_score": score,
+                    "depth": depth,
+                }
+            )
+        except Exception as exc:
+            diagnostics.append(
+                {
+                    "kind": "bundle",
+                    "url": sanitize_session_url(url),
+                    "status": int(exc.response.status_code)
+                    if isinstance(exc, requests.HTTPError) and exc.response is not None
+                    else None,
+                    "ok": False,
+                    "error": sanitize_error_text(f"{type(exc).__name__}: {exc}"),
+                    "depth": depth,
+                }
+            )
+            continue
+
+        if score > 0:
+            contracts.append((score, url, script_text))
+
+        if depth < max_depth:
+            for child in _provider_script_references(
+                runtime,
+                parent_url=url,
+                text=script_text,
+            ):
+                if child not in seen:
+                    queue.append((child, depth + 1))
+
+    return contracts
+
 def discover_api_v2_wire_profile(
     runtime: BGamingRuntime,
     *,
@@ -849,52 +945,17 @@ def discover_api_v2_wire_profile(
     authority signal.
     """
     diagnostics: list[dict[str, Any]] = []
-    contract_parts: list[tuple[int, str, str]] = []
-    for url in _runtime_bundle_candidates(
+    seeds = _runtime_bundle_candidates(
         runtime,
         timeout_s=timeout_s,
         diagnostics=diagnostics,
-    ):
-        try:
-            response = runtime.session.get(url, timeout=timeout_s)
-            response.raise_for_status()
-            script_text = response.text
-            score = _bundle_contract_score(script_text)
-            diagnostics.append(
-                {
-                    "kind": "bundle",
-                    "url": sanitize_session_url(url),
-                    "status": int(getattr(response, "status_code", 200)),
-                    "ok": True,
-                    "bytes": len(
-                        getattr(
-                            response,
-                            "content",
-                            script_text.encode("utf-8", errors="replace"),
-                        )
-                    ),
-                    "contract_score": score,
-                }
-            )
-        except Exception as exc:
-            diagnostics.append(
-                {
-                    "kind": "bundle",
-                    "url": sanitize_session_url(url),
-                    "status": int(exc.response.status_code)
-                    if isinstance(exc, requests.HTTPError) and exc.response is not None
-                    else None,
-                    "ok": False,
-                    "error": sanitize_error_text(
-                        f"{type(exc).__name__}: {exc}"
-                    ),
-                }
-            )
-            continue
-        if not script_text or score <= 0:
-            continue
-        contract_parts.append((score, url, script_text))
-
+    )
+    contract_parts = _collect_provider_script_contracts(
+        runtime,
+        timeout_s=timeout_s,
+        seeds=seeds,
+        diagnostics=diagnostics,
+    )
     contract_parts.sort(key=lambda item: item[0], reverse=True)
     bundle = "\n".join(item[2] for item in contract_parts)
     source = contract_parts[0][1] if contract_parts else ""
