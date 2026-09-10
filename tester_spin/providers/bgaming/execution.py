@@ -371,26 +371,59 @@ class BGamingExecutionMixin:
                 if legacy_line_bets
                 else discover_purchase_modes(init_data)
             )
+            client_purchase_features = (
+                set(active_profile.purchase_features)
+                if active_profile is not None
+                else set()
+            )
+            client_purchase_contract_available = bool(client_purchase_features)
+
             for purchase in purchase_modes:
                 name = str(purchase["name"])
                 mode_id = f"PURCHASE_{name.upper()}"
-                mode_spec = {
-                    "id": mode_id,
-                    "kind": "PURCHASE",
-                    "purchase": purchase,
-                }
-                mode_specs.append(mode_spec)
+                client_observed = any(
+                    purchase_names_equivalent(name, observed)
+                    or purchase_names_equivalent(observed, name)
+                    for observed in client_purchase_features
+                )
+                executable = (
+                    client_observed
+                    if client_purchase_contract_available
+                    else True
+                )
+                if executable:
+                    mode_specs.append(
+                        {
+                            "id": mode_id,
+                            "kind": "PURCHASE",
+                            "purchase": purchase,
+                        }
+                    )
+                else:
+                    pending_actions.add(mode_id)
+
                 register_mode(
                     {
                         "id": mode_id,
                         "kind": "PURCHASE",
                         "observed": True,
+                        "client_observed": client_observed,
+                        "executable": executable,
+                        "discovery_state": (
+                            "CLIENT_OBSERVED"
+                            if client_observed
+                            else "ADVERTISED_ONLY"
+                        ),
                         "wire_command": "spin",
                         "purchased_feature": name,
                         "feature_multiplier": purchase["feature_multiplier"],
                         "base_multiplier": purchase["base_multiplier"],
                         "cost_multiplier": purchase["cost_multiplier"],
-                        "source": "options.feature_options.feature_multipliers",
+                        "source": (
+                            "init.feature_multipliers+client"
+                            if client_observed
+                            else "options.feature_options.feature_multipliers"
+                        ),
                     }
                 )
 
@@ -409,10 +442,14 @@ class BGamingExecutionMixin:
                 )
             )
             for purchase in purchase_modes:
+                purchase_name = str(purchase["name"])
+                mode_id = f"PURCHASE_{purchase_name.upper()}"
+                executable = mode_id not in pending_actions
                 progress(
-                    f"[{game.name}] COMPRA detectada: {purchase['name']} "
+                    f"[{game.name}] COMPRA detectada: {purchase_name} "
                     f"x{_fmt_number(purchase.get('cost_multiplier'))} de la apuesta base "
-                    f"(source={purchase.get('base_source') or 'unknown'})."
+                    f"(source={purchase.get('base_source') or 'unknown'}, "
+                    f"wire={'ejecutable' if executable else 'sin contrato cliente'})."
                 )
         except Exception as exc:
             message = sanitize_error_text(f"{type(exc).__name__}: {exc}")
