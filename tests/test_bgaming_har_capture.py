@@ -10,12 +10,14 @@ from unittest.mock import patch
 from tester_spin.models import Game
 from tester_spin.providers.bgaming import BGamingProvider
 from tester_spin.providers.bgaming.har_capture import (
+    HARCaptureResult,
     _is_bgaming_state_post,
     _request_payload_shape,
     append_har_debug,
     ensure_analysis_har,
     find_existing_har,
 )
+from tester_spin.providers.bgaming.har_select import inspect_har
 
 
 class BGamingHARCaptureTests(unittest.TestCase):
@@ -48,7 +50,7 @@ class BGamingHARCaptureTests(unittest.TestCase):
             self.assertTrue(debug.is_file())
             self.assertIn("reuse_existing_har", debug.read_text(encoding="utf-8"))
 
-    def test_provider_suite_hook_skips_existing_har_before_network(self) -> None:
+    def test_provider_suite_hook_skips_existing_manual_har_before_network(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             provider = BGamingProvider(Path(temp))
             game = Game(
@@ -71,8 +73,107 @@ class BGamingHARCaptureTests(unittest.TestCase):
                 )
 
             new_session.assert_not_called()
-            self.assertTrue(any("captura omitida" in line for line in logs))
+            self.assertTrue(any("no se sobrescribe" in line for line in logs))
             self.assertEqual(provider.har_artifact_dir(game), game_dir)
+
+    def test_provider_retries_bootstrap_only_automatic_har(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            provider = BGamingProvider(Path(temp))
+            game = Game(
+                provider="bgaming",
+                slug="game",
+                name="Game",
+                url="https://demo.bgaming-network.com/games/Game/FUN",
+            )
+            game_dir = provider.game_dir(game)
+            analysis = game_dir / "analysis"
+            analysis.mkdir(parents=True)
+            automatic = analysis / "browser.har"
+            automatic.write_text(
+                json.dumps(
+                    {
+                        "log": {
+                            "entries": [
+                                {
+                                    "request": {
+                                        "method": "POST",
+                                        "url": "https://demo.bgaming-network.com/api/Game/session",
+                                        "postData": {
+                                            "text": json.dumps({"command": "init"})
+                                        },
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            self.assertEqual(inspect_har(automatic).grade, "HAR_BOOTSTRAP_ONLY")
+            logs: list[str] = []
+
+            class Session:
+                def close(self) -> None:
+                    return None
+
+            def fake_ensure(**kwargs):
+                self.assertFalse(automatic.exists())
+                target = kwargs["game_dir"] / "analysis" / "browser.har"
+                target.write_text(
+                    json.dumps(
+                        {
+                            "log": {
+                                "entries": [
+                                    {
+                                        "request": {
+                                            "method": "POST",
+                                            "url": "https://demo.bgaming-network.com/api/Game/session",
+                                            "postData": {
+                                                "text": json.dumps(
+                                                    {
+                                                        "command": "spin",
+                                                        "options": {"bet": 1},
+                                                    }
+                                                )
+                                            },
+                                        }
+                                    }
+                                ]
+                            }
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                return HARCaptureResult(
+                    path=target,
+                    captured=True,
+                    skipped=False,
+                    post_requests=1,
+                )
+
+            with (
+                patch.object(provider, "_new_session", return_value=Session()),
+                patch(
+                    "tester_spin.providers.bgaming.ensure_analysis_har",
+                    side_effect=fake_ensure,
+                ) as ensure,
+            ):
+                provider.prepare_test_artifacts(
+                    game,
+                    timeout_s=10,
+                    stop_event=threading.Event(),
+                    progress=logs.append,
+                )
+
+            ensure.assert_called_once()
+            self.assertTrue(automatic.is_file())
+            self.assertFalse((analysis / "browser.bootstrap-only.bak").exists())
+            quality = inspect_har(automatic)
+            self.assertIsNotNone(quality)
+            self.assertTrue(quality.protocol_usable)
+            self.assertEqual(quality.grade, "HAR_WITH_PLAY")
+            self.assertTrue(any("reintentando captura" in line for line in logs))
+            self.assertTrue(any("HAR listo para protocolo" in line for line in logs))
 
     def test_provider_har_folder_falls_back_to_analysis_diagnostics(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
