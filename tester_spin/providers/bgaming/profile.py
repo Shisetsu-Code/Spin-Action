@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from tester_spin.providers.bgaming.contracts import SAFE_CONTINUATION_COMMANDS
 from tester_spin.providers.bgaming.runtime import (
     BGamingRuntime,
     discover_api_v2_wire_profile,
@@ -23,20 +24,6 @@ LEGACY_LINES = "legacy-lines"
 HYPERHIVE = "hyperhive-jsonrpc"
 SWITCHABLE = "switchable-container"
 UNKNOWN = "unknown"
-
-# Only continuation commands with a parameterless wire shape already observed in
-# BGaming captures are eligible for automatic execution. This is provider-level
-# protocol knowledge, never a per-game allowlist.
-SAFE_CONTINUATION_COMMANDS = frozenset(
-    {
-        "freespin",
-        "respin",
-        "play_bonus",
-        "play_preselection_game",
-        "close",
-    }
-)
-
 
 @dataclass(slots=True)
 class RuntimeClassification:
