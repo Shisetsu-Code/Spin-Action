@@ -720,7 +720,7 @@ def run_hyperhive_test(
                 attempts.append(
                     SpinAttempt(
                         number=repetition,
-                        ok=True,
+                        ok=validated,
                         mode_id=mode_id,
                         mode_kind=kind,
                         status_code=last_status,
