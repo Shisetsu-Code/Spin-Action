@@ -612,12 +612,11 @@ class BGamingExecutionMixin:
                             )
                             validated = terminal and not warnings
                             if (
-                                validated
-                                and mode_id == "SPIN"
+                                mode_id == "SPIN"
                                 and active_profile is not None
-                                and not active_profile.validated
+                                and active_profile.validated != validated
                             ):
-                                active_profile.validated = True
+                                active_profile.validated = validated
                                 save_profile(game_json, active_profile)
                             successes += int(validated)
                             global_warnings.extend(warnings)
@@ -916,12 +915,11 @@ class BGamingExecutionMixin:
 
                         validated = terminal and not warnings
                         if (
-                            validated
-                            and mode_id == "SPIN"
+                            mode_id == "SPIN"
                             and active_profile is not None
-                            and not active_profile.validated
+                            and active_profile.validated != validated
                         ):
-                            active_profile.validated = True
+                            active_profile.validated = validated
                             save_profile(game_json, active_profile)
                         successes += int(validated)
                         global_warnings.extend(warnings)
