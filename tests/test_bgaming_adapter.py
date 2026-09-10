@@ -120,6 +120,129 @@ class BGamingAdapterContractTests(unittest.TestCase):
                 {"bet": 100, "mode": "60"},
             )
 
+    def test_unreported_purchase_cost_is_learned_from_remote_balance(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            provider = BGamingProvider(Path(temp))
+            game = Game(
+                provider="bgaming",
+                slug="generic-purchase-slot",
+                name="Generic Purchase Slot",
+                url="https://demo.bgaming-network.com/play/GenericPurchase/FUN?server=demo",
+            )
+            session = requests.Session()
+            runtime = BGamingRuntime(
+                session=session,
+                launch_url="https://demo.bgaming-network.com/games/GenericPurchase/FUN",
+                api_url="https://demo.bgaming-network.com/api/GenericPurchase/1/session",
+                identifier="GenericPurchase",
+                csrf_header_name="X-CSRF-Token",
+                csrf_header_value="secret",
+                options={},
+                round_series_id=1,
+            )
+            init = {
+                "api_version": "2",
+                "options": {
+                    "default_bet": 100,
+                    "layout": {"reels": 5, "rows": 3},
+                    "feature_options": {
+                        "feature_multipliers": {"bonus_buy": 2000},
+                        "disabled_features": [],
+                    },
+                },
+                "balance": {"wallet": 100000, "game": 0},
+                "flow": {
+                    "command": "init",
+                    "state": "ready",
+                    "available_actions": ["init", "spin"],
+                },
+            }
+            base_spin = {
+                "api_version": "2",
+                "outcome": {
+                    "screen": [["1", "2", "3"]] * 5,
+                    "bet": 100,
+                    "win": 0,
+                },
+                "balance": {"wallet": 99900, "game": 0},
+                "flow": {
+                    "round_id": 1,
+                    "last_action_id": "1_1",
+                    "command": "spin",
+                    "state": "closed",
+                    "available_actions": ["init", "spin"],
+                },
+            }
+            purchase_spin = {
+                "api_version": "2",
+                "outcome": {
+                    "screen": [["1", "2", "3"]] * 5,
+                    "bet": 100,
+                    "win": 0,
+                },
+                "balance": {"wallet": 94900, "game": 0},
+                "flow": {
+                    "round_id": 2,
+                    "last_action_id": "2_1",
+                    "command": "spin",
+                    "state": "closed",
+                    "available_actions": ["init", "spin"],
+                    "purchased_feature": {"name": "bonus_buy"},
+                },
+            }
+            spin_count = 0
+
+            def fake_post(_runtime, command, **kwargs):
+                nonlocal spin_count
+                if command == "init":
+                    return Response(), {"command": "init"}, init
+                spin_count += 1
+                payload = {
+                    "command": "spin",
+                    "options": dict(kwargs.get("options") or {}),
+                }
+                return (
+                    Response(),
+                    payload,
+                    base_spin if spin_count == 1 else purchase_spin,
+                )
+
+            with (
+                patch.object(provider, "_new_session", return_value=session),
+                patch(
+                    "tester_spin.providers.bgaming.execution.bootstrap_game",
+                    return_value=runtime,
+                ),
+                patch(
+                    "tester_spin.providers.bgaming.execution.discover_profile",
+                    return_value=BGamingProfile(
+                        family=API_V2,
+                        confidence=1.0,
+                        source="init",
+                    ),
+                ),
+                patch(
+                    "tester_spin.providers.bgaming.execution.post_command",
+                    side_effect=fake_post,
+                ),
+            ):
+                result = provider.test_game(
+                    game,
+                    spins=1,
+                    timeout_s=5,
+                    stop_event=threading.Event(),
+                    progress=lambda _message: None,
+                )
+
+            self.assertEqual(result.status, "OK")
+            self.assertEqual(result.successful_spins, 2)
+            purchase = next(
+                mode for mode in result.discovered_modes
+                if mode["id"] == "PURCHASE_BONUS_BUY"
+            )
+            self.assertEqual(purchase["cost_multiplier"], 50.0)
+            self.assertEqual(purchase["cost_source"], "observed_balance_delta")
+
     def test_unexplained_bet_translation_cannot_be_ok(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             provider = BGamingProvider(Path(temp))
