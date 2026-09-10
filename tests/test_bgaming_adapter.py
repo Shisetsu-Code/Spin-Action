@@ -91,15 +91,15 @@ class BGamingAdapterContractTests(unittest.TestCase):
             with (
                 patch.object(provider, "_new_session", return_value=session),
                 patch(
-                    "tester_spin.providers.bgaming.adapter.bootstrap_game",
+                    "tester_spin.providers.bgaming.execution.bootstrap_game",
                     return_value=runtime,
                 ),
                 patch(
-                    "tester_spin.providers.bgaming.adapter.discover_profile",
+                    "tester_spin.providers.bgaming.execution.discover_profile",
                     return_value=profile,
                 ),
                 patch(
-                    "tester_spin.providers.bgaming.adapter.post_command",
+                    "tester_spin.providers.bgaming.execution.post_command",
                     side_effect=fake_post,
                 ),
             ):
@@ -178,11 +178,11 @@ class BGamingAdapterContractTests(unittest.TestCase):
             with (
                 patch.object(provider, "_new_session", return_value=session),
                 patch(
-                    "tester_spin.providers.bgaming.adapter.bootstrap_game",
+                    "tester_spin.providers.bgaming.execution.bootstrap_game",
                     return_value=runtime,
                 ),
                 patch(
-                    "tester_spin.providers.bgaming.adapter.discover_profile",
+                    "tester_spin.providers.bgaming.execution.discover_profile",
                     return_value=BGamingProfile(
                         family=API_V2,
                         confidence=1.0,
@@ -190,7 +190,7 @@ class BGamingAdapterContractTests(unittest.TestCase):
                     ),
                 ),
                 patch(
-                    "tester_spin.providers.bgaming.adapter.post_command",
+                    "tester_spin.providers.bgaming.execution.post_command",
                     side_effect=fake_post,
                 ),
             ):
