@@ -18,19 +18,27 @@ from tester_spin.providers.bgaming.catalog import (
     filter_records_by_game_type,
     parse_catalog_html,
 )
-from tester_spin.providers.bgaming.hyperhive import (
-    is_hyperhive_runtime,
-    run_hyperhive_test,
+from tester_spin.providers.bgaming.hyperhive import run_hyperhive_test
+from tester_spin.providers.bgaming.profile import (
+    API_V2,
+    HYPERHIVE,
+    LEGACY_LINES,
+    SWITCHABLE,
+    UNKNOWN,
+    BGamingProfile,
+    classify_runtime,
+    discover_profile,
+    load_profile,
+    profile_fingerprint,
+    save_profile,
 )
 from tester_spin.providers.bgaming.runtime import (
     balance_total,
     bootstrap_game,
     build_line_bets,
-    discover_api_v2_wire_profile,
     discover_purchase_modes,
     flow_continuation_command,
     is_line_bet_init,
-    is_switchable_container_init,
     line_bet_count,
     pending_flow_actions,
     post_command,
@@ -120,7 +128,7 @@ class BGamingProvider(ProviderAdapter):
             "game_type": record.game_type,
             "availability": record.availability,
             "catalog_transport": "wordpress_rest_html",
-            "runtime_transport": "http_json_api_v2",
+            "runtime_transport": "unknown",
         }
 
     def _persist_game_catalog_metadata(self, record: BGamingCatalogRecord) -> None:
@@ -409,6 +417,9 @@ class BGamingProvider(ProviderAdapter):
             )
 
         session = self._new_session()
+        game_json = self.game_dir(game) / "game.json"
+        persisted_profile = load_profile(game_json)
+        active_profile: BGamingProfile | None = None
         runtime = None
         init_data: dict[str, Any] = {}
         default_bet: int | float | None = None
@@ -451,22 +462,38 @@ class BGamingProvider(ProviderAdapter):
                 },
             )
 
-            if is_hyperhive_runtime(runtime):
-                progress(
-                    f"[{game.name}] runtime HyperHive detectado; "
-                    "cambiando a JSON-RPC /api."
-                )
-                return run_hyperhive_test(
-                    game=game,
-                    runtime=runtime,
-                    spins=repetitions,
+            bootstrap_classification = classify_runtime(runtime)
+            if bootstrap_classification.family == HYPERHIVE:
+                active_profile = discover_profile(
+                    runtime,
+                    {},
                     timeout_s=timeout_s,
-                    stop_event=stop_event,
-                    progress=progress,
-                    run_dir=run_dir,
-                    started_iso=started_iso,
-                    started_monotonic=started,
+                    persisted=persisted_profile,
                 )
+                save_profile(game_json, active_profile)
+                progress(
+                    f"[{game.name}] runtime={active_profile.family} "
+                    f"confidence={active_profile.confidence:.2f}; "
+                    "cambiando a executor JSON-RPC."
+                )
+                try:
+                    result = run_hyperhive_test(
+                        game=game,
+                        runtime=runtime,
+                        spins=repetitions,
+                        timeout_s=timeout_s,
+                        stop_event=stop_event,
+                        progress=progress,
+                        run_dir=run_dir,
+                        started_iso=started_iso,
+                        started_monotonic=started,
+                    )
+                    if result.status == "OK":
+                        active_profile.validated = True
+                        save_profile(game_json, active_profile)
+                    return result
+                finally:
+                    session.close()
 
             _init_response, init_request, init_data = post_command(
                 runtime,
@@ -476,22 +503,49 @@ class BGamingProvider(ProviderAdapter):
             self._write_json(run_dir / "init-request.json", init_request)
             self._write_json(run_dir / "init-response.json", init_data)
 
-            if is_switchable_container_init(init_data):
+            active_profile = discover_profile(
+                runtime,
+                init_data,
+                timeout_s=timeout_s,
+                persisted=persisted_profile,
+            )
+            save_profile(game_json, active_profile)
+            progress(
+                f"[{game.name}] perfil BGaming: family={active_profile.family}, "
+                f"confidence={active_profile.confidence:.2f}, "
+                f"source={active_profile.source or '—'}, "
+                f"fingerprint={profile_fingerprint(active_profile)}."
+            )
+
+            if active_profile.family == SWITCHABLE:
                 progress(
-                    f"[{game.name}] init de contenedor detectado; "
-                    "descubriendo variantes apostables."
+                    f"[{game.name}] contenedor switchable confirmado por múltiples "
+                    "señales; cambiando a executor de variantes."
                 )
-                return run_switchable_container_test(
-                    game=game,
-                    runtime=runtime,
-                    initial_data=init_data,
-                    spins=repetitions,
-                    timeout_s=timeout_s,
-                    stop_event=stop_event,
-                    progress=progress,
-                    run_dir=run_dir,
-                    started_iso=started_iso,
-                    started_monotonic=started,
+                try:
+                    result = run_switchable_container_test(
+                        game=game,
+                        runtime=runtime,
+                        initial_data=init_data,
+                        spins=repetitions,
+                        timeout_s=timeout_s,
+                        stop_event=stop_event,
+                        progress=progress,
+                        run_dir=run_dir,
+                        started_iso=started_iso,
+                        started_monotonic=started,
+                    )
+                    if result.status == "OK":
+                        active_profile.validated = True
+                        save_profile(game_json, active_profile)
+                    return result
+                finally:
+                    session.close()
+
+            if active_profile.family == UNKNOWN:
+                raise ValueError(
+                    "BGaming: runtime no clasificado con evidencia suficiente; "
+                    "RAW preservado sin ejecutar comandos de juego."
                 )
 
             init_warnings = validate_init(init_data)
@@ -511,18 +565,24 @@ class BGamingProvider(ProviderAdapter):
                     except (TypeError, ValueError):
                         expected_rows = None
 
-            name_lower = game.name.casefold()
-            variable_layout = (
-                (expected_rows or 0) >= 7
-                or "megaways" in name_lower
-                or "trueways" in name_lower
+            variable_layout = bool(
+                active_profile.variable_layout if active_profile is not None else False
             )
 
             if not isinstance(default_bet, (int, float)):
                 raise ValueError("BGaming init no entregó una apuesta utilizable.")
 
-            legacy_line_bets = is_line_bet_init(init_data)
-            legacy_line_count = line_bet_count(init_data)
+            legacy_line_bets = (
+                active_profile is not None and active_profile.family == LEGACY_LINES
+            )
+            legacy_line_count = (
+                active_profile.line_count
+                if active_profile is not None and active_profile.line_count
+                else line_bet_count(init_data)
+            )
+            if active_profile is not None and active_profile.family == API_V2:
+                learned_wire_options.update(active_profile.spin_options)
+                rows_required = active_profile.rows_required
             if legacy_line_bets:
                 bet_source = f"line_bets:{legacy_line_count} líneas"
                 variable_layout = False
@@ -571,7 +631,7 @@ class BGamingProvider(ProviderAdapter):
                 f"bet={default_bet} ({bet_source or 'unknown'}), "
                 f"layout={expected_reels or '?'}x{expected_rows or '?'}, "
                 f"balance_total={previous_total if previous_total is not None else '—'}, "
-                f"perfil={'line-bets' if legacy_line_bets else 'api-v2'}, "
+                f"perfil={active_profile.family if active_profile is not None else 'unknown'}, "
                 f"compras={len(purchase_modes)}"
                 + (
                     f", warnings={len(init_warnings)}"
@@ -634,14 +694,20 @@ class BGamingProvider(ProviderAdapter):
                 if status != 422 or legacy_line_bets:
                     raise
 
+                if active_profile is not None:
+                    active_profile.validated = False
+                    save_profile(game_json, active_profile)
+
                 if not api_profile_checked:
                     api_profile_checked = True
-                    profile = discover_api_v2_wire_profile(
+                    refreshed = discover_profile(
                         runtime,
+                        init_data,
                         timeout_s=timeout_s,
+                        persisted=None,
                     )
-                    profile_options = profile.get("spin_options")
-                    if isinstance(profile_options, dict) and profile_options:
+                    profile_options = refreshed.spin_options
+                    if profile_options:
                         missing = {
                             key: value
                             for key, value in profile_options.items()
@@ -658,8 +724,8 @@ class BGamingProvider(ProviderAdapter):
                             )
                             retry_options.update(missing)
                             progress(
-                                f"[{game.name}] HTTP 422: perfil wire del bundle "
-                                f"detectado → {missing!r}; reintentando {command}."
+                                f"[{game.name}] HTTP 422: perfil wire redescubierto "
+                                f"→ {missing!r}; reintentando {command} una vez."
                             )
                             try:
                                 result = post_command(
@@ -677,8 +743,13 @@ class BGamingProvider(ProviderAdapter):
                                     raise
                             else:
                                 learned_wire_options.update(missing)
+                                if active_profile is not None:
+                                    active_profile.spin_options.update(missing)
+                                    active_profile.source = refreshed.source
+                                    active_profile.bundle_sha256 = refreshed.bundle_sha256
+                                    save_profile(game_json, active_profile)
                                 progress(
-                                    f"[{game.name}] Perfil API aprendido desde bundle: "
+                                    f"[{game.name}] Perfil API actualizado: "
                                     f"{learned_wire_options!r}."
                                 )
                                 return result
@@ -712,6 +783,9 @@ class BGamingProvider(ProviderAdapter):
                     extra_data=extra_data_payload,
                 )
                 rows_required = True
+                if active_profile is not None:
+                    active_profile.rows_required = True
+                    save_profile(game_json, active_profile)
                 progress(
                     f"[{game.name}] Perfil API aprendido: "
                     f"rows={expected_rows} requerido en comandos de juego."
@@ -837,6 +911,14 @@ class BGamingProvider(ProviderAdapter):
                                 proof,
                             )
                             validated = terminal and not warnings
+                            if (
+                                validated
+                                and mode_id == "SPIN"
+                                and active_profile is not None
+                                and not active_profile.validated
+                            ):
+                                active_profile.validated = True
+                                save_profile(game_json, active_profile)
                             successes += int(validated)
                             global_warnings.extend(warnings)
                             elapsed_ms = (
@@ -845,7 +927,7 @@ class BGamingProvider(ProviderAdapter):
                             attempts.append(
                                 SpinAttempt(
                                     number=repetition,
-                                    ok=True,
+                                    ok=validated,
                                     mode_id=mode_id,
                                     mode_kind=mode_kind,
                                     status_code=last_status_code,
@@ -885,7 +967,6 @@ class BGamingProvider(ProviderAdapter):
                                 command="spin",
                                 expected_debit=expected_debit,
                                 variable_layout=variable_layout,
-                                trust_returned_bet=(purchase is None),
                             )
                         )
 
@@ -1134,6 +1215,14 @@ class BGamingProvider(ProviderAdapter):
                             )
 
                         validated = terminal and not warnings
+                        if (
+                            validated
+                            and mode_id == "SPIN"
+                            and active_profile is not None
+                            and not active_profile.validated
+                        ):
+                            active_profile.validated = True
+                            save_profile(game_json, active_profile)
                         successes += int(validated)
                         global_warnings.extend(warnings)
 
@@ -1145,7 +1234,7 @@ class BGamingProvider(ProviderAdapter):
                         attempts.append(
                             SpinAttempt(
                                 number=repetition,
-                                ok=first_response_received,
+                                ok=validated,
                                 mode_id=mode_id,
                                 mode_kind=mode_kind,
                                 status_code=last_status_code,
@@ -1269,7 +1358,7 @@ class BGamingProvider(ProviderAdapter):
             status = "ERROR"
             error = errors[0] if errors else "No se completó ninguna tirada BGaming."
 
-        return GameTestResult(
+        result = GameTestResult(
             provider=self.key,
             slug=game.slug,
             game_name=game.name,
@@ -1287,4 +1376,6 @@ class BGamingProvider(ProviderAdapter):
             run_dir=str(run_dir),
             attempts=attempts,
         )
+        session.close()
+        return result
 
