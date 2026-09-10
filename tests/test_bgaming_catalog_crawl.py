@@ -85,7 +85,7 @@ class BGamingCatalogCrawlTests(unittest.TestCase):
                 )
             self.assertEqual([game.slug for game in games], ["one"])
             self.assertFalse(provider.catalog_crawl_authoritative)
-            self.assertIn("falló página REST 2", provider.catalog_authority_reason)
+            self.assertIn("falló página REST 2", provider.catalog_crawl_reason)
 
     def test_reported_page_mismatch_is_non_authoritative(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -110,7 +110,7 @@ class BGamingCatalogCrawlTests(unittest.TestCase):
                     max_pages=10,
                 )
             self.assertFalse(provider.catalog_crawl_authoritative)
-            self.assertIn("página REST 2", provider.catalog_authority_reason)
+            self.assertIn("página REST 2", provider.catalog_crawl_reason)
 
     def test_total_must_remain_stable_across_pages(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -144,7 +144,7 @@ class BGamingCatalogCrawlTests(unittest.TestCase):
                 )
             self.assertEqual([game.slug for game in games], ["one", "two"])
             self.assertFalse(provider.catalog_crawl_authoritative)
-            self.assertIn("total REST cambió", provider.catalog_authority_reason)
+            self.assertIn("total REST cambió", provider.catalog_crawl_reason)
 
     def test_manual_page_limit_is_never_authoritative(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
