@@ -981,6 +981,36 @@ def pending_flow_actions(data: dict[str, Any]) -> list[str]:
     return sorted(actions - handled)
 
 
+def provider_error_envelope(data: dict[str, Any]) -> Any | None:
+    """Return a sanitized provider error envelope, if present."""
+    if not isinstance(data, dict) or "errors" not in data:
+        return None
+    errors = data.get("errors")
+    if errors in (None, [], {}, ""):
+        return None
+    return sanitize_options(errors)
+
+
+def http_error_evidence(response: requests.Response | None) -> dict[str, Any]:
+    """Capture bounded, sanitized HTTP failure evidence for protocol learning."""
+    if response is None:
+        return {"status": None}
+    evidence: dict[str, Any] = {
+        "status": int(getattr(response, "status_code", 0) or 0),
+        "content_type": str(response.headers.get("Content-Type") or ""),
+    }
+    try:
+        payload = response.json()
+    except Exception:
+        payload = None
+    if payload is not None:
+        evidence["json"] = sanitize_options(payload)
+    else:
+        evidence["text"] = sanitize_error_text(
+            str(getattr(response, "text", "") or "")
+        )[:4000]
+    return evidence
+
 def runtime_shape_summary(data: dict[str, Any]) -> dict[str, Any]:
     """Return a value-free structural map for unknown BGaming runtimes."""
     summary: dict[str, Any] = {
