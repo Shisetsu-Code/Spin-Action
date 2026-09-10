@@ -46,6 +46,7 @@ from tester_spin.providers.bgaming.runtime import (
     purchase_expected_debit,
     purchase_names_equivalent,
     resolve_base_bet,
+    resolve_fresh_demo_url,
     sanitize_error_text,
     sanitize_options,
     sanitize_session_url,
@@ -412,26 +413,47 @@ class BGamingProvider(ProviderAdapter):
         pending_actions: set[str] = set()
         previous_remote_identity: tuple[Any, Any, str] | None = None
 
-        if not self._looks_like_demo_url(game.url):
-            elapsed = (time.monotonic() - started) * 1000.0
-            return GameTestResult(
-                provider=self.key,
-                slug=game.slug,
-                game_name=game.name,
-                game_url=game.url,
-                requested_spins=repetitions,
-                successful_spins=0,
-                failed_spins=repetitions,
-                status="SIN_DEMO",
-                symbol=game.symbol,
-                started_at=started_iso,
-                finished_at=utc_now_iso(),
-                elapsed_ms=elapsed,
-                error="BGaming: juego catalogado sin Play Demo observado.",
-                run_dir=str(run_dir),
-            )
-
         session = self._new_session()
+        execution_url = game.url
+        if not self._looks_like_demo_url(execution_url):
+            try:
+                fresh_demo_url = resolve_fresh_demo_url(
+                    session,
+                    execution_url,
+                    timeout_s=timeout_s,
+                )
+            except Exception as exc:
+                fresh_demo_url = ""
+                progress(
+                    f"[{game.name}] resolución demo BGaming: "
+                    f"{sanitize_error_text(f'{type(exc).__name__}: {exc}')}"
+                )
+            if fresh_demo_url:
+                execution_url = fresh_demo_url
+                progress(
+                    f"[{game.name}] demo efímero resuelto en memoria; "
+                    "credenciales de sesión no se persistirán."
+                )
+            else:
+                session.close()
+                elapsed = (time.monotonic() - started) * 1000.0
+                return GameTestResult(
+                    provider=self.key,
+                    slug=game.slug,
+                    game_name=game.name,
+                    game_url=game.url,
+                    requested_spins=repetitions,
+                    successful_spins=0,
+                    failed_spins=repetitions,
+                    status="SIN_DEMO",
+                    symbol=game.symbol,
+                    started_at=started_iso,
+                    finished_at=utc_now_iso(),
+                    elapsed_ms=elapsed,
+                    error="BGaming: juego catalogado sin Play Demo resoluble.",
+                    run_dir=str(run_dir),
+                )
+
         game_json = self.game_dir(game) / "game.json"
         persisted_profile = load_profile(game_json)
         active_profile: BGamingProfile | None = None
@@ -463,7 +485,7 @@ class BGamingProvider(ProviderAdapter):
             progress(
                 f"[{game.name}] BGaming: bootstrap HTML → window.__OPTIONS__ → init API v2."
             )
-            runtime = bootstrap_game(session, game.url, timeout_s=timeout_s)
+            runtime = bootstrap_game(session, execution_url, timeout_s=timeout_s)
             game.symbol = runtime.identifier
 
             self._write_json(
