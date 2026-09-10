@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import re
+import threading
 from decimal import Decimal, InvalidOperation
 
 
-# BGaming demo/FUN endpoints expose monetary amounts in minor units.  The UI
-# displays two decimal places (100000 backend units == 1000.00 FUN).  Protocol
+# BGaming demo/FUN endpoints expose monetary amounts in minor units. The UI
+# displays two decimal places (100000 backend units == 1000.00 FUN). Protocol
 # calculations intentionally stay in raw units; this module is presentation only.
 _FUN_SCALE = Decimal("100")
 _AMOUNT = re.compile(
@@ -14,6 +15,8 @@ _AMOUNT = re.compile(
     r"(?!\s*FUN\b)",
     re.IGNORECASE,
 )
+_install_lock = threading.Lock()
+_installed = False
 
 
 def _human_amount(raw_text: str) -> str:
@@ -27,7 +30,7 @@ def _human_amount(raw_text: str) -> str:
 def humanize_bgaming_progress(message: str) -> str:
     """Render backend minor units as FUN while retaining their raw value.
 
-    This changes only user-facing progress strings.  Saved protocol artifacts,
+    This changes only user-facing progress strings. Saved protocol artifacts,
     validation, balance deltas and multiplier calculations keep the exact raw
     values returned by BGaming.
     """
@@ -39,4 +42,28 @@ def humanize_bgaming_progress(message: str) -> str:
     return _AMOUNT.sub(replace, text)
 
 
-__all__ = ["humanize_bgaming_progress"]
+def install_money_display_adapter() -> None:
+    """Normalize only progress output at the BGaming provider boundary."""
+    global _installed
+    with _install_lock:
+        if _installed:
+            return
+
+        from tester_spin.providers.bgaming.adapter import BGamingProvider as BaseBGamingProvider
+
+        original_test_game = BaseBGamingProvider.test_game
+
+        def money_display_test_game(self, game, **kwargs):
+            raw_progress = kwargs.get("progress")
+            if callable(raw_progress):
+                def display_progress(message: str) -> None:
+                    raw_progress(humanize_bgaming_progress(str(message)))
+
+                kwargs["progress"] = display_progress
+            return original_test_game(self, game, **kwargs)
+
+        BaseBGamingProvider.test_game = money_display_test_game
+        _installed = True
+
+
+__all__ = ["humanize_bgaming_progress", "install_money_display_adapter"]
