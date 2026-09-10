@@ -288,6 +288,28 @@ def discover_profile(
     options = wire.get("spin_options")
     if isinstance(options, dict):
         profile.spin_options.update(options)
+
+    required_fields = wire.get("required_option_fields")
+    init_options = init_data.get("options")
+    init_layout = (
+        init_options.get("layout")
+        if isinstance(init_options, dict)
+        else None
+    )
+    if isinstance(required_fields, list) and isinstance(init_options, dict):
+        for raw_field in required_fields:
+            field = str(raw_field or "").strip()
+            if not field or field in profile.spin_options:
+                continue
+            value = init_options.get(field)
+            if value is None and isinstance(init_layout, dict):
+                value = init_layout.get(field)
+            if isinstance(value, (str, int, float, bool)):
+                profile.spin_options[field] = value
+                profile.evidence.append(
+                    f"client.additionalSpinOptions.{field}"
+                )
+
     purchase_features = wire.get("purchase_features")
     if isinstance(purchase_features, list):
         profile.purchase_features = sorted(
