@@ -213,12 +213,19 @@ def _download_engine_contract(
 
 
 def _hyperhive_rpc_id(engine_contract: str) -> int | str:
+    """Use the provider's observed RPC id convention.
+
+    Historical HyperHive traffic used UUID ids by default. Some newer clients,
+    such as the Big Bucks family, explicitly serialize id=0. Only explicit
+    zero-id evidence overrides the UUID baseline.
+    """
+    text = engine_contract or ""
     if re.search(
-        r'id:[A-Za-z_$][A-Za-z0-9_$]*\(\),jsonrpc:["\']2\.0["\']',
-        engine_contract,
+        r'(?:\bid\s*:\s*0\s*,\s*jsonrpc|["\']id["\']\s*:\s*0|\.id\s*=\s*0)',
+        text,
     ):
-        return str(uuid.uuid4())
-    return 0
+        return 0
+    return str(uuid.uuid4())
 
 
 def _pz_custom_req(
@@ -296,20 +303,40 @@ def discover_modes_from_bundle(
         else bundle_text
     )
     combined = bundle + "\n" + engine_contract
-    bet_type_values = {
+    scoped_bet_types = {
         value.casefold()
         for value in _request_literal_assignments(combined, "bet_type")
     }
-    # freebet is a conditional mode, not the ordinary paid spin contract.
-    normal_bet_types = bet_type_values - {"freebet"}
-    if "betting" in normal_bet_types:
+    loose_bet_types = {
+        value.casefold()
+        for value in _literal_assignments(combined, "bet_type")
+    }
+    has_req_bet_contract = _has_request_bet_contract(combined)
+
+    normal_scoped = scoped_bet_types - {"freebet"}
+    normal_loose = loose_bet_types - {"freebet"}
+    if "betting" in normal_scoped:
         bet_type = "betting"
-    elif "bet" in normal_bet_types:
+    elif "bet" in normal_scoped:
         bet_type = "bet"
-    elif len(normal_bet_types) == 1:
-        bet_type = next(iter(normal_bet_types))
-    else:
+    elif len(normal_scoped) == 1:
+        bet_type = next(iter(normal_scoped))
+    elif "betting" in normal_loose:
+        bet_type = "betting"
+    elif "bet" in normal_loose:
+        bet_type = "bet"
+    elif len(normal_loose) == 1:
+        bet_type = next(iter(normal_loose))
+    elif (
+        "freebet" in scoped_bet_types | loose_bet_types
+        and has_req_bet_contract
+    ):
+        # Client proves that bet_type is conditional and used only for freebet.
         bet_type = ""
+    else:
+        # Historical provider baseline that produced valid HTTP 200 plays on
+        # classic HyperHive titles.
+        bet_type = "bet"
 
     action_vocabulary = discover_action_vocabulary(bundle, engine_contract)
     request_actions = {
@@ -319,7 +346,15 @@ def discover_modes_from_bundle(
     spin_request: dict[str, Any] = {}
     if bet_type:
         spin_request["bet_type"] = bet_type
-    if "spin" in request_actions:
+
+    loose_spin_is_contractual = bool(
+        "spin" in action_vocabulary
+        and (
+            "jsonrpc" in combined.casefold()
+            or re.search(r'method\s*:\s*["\']play["\']', combined)
+        )
+    )
+    if "spin" in request_actions or loose_spin_is_contractual:
         spin_request["action"] = "spin"
 
     custom_req_profile = (
@@ -331,7 +366,6 @@ def discover_modes_from_bundle(
         )
         else ""
     )
-    has_req_bet_contract = _has_request_bet_contract(combined)
     explicit_base_contract = bool(
         custom_req_profile
         or has_req_bet_contract
