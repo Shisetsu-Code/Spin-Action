@@ -31,11 +31,13 @@ from tester_spin.providers.bgaming.runtime import (
     build_line_bets,
     discover_purchase_modes,
     flow_continuation_command,
+    http_error_evidence,
     is_line_bet_init,
     line_bet_count,
     pending_flow_actions,
     post_command,
     preselection_multiplier,
+    provider_error_envelope,
     purchase_expected_debit,
     purchase_names_equivalent,
     resolve_base_bet,
@@ -292,6 +294,75 @@ class BGamingExecutionMixin:
             )
             _write_json(run_dir / "init-request.json", init_request)
             _write_json(run_dir / "init-response.json", init_data)
+
+            init_errors = provider_error_envelope(init_data)
+            if init_errors is not None:
+                _write_json(run_dir / "init-provider-error.json", init_errors)
+                progress(
+                    f"[{game.name}] init devolvió errors; renovando launch/sesión "
+                    "una vez antes de clasificar runtime."
+                )
+                recovered = False
+                if public_url:
+                    recovery_session = self._new_session()
+                    try:
+                        fresh_demo_url = resolve_fresh_demo_url(
+                            recovery_session,
+                            public_url,
+                            timeout_s=timeout_s,
+                        )
+                        if fresh_demo_url:
+                            recovered_runtime = bootstrap_game(
+                                recovery_session,
+                                fresh_demo_url,
+                                timeout_s=timeout_s,
+                            )
+                            (
+                                _recovery_response,
+                                recovery_request,
+                                recovery_data,
+                            ) = post_command(
+                                recovered_runtime,
+                                "init",
+                                timeout_s=timeout_s,
+                            )
+                            _write_json(
+                                run_dir / "init-recovery-request.json",
+                                recovery_request,
+                            )
+                            _write_json(
+                                run_dir / "init-recovery-response.json",
+                                recovery_data,
+                            )
+                            if provider_error_envelope(recovery_data) is None:
+                                old_session = session
+                                session = recovery_session
+                                runtime = recovered_runtime
+                                execution_url = fresh_demo_url
+                                init_data = recovery_data
+                                old_session.close()
+                                recovered = True
+                    except Exception as recovery_exc:
+                        _write_json(
+                            run_dir / "init-recovery-error.json",
+                            {
+                                "error": sanitize_error_text(
+                                    f"{type(recovery_exc).__name__}: {recovery_exc}"
+                                )
+                            },
+                        )
+                    finally:
+                        if not recovered:
+                            recovery_session.close()
+
+                if not recovered:
+                    raise ValueError(
+                        "BGaming init devolvió un envelope errors y la renovación "
+                        f"de sesión no lo resolvió: {str(init_errors)[:600]}"
+                    )
+                progress(
+                    f"[{game.name}] init recuperado con una sesión demo fresca."
+                )
 
             active_profile = discover_profile(
                 runtime,
