@@ -910,6 +910,26 @@ def pending_flow_actions(data: dict[str, Any]) -> list[str]:
     return sorted(actions - handled)
 
 
+def runtime_shape_summary(data: dict[str, Any]) -> dict[str, Any]:
+    """Return a value-free structural map for unknown BGaming runtimes."""
+    summary: dict[str, Any] = {
+        "top_level_keys": sorted(str(key) for key in data.keys()),
+        "top_level_types": {
+            str(key): type(value).__name__
+            for key, value in sorted(data.items(), key=lambda item: str(item[0]))
+        },
+    }
+    for key in ("options", "flow", "game", "features", "balance"):
+        value = data.get(key)
+        if isinstance(value, dict):
+            summary[f"{key}_keys"] = sorted(str(item) for item in value.keys())
+    for key in ("available_actions", "available_commands"):
+        value = data.get(key)
+        if isinstance(value, list):
+            summary[key] = sorted({str(item) for item in value})
+    return summary
+
+
 def validate_init(data: dict[str, Any]) -> list[str]:
     warnings: list[str] = []
     legacy_lines = is_line_bet_init(data)
