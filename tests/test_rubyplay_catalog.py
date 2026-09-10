@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import tempfile
+import threading
 import unittest
+from pathlib import Path
 
+from tester_spin.providers.rubyplay.adapter import RubyPlayProvider
 from tester_spin.providers.rubyplay.catalog import (
     load_query_payload,
     parse_bricks_catalog_state,
@@ -11,6 +15,52 @@ from tester_spin.providers.rubyplay.catalog import (
     updated_query_element_id,
     updated_query_meta,
 )
+
+
+class _CatalogResponse:
+    def __init__(self, *, url: str, text: str = "", payload=None, status_code: int = 200):
+        self.url = url
+        self.text = text
+        self._payload = payload
+        self.status_code = status_code
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise RuntimeError(self.status_code)
+
+    def json(self):
+        return self._payload
+
+
+class _CatalogSession:
+    def __init__(self, initial_html: str):
+        self.initial_html = initial_html
+        self.posts: list[tuple[str, int]] = []
+
+    def get(self, url, **_kwargs):
+        return _CatalogResponse(url=url, text=self.initial_html)
+
+    def post(self, url, *, params, json, headers, timeout):
+        del params, headers, timeout
+        query_id = str(json["queryElementId"])
+        page = int(json["page"])
+        self.posts.append((query_id, page))
+        if page != 2:
+            raise AssertionError(f"unexpected page {page}")
+        slug = "alpha-2" if query_id == "alpha" else "beta-2"
+        return _CatalogResponse(
+            url=url,
+            payload={
+                "html": f'<div><a href="/games/{slug}/">{slug}</a></div>',
+                "updated_query": {
+                    "element_id": query_id,
+                    "count": 2,
+                    "max_num_pages": 2,
+                    "start": 2,
+                    "end": 2,
+                },
+            },
+        )
 
 
 class RubyPlayCatalogTests(unittest.TestCase):
@@ -109,6 +159,47 @@ class RubyPlayCatalogTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "múltiples queries games"):
             parse_bricks_catalog_state(html, "https://rubyplay.com/games/")
+
+    def test_zero_limit_crawls_every_page_of_every_game_loop(self) -> None:
+        html = r'''
+        <script>
+        const bricksData = {
+          restApiUrl: "https://rubyplay.com/wp-json/bricks/v1/",
+          nonce: "query-nonce",
+          wpRestNonce: "rest-nonce",
+          postId: "10149",
+          language: "en"
+        };
+        </script>
+        <div data-query-element-id="alpha"
+             data-query-vars='{"post_type":["games"],"posts_per_page":1,"paged":1}'
+             data-page="1" data-max-pages="2" data-start="1" data-end="1"></div>
+        <div data-query-element-id="beta"
+             data-query-vars='{"post_type":["games"],"posts_per_page":1,"paged":1}'
+             data-page="1" data-max-pages="2" data-start="1" data-end="1"></div>
+        <!--brx-loop-start-alpha-->
+          <div><a href="/games/alpha-1/">Alpha 1</a></div>
+        <!--brx-loop-end-alpha-->
+        <!--brx-loop-start-beta-->
+          <div><a href="/games/beta-1/">Beta 1</a></div>
+        <!--brx-loop-end-beta-->
+        '''
+        with tempfile.TemporaryDirectory() as temp:
+            provider = RubyPlayProvider(Path(temp))
+            fake = _CatalogSession(html)
+            provider.http = fake  # type: ignore[assignment]
+            games = provider.crawl_catalog(
+                stop_event=threading.Event(),
+                progress=lambda _message: None,
+                max_pages=0,
+            )
+
+        self.assertEqual(
+            {game.slug for game in games},
+            {"alpha-1", "alpha-2", "beta-1", "beta-2"},
+        )
+        self.assertEqual(fake.posts, [("alpha", 2), ("beta", 2)])
+        self.assertTrue(provider.catalog_crawl_authoritative)
 
     def test_rest_root_can_be_derived_from_wordpress_link(self) -> None:
         html = r'''
