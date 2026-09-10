@@ -1498,3 +1498,16 @@ Evidencia 2026-09-09:
 - los freespins mantienen `round_id`, avanzan `last_action_id`, soportan retrigger y terminan en `state=closed` con `available_actions=[init,spin]`;
 - las continuaciones `freespin` tienen débito cero y sus wins se acumulan en `balance.game`;
 - el runner BGaming prueba SPIN base y cada compra publicada, y sigue automáticamente free spins hasta terminal.
+
+
+### BGaming — reglas de compatibilidad confirmadas
+
+- Las compras escalares que aparecen en `init.feature_multipliers` se ejecutan
+  como `SERVER_ADVERTISED_PROBE` en sesión fresca aunque no exista literal
+  duplicado en el bundle. Features con nivel no reciben este fallback.
+- HyperHive conserva un baseline proveedor demostrado por tráfico real:
+  `req.bet + bet_type="bet" + UUID`. Sólo evidencia explícita del cliente
+  puede reemplazar `bet_type` o la convención de id (por ejemplo `id=0`).
+- El grafo de scripts recorre referencias estáticas BGaming con límites de
+  profundidad/tamaño y excluye terceros.
+- Ninguna de estas reglas depende de nombre, slug o identifier del juego.
