@@ -4,7 +4,7 @@ import hashlib
 import json
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urljoin, urlparse
 
@@ -39,6 +39,31 @@ class BGamingRuntime:
     csrf_header_value: str
     options: dict[str, Any]
     round_series_id: int
+    script_urls: list[str] = field(default_factory=list)
+
+
+def extract_script_urls(html: str, base_url: str) -> list[str]:
+    """Collect JavaScript resources actually referenced by the launch page.
+
+    Runtime discovery uses these URLs as protocol evidence. The list is
+    structural provider data; no game-name/slug routing is involved.
+    """
+    soup = BeautifulSoup(html or "", "html.parser")
+    urls: list[str] = []
+    seen: set[str] = set()
+    for node in soup.find_all("script", src=True):
+        raw = str(node.get("src") or "").strip()
+        if not raw:
+            continue
+        url = urljoin(base_url, raw)
+        parsed = urlparse(url)
+        if parsed.scheme not in {"http", "https"}:
+            continue
+        if url in seen:
+            continue
+        seen.add(url)
+        urls.append(url)
+    return urls
 
 
 def extract_options(html: str) -> dict[str, Any]:
@@ -205,6 +230,7 @@ def bootstrap_game(
         csrf_header_value=csrf_value,
         options=options,
         round_series_id=int(time.time() * 1000),
+        script_urls=extract_script_urls(response.text, response.url),
     )
 
 
@@ -479,6 +505,13 @@ def _runtime_bundle_candidates(
 
     if configured:
         candidates.append(configured)
+
+    # Prefer scripts the launch page actually loaded over guessed filenames.
+    # This catches hashed/versioned bundles without per-title rules.
+    for script_url in runtime.script_urls:
+        parsed = urlparse(script_url)
+        if parsed.path.casefold().endswith(".js"):
+            candidates.append(script_url)
 
     out: list[str] = []
     seen: set[str] = set()
