@@ -265,6 +265,28 @@ def _literal_assignments(text: str, key: str) -> set[str]:
     return {str(value).strip() for value in values if str(value).strip()}
 
 
+def _request_literal_assignments(text: str, key: str) -> set[str]:
+    """Return literals assigned specifically inside/to the JSON-RPC req object."""
+    escaped = re.escape(key)
+    patterns = [
+        rf'\breq\s*:\s*\{{[^{{}}]{{0,1200}}\b{escaped}\b\s*:\s*["\']([A-Za-z0-9_\-]+)["\']',
+        rf'\.req\.{escaped}\s*=\s*["\']([A-Za-z0-9_\-]+)["\']',
+        rf'\.req\[["\']{escaped}["\']\]\s*=\s*["\']([A-Za-z0-9_\-]+)["\']',
+    ]
+    values: set[str] = set()
+    for pattern in patterns:
+        values.update(re.findall(pattern, text or ""))
+    return {str(value).strip() for value in values if str(value).strip()}
+
+
+def _has_request_bet_contract(text: str) -> bool:
+    return bool(
+        re.search(
+            r'(?:\breq\s*:\s*\{[^{}]{0,1200}\bbet\s*:|\.req\.bet\s*=|\.req\[["\']bet["\']\]\s*=)',
+            text or "",
+        )
+    )
+
 def discover_action_vocabulary(bundle_text: str, engine_contract: str = "") -> set[str]:
     """Discover action values actually encoded by the loaded HyperHive client."""
     combined = (bundle_text or "") + "\n" + (engine_contract or "")
