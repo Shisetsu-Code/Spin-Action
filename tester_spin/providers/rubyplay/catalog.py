@@ -38,17 +38,49 @@ class RubyPlayCatalogRecord:
 
 
 def _js_object_block(html: str, name: str) -> str:
+    """Extract a JS object assignment without assuming var/window formatting.
+
+    Bricks has emitted ``bricksData = {...}``, ``var bricksData = {...}`` and
+    ``window.bricksData = {...}`` across builds. A balanced scanner is safer
+    than stopping at the first ``};`` because the object can contain nested
+    values.
+    """
     match = re.search(
-        rf"(?:window\.)?{re.escape(name)}\s*=\s*\{{(?P<body>.*?)\}}\s*;",
+        rf"(?:(?:var|let|const)\s+)?(?:window\.)?{re.escape(name)}\s*=\s*\{{",
         html or "",
-        re.S,
+        re.I,
     )
-    return match.group("body") if match else ""
+    if not match:
+        return ""
+    start = match.end() - 1
+    depth = 0
+    quote = ""
+    escaped = False
+    for index in range(start, len(html)):
+        char = html[index]
+        if quote:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = ""
+            continue
+        if char in {"'", '"', "`"}:
+            quote = char
+            continue
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return html[start + 1 : index]
+    return ""
 
 
 def _js_string(block: str, key: str) -> str:
     match = re.search(
-        rf"\b{re.escape(key)}\s*:\s*(['\"])(.*?)\1",
+        rf"(?:['\"])?{re.escape(key)}(?:['\"])?\s*:\s*(['\"])(.*?)\1",
         block or "",
         re.S,
     )
@@ -63,12 +95,7 @@ def _int_value(value: Any, default: int = 0) -> int:
 
 
 def query_loop_html(html: str, query_element_id: str) -> str:
-    """Return only the rendered Bricks loop for one dynamic element ID.
-
-    Bricks emits brx-loop-start/end comments for AJAX/query features. When an
-    optimiser strips comments, repeated loop roots still normally carry the
-    Bricks element ID as a ``brxe-<id>`` class, so that is used as a fallback.
-    """
+    """Return only the rendered Bricks loop for one dynamic element ID."""
     query_id = str(query_element_id or "").strip()
     if not query_id:
         return ""
@@ -92,60 +119,43 @@ def query_loop_html(html: str, query_element_id: str) -> str:
     return "\n".join(pieces)
 
 
-def _unique_game_link_count(fragment: str, page_url: str) -> int:
-    if not fragment:
-        return 0
-    soup = BeautifulSoup(fragment, "html.parser")
-    slugs: set[str] = set()
-    for anchor in soup.find_all("a", href=True):
-        absolute = urljoin(page_url, str(anchor.get("href") or ""))
-        path = urlparse(absolute).path or ""
-        match = re.fullmatch(r"/games/([^/]+)/?", path)
-        if match and match.group(1).strip():
-            slugs.add(match.group(1).strip().lower())
-    return len(slugs)
+def _rest_api_url_from_page(html: str, page_url: str) -> str:
+    bricks = _js_object_block(html, "bricksData")
+    rest_api_url = _js_string(bricks, "restApiUrl")
+    if rest_api_url:
+        return (
+            rest_api_url
+            if urlparse(rest_api_url).scheme
+            else urljoin(page_url, rest_api_url)
+        )
+
+    # WordPress publishes its REST root independently of Bricks. Prefer that
+    # structural signal when a cache/minifier omits the bricksData assignment.
+    soup = BeautifulSoup(html or "", "html.parser")
+    for link in soup.find_all("link", href=True):
+        rel = {str(value).lower() for value in (link.get("rel") or [])}
+        if "https://api.w.org/" not in rel:
+            continue
+        root = str(link.get("href") or "").strip()
+        if root:
+            return urljoin(root.rstrip("/") + "/", "bricks/v1/")
+
+    # At this point the page itself proved it is a Bricks query page. The REST
+    # route below is the Bricks family contract, not a per-game or generated ID.
+    parsed = urlparse(page_url)
+    if parsed.scheme and parsed.netloc:
+        return f"{parsed.scheme}://{parsed.netloc}/wp-json/bricks/v1/"
+    raise ValueError("RubyPlay catálogo: no se pudo resolver el REST root Bricks.")
 
 
-def _query_candidate_score(
-    html: str,
-    page_url: str,
-    node,
-    query_vars: dict[str, Any],
-) -> tuple[int, int, int, int, int]:
-    query_id = str(
-        node.get("data-query-element-id")
-        or node.get("data-element-id")
-        or ""
-    ).strip()
-    page = max(1, _int_value(node.get("data-page"), 1))
-    max_pages = max(1, _int_value(node.get("data-max-pages"), 1))
-    start = max(1, _int_value(node.get("data-start"), 1))
-    end = max(0, _int_value(node.get("data-end"), 0))
-    span = max(0, end - start + 1) if end >= start else 0
-    per_page = max(0, _int_value(query_vars.get("posts_per_page"), 0))
-    rendered_count = _unique_game_link_count(
-        query_loop_html(html, query_id),
-        page_url,
-    )
+def parse_bricks_catalog_states(html: str, page_url: str) -> list[BricksCatalogState]:
+    """Discover every Bricks query that publishes RubyPlay game posts.
 
-    # The archive query is expected to describe the largest coherent game set,
-    # not merely be the first post_type=games loop. No generated Bricks ID or
-    # RubyPlay title is involved in this ranking.
-    page_width = max(rendered_count, span, per_page, 1)
-    estimated_capacity = max(end, page_width * max_pages)
-    current_page_matches = int(
-        _int_value(query_vars.get("paged"), page) in {0, page}
-    )
-    return (
-        estimated_capacity,
-        max_pages,
-        rendered_count,
-        page_width,
-        current_page_matches,
-    )
-
-
-def parse_bricks_catalog_state(html: str, page_url: str) -> BricksCatalogState:
+    RubyPlay currently composes the archive from multiple independent
+    ``post_type=games`` loops. They are all valid catalogue sources and may
+    overlap, so choosing a single 'main' generated element is incorrect. The
+    crawler must paginate each loop and deduplicate by game slug.
+    """
     soup = BeautifulSoup(html or "", "html.parser")
     trails: list[tuple[Any, dict[str, Any]]] = []
     for node in soup.find_all(attrs={"data-query-vars": True}):
@@ -158,77 +168,64 @@ def parse_bricks_catalog_state(html: str, page_url: str) -> BricksCatalogState:
         if isinstance(post_type, str):
             post_types = {post_type}
         elif isinstance(post_type, list):
-            post_types = {str(x) for x in post_type}
+            post_types = {str(value) for value in post_type}
         else:
             post_types = set()
-        if "games" not in post_types:
-            continue
-        trails.append((node, query_vars))
+        if "games" in post_types:
+            trails.append((node, query_vars))
 
     if not trails:
         raise ValueError("RubyPlay catálogo: no se encontró query Bricks post_type=games.")
 
-    ranked = [
-        (
-            _query_candidate_score(html, page_url, node, query_vars),
-            node,
-            query_vars,
-        )
-        for node, query_vars in trails
-    ]
-    best_score = max(score for score, _node, _vars in ranked)
-    winners = [
-        (node, query_vars)
-        for score, node, query_vars in ranked
-        if score == best_score
-    ]
-    if len(winners) != 1:
-        summary = ", ".join(
-            f"{str(node.get('data-query-element-id') or node.get('data-element-id') or '?')}:{score}"
-            for score, node, _query_vars in sorted(ranked, key=lambda item: item[0], reverse=True)[:8]
-        )
-        raise ValueError(
-            "RubyPlay catálogo: varios query Bricks post_type=games siguen "
-            f"indistinguibles ({len(winners)}/{len(trails)}); candidatos={summary}."
-        )
-
-    node, query_vars = winners[0]
-    query_element_id = str(
-        node.get("data-query-element-id")
-        or node.get("data-element-id")
-        or ""
-    ).strip()
-    if not query_element_id:
-        raise ValueError("RubyPlay catálogo: falta data-query-element-id.")
-
     bricks = _js_object_block(html, "bricksData")
-    rest_api_url = _js_string(bricks, "restApiUrl")
+    rest_api_url = _rest_api_url_from_page(html, page_url)
     nonce = _js_string(bricks, "nonce")
     wp_rest_nonce = _js_string(bricks, "wpRestNonce")
     post_id = _js_string(bricks, "postId")
     language = _js_string(bricks, "language") or "en"
-    if not rest_api_url:
-        raise ValueError("RubyPlay catálogo: falta bricksData.restApiUrl.")
-    if not urlparse(rest_api_url).scheme:
-        rest_api_url = urljoin(page_url, rest_api_url)
 
-    def int_attr(name: str, default: int) -> int:
-        return _int_value(node.get(name), default)
+    states: list[BricksCatalogState] = []
+    seen_ids: set[str] = set()
+    for node, query_vars in trails:
+        query_element_id = str(
+            node.get("data-query-element-id")
+            or node.get("data-element-id")
+            or ""
+        ).strip()
+        if not query_element_id or query_element_id in seen_ids:
+            continue
+        seen_ids.add(query_element_id)
+        states.append(
+            BricksCatalogState(
+                rest_api_url=rest_api_url,
+                nonce=nonce,
+                wp_rest_nonce=wp_rest_nonce,
+                post_id=post_id,
+                language=language,
+                query_element_id=query_element_id,
+                query_vars=dict(query_vars),
+                page=max(1, _int_value(node.get("data-page"), 1)),
+                max_pages=max(1, _int_value(node.get("data-max-pages"), 1)),
+                start=max(1, _int_value(node.get("data-start"), 1)),
+                end=max(0, _int_value(node.get("data-end"), 0)),
+                candidate_count=len(trails),
+            )
+        )
 
-    return BricksCatalogState(
-        rest_api_url=rest_api_url,
-        nonce=nonce,
-        wp_rest_nonce=wp_rest_nonce,
-        post_id=post_id,
-        language=language,
-        query_element_id=query_element_id,
-        query_vars=dict(query_vars),
-        page=max(1, int_attr("data-page", 1)),
-        max_pages=max(1, int_attr("data-max-pages", 1)),
-        start=max(1, int_attr("data-start", 1)),
-        end=max(0, int_attr("data-end", 0)),
-        candidate_count=len(trails),
-    )
+    if not states:
+        raise ValueError("RubyPlay catálogo: queries games sin data-query-element-id.")
+    return states
+
+
+def parse_bricks_catalog_state(html: str, page_url: str) -> BricksCatalogState:
+    """Compatibility helper for callers expecting exactly one game query."""
+    states = parse_bricks_catalog_states(html, page_url)
+    if len(states) != 1:
+        raise ValueError(
+            "RubyPlay catálogo: la página publica múltiples queries games; "
+            "usar parse_bricks_catalog_states()."
+        )
+    return states[0]
 
 
 def _game_href(url: str) -> tuple[str, str] | None:
@@ -335,3 +332,10 @@ def updated_query_meta(payload: dict[str, Any]) -> dict[str, int]:
         except (TypeError, ValueError):
             raise ValueError(f"RubyPlay catálogo: updated_query.{source} inválido.")
     return out
+
+
+def updated_query_element_id(payload: dict[str, Any]) -> str:
+    raw = payload.get("updated_query")
+    if not isinstance(raw, dict):
+        return ""
+    return str(raw.get("element_id") or "").strip()
