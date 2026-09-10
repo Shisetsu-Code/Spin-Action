@@ -4,7 +4,7 @@ import json
 import threading
 from pathlib import Path
 
-from tester_spin.models import Game
+from tester_spin.models import Game, GameTestResult
 from tester_spin.providers.base import Progress
 from tester_spin.providers.bgaming.adapter import BGamingProvider as _BGamingProvider
 from tester_spin.providers.bgaming.har_capture import (
@@ -31,6 +31,73 @@ class BGamingProvider(_BGamingProvider):
         if analysis_dir.is_dir():
             return analysis_dir
         return None
+
+    def test_game(
+        self,
+        game: Game,
+        *,
+        spins: int,
+        timeout_s: float,
+        stop_event: threading.Event,
+        progress: Progress,
+    ) -> GameTestResult:
+        """Run BGaming while persisting the same diagnostic stream shown in the GUI."""
+        game_dir = self.game_dir(game)
+        append_har_debug(
+            game_dir,
+            "runner_start",
+            requested_spins=spins,
+            timeout_s=timeout_s,
+            game_url=game.url,
+            symbol=game.symbol,
+        )
+
+        def logged_progress(message: str) -> None:
+            append_har_debug(
+                game_dir,
+                "runner_progress",
+                message=str(message),
+            )
+            progress(message)
+
+        try:
+            result = super().test_game(
+                game,
+                spins=spins,
+                timeout_s=timeout_s,
+                stop_event=stop_event,
+                progress=logged_progress,
+            )
+        except Exception as exc:
+            append_har_debug(
+                game_dir,
+                "runner_exception",
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            raise
+
+        append_har_debug(
+            game_dir,
+            "runner_result",
+            status=result.status,
+            requested_spins=result.requested_spins,
+            successful_spins=result.successful_spins,
+            failed_spins=result.failed_spins,
+            elapsed_ms=result.elapsed_ms,
+            error=result.error,
+            run_dir=result.run_dir,
+            discovered_modes=[
+                {
+                    "id": mode.get("id"),
+                    "kind": mode.get("kind"),
+                    "executable": mode.get("executable"),
+                    "discovery_state": mode.get("discovery_state"),
+                }
+                for mode in result.discovered_modes[:50]
+                if isinstance(mode, dict)
+            ],
+        )
+        return result
 
     def prepare_test_artifacts(
         self,
