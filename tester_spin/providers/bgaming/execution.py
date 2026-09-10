@@ -529,7 +529,14 @@ class BGamingExecutionMixin:
                         and active_profile.purchase_feature_level_supported
                     )
                 )
-                executable = client_observed and level_supported
+                server_advertised_probe = bool(
+                    level is None
+                    and active_profile is not None
+                    and active_profile.family == API_V2
+                )
+                executable = (
+                    client_observed or server_advertised_probe
+                ) and level_supported
                 if executable:
                     mode_specs.append(
                         {
@@ -552,7 +559,11 @@ class BGamingExecutionMixin:
                         "discovery_state": (
                             "CLIENT_OBSERVED"
                             if client_observed
-                            else "ADVERTISED_ONLY"
+                            else (
+                                "SERVER_ADVERTISED_PROBE"
+                                if server_advertised_probe
+                                else "ADVERTISED_ONLY"
+                            )
                         ),
                         "wire_command": "spin",
                         "purchased_feature": name,
@@ -563,7 +574,11 @@ class BGamingExecutionMixin:
                         "source": (
                             "init.feature_multipliers+client"
                             if client_observed
-                            else "options.feature_options.feature_multipliers"
+                            else (
+                                "init.feature_multipliers+provider-probe"
+                                if server_advertised_probe
+                                else "options.feature_options.feature_multipliers"
+                            )
                         ),
                     }
                 )
@@ -596,7 +611,7 @@ class BGamingExecutionMixin:
                     f"[{game.name}] COMPRA detectada: {purchase_name}{level_text} "
                     f"x{_fmt_number(purchase.get('cost_multiplier'))} de la apuesta efectiva "
                     f"(source={purchase.get('base_source') or 'unknown'}, "
-                    f"wire={'ejecutable' if executable else 'sin contrato cliente'})."
+                    f"wire={'ejecutable' if executable else 'sin contrato suficiente'})."
                 )
         except Exception as exc:
             message = sanitize_error_text(f"{type(exc).__name__}: {exc}")
