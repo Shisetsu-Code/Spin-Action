@@ -11,6 +11,8 @@ from tester_spin.providers.bgaming.contracts import SAFE_CONTINUATION_COMMANDS
 from tester_spin.providers.bgaming.runtime import (
     BGamingRuntime,
     discover_api_v2_wire_profile,
+    discover_purchase_modes,
+    _provider_script_url,
     is_line_bet_init,
     is_switchable_container_init,
     line_bet_count,
@@ -245,6 +247,17 @@ def discover_profile(
         and persisted.family == API_V2
         and persisted.validated
     ):
+        advertised_purchases = discover_purchase_modes(init_data)
+        persisted_source = str(persisted.source or "")
+        parsed_source = urlparse(persisted_source)
+        third_party_source = bool(
+            parsed_source.scheme in {"http", "https"}
+            and not _provider_script_url(runtime, persisted_source)
+        )
+        purchase_contract_missing = bool(
+            advertised_purchases and not persisted.purchase_features
+        )
+
         profile.spin_options.update(persisted.spin_options)
         profile.command_options = {
             command: dict(options)
@@ -256,12 +269,20 @@ def discover_profile(
             item for item in persisted.allowed_continuations
             if item in SAFE_CONTINUATION_COMMANDS
         ]
-        profile.source = "persisted-validated-profile"
         profile.bundle_sha256 = persisted.bundle_sha256
         profile.discovery_diagnostics = list(persisted.discovery_diagnostics)
         profile.validated = True
         profile.evidence.append("persisted.validated")
-        return profile
+
+        if not third_party_source and not purchase_contract_missing:
+            profile.source = "persisted-validated-profile"
+            return profile
+
+        profile.validated = False
+        if third_party_source:
+            profile.evidence.append("refresh:third-party-source")
+        if purchase_contract_missing:
+            profile.evidence.append("refresh:purchase-contract-missing")
 
     wire = discover_api_v2_wire_profile(runtime, timeout_s=timeout_s)
     options = wire.get("spin_options")
