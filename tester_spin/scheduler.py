@@ -41,12 +41,20 @@ def run_game_tests(
 
     def worker(game: Game) -> GameTestResult:
         game_progress = lambda msg: progress(f"[{game.name}] {msg}")
-        provider.prepare_test_artifacts(
-            game,
-            timeout_s=timeout_s,
-            stop_event=stop_event,
-            progress=game_progress,
-        )
+        try:
+            provider.prepare_test_artifacts(
+                game,
+                timeout_s=timeout_s,
+                stop_event=stop_event,
+                progress=game_progress,
+            )
+        except Exception as exc:
+            # Diagnostic preparation is best-effort and must never turn an
+            # otherwise valid provider test into an ERROR.
+            game_progress(
+                f"preparación de artefactos ERROR; la prueba continúa: "
+                f"{type(exc).__name__}: {exc}"
+            )
         if stop_event.is_set():
             return GameTestResult(
                 provider=game.provider,
