@@ -10,6 +10,7 @@ from unittest.mock import patch
 from tester_spin.models import Game
 from tester_spin.providers.bgaming import BGamingProvider
 from tester_spin.providers.bgaming.har_capture import (
+    append_har_debug,
     ensure_analysis_har,
     find_existing_har,
 )
@@ -41,6 +42,9 @@ class BGamingHARCaptureTests(unittest.TestCase):
             self.assertFalse(result.captured)
             self.assertEqual(result.path, manual)
             self.assertTrue(any("captura omitida" in line for line in logs))
+            debug = game_dir / "analysis" / "har-debug.jsonl"
+            self.assertTrue(debug.is_file())
+            self.assertIn("reuse_existing_har", debug.read_text(encoding="utf-8"))
 
     def test_provider_suite_hook_skips_existing_har_before_network(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -66,6 +70,23 @@ class BGamingHARCaptureTests(unittest.TestCase):
 
             new_session.assert_not_called()
             self.assertTrue(any("captura omitida" in line for line in logs))
+            self.assertEqual(provider.har_artifact_dir(game), game_dir)
+
+    def test_provider_har_folder_falls_back_to_analysis_diagnostics(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            provider = BGamingProvider(Path(temp))
+            game = Game(
+                provider="bgaming",
+                slug="game",
+                name="Game",
+                url="https://bgaming.com/games/game",
+            )
+            game_dir = provider.game_dir(game)
+            analysis = game_dir / "analysis"
+            analysis.mkdir(parents=True)
+            (analysis / "har-debug.jsonl").write_text("{}\n", encoding="utf-8")
+
+            self.assertEqual(provider.har_artifact_dir(game), analysis)
 
     def test_empty_or_partial_hars_are_not_reused(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -76,6 +97,21 @@ class BGamingHARCaptureTests(unittest.TestCase):
             (analysis / "old.partial.har").write_text("partial", encoding="utf-8")
 
             self.assertIsNone(find_existing_har(game_dir))
+
+    def test_debug_log_sanitizes_session_url(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            game_dir = Path(temp) / "game"
+            path = append_har_debug(
+                game_dir,
+                "network",
+                url=(
+                    "https://demo.bgaming-network.com/game"
+                    "?play_token=ephemeral-secret&foo=1"
+                ),
+            )
+            text = path.read_text(encoding="utf-8")
+            self.assertIn("network", text)
+            self.assertNotIn("ephemeral-secret", text)
 
     def test_new_capture_is_promoted_and_metadata_is_written(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -106,6 +142,7 @@ class BGamingHARCaptureTests(unittest.TestCase):
 
             target = game_dir / "analysis" / "browser.har"
             metadata_path = game_dir / "analysis" / "har-capture.json"
+            debug_path = game_dir / "analysis" / "har-debug.jsonl"
             self.assertTrue(result.captured)
             self.assertFalse(result.skipped)
             self.assertEqual(result.path, target)
@@ -113,7 +150,10 @@ class BGamingHARCaptureTests(unittest.TestCase):
             self.assertFalse((game_dir / "analysis" / "browser.partial.har").exists())
             metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
             self.assertEqual(metadata["provider_post_requests"], 2)
+            self.assertEqual(metadata["debug_log"], "har-debug.jsonl")
             self.assertNotIn("ephemeral-secret", metadata["launch_url"])
+            self.assertTrue(debug_path.is_file())
+            self.assertIn("har_promoted", debug_path.read_text(encoding="utf-8"))
             self.assertTrue(any("HAR guardado" in line for line in logs))
 
     def test_capture_failure_does_not_leave_reusable_partial_har(self) -> None:
@@ -141,6 +181,9 @@ class BGamingHARCaptureTests(unittest.TestCase):
             self.assertFalse(result.captured)
             self.assertIn("browser failed", result.error)
             self.assertIsNone(find_existing_har(game_dir))
+            debug = game_dir / "analysis" / "har-debug.jsonl"
+            self.assertTrue(debug.is_file())
+            self.assertIn("ensure_capture_failed", debug.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":
