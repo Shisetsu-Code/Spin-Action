@@ -257,6 +257,8 @@ def discover_modes_from_bundle(
             "request": spin_request,
             "expected_multiplier": 1.0,
             "custom_req_profile": custom_req_profile,
+            "executable": True,
+            "discovery_state": "BASE_CONTRACT",
             "source": (
                 "game_bundle_source+engine_contract"
                 if custom_req_profile
@@ -278,6 +280,8 @@ def discover_modes_from_bundle(
                 },
                 "expected_multiplier": None,
                 "source": "game_bundle_source",
+                "executable": True,
+                "discovery_state": "WIRE_PATTERN",
             }
         )
 
@@ -304,6 +308,8 @@ def discover_modes_from_bundle(
                     },
                     "expected_multiplier": None,
                     "source": "game_bundle_source",
+                    "executable": True,
+                    "discovery_state": "WIRE_PATTERN",
                 }
             )
 
@@ -333,6 +339,8 @@ def discover_modes_from_bundle(
                 },
                 "expected_multiplier": expected_buy_bonus_multiplier,
                 "source": "game_bundle_source",
+                "executable": True,
+                "discovery_state": "WIRE_PATTERN",
             }
         )
 
@@ -356,6 +364,8 @@ def discover_modes_from_bundle(
                 },
                 "expected_multiplier": None,
                 "source": "game_bundle_source",
+                "executable": False,
+                "discovery_state": "DISCOVERED_LITERAL_ONLY",
             }
         )
 
@@ -489,11 +499,15 @@ def run_hyperhive_test(
         engine_contract=engine_contract,
     )
     state_lock = init_result.get("state_lock")
+    modes_to_run = [mode for mode in modes if bool(mode.get("executable"))]
     discovered_modes = [
         {
             "id": mode["id"],
             "kind": mode["kind"],
-            "observed": True,
+            "observed": False,
+            "validated": False,
+            "executable": bool(mode.get("executable")),
+            "discovery_state": str(mode.get("discovery_state") or "DISCOVERED"),
             "wire_method": "play",
             "request_options": dict(mode["request"]),
             "source": mode["source"],
@@ -503,12 +517,15 @@ def run_hyperhive_test(
 
     progress(
         f"[{game.name}] HyperHive JSON-RPC detectado: /api, "
-        f"bet={default_bet}, balance={current_balance}, modos={len(modes)}."
+        f"bet={default_bet}, balance={current_balance}, "
+        f"descubiertos={len(modes)}, ejecutables={len(modes_to_run)}."
     )
     for mode in modes[1:]:
         progress(
             f"[{game.name}] HyperHive modo detectado: {mode['id']} "
-            f"(bundle={mode['source']})."
+            f"state={mode.get('discovery_state')}, "
+            f"ejecutable={'sí' if mode.get('executable') else 'no'}, "
+            f"source={mode['source']}."
         )
 
     attempts: list[SpinAttempt] = []
@@ -516,9 +533,9 @@ def run_hyperhive_test(
     successes = 0
     responded = 0
     repetitions = max(1, int(spins))
-    requested_total = repetitions * len(modes)
+    requested_total = repetitions * len(modes_to_run)
 
-    for mode in modes:
+    for mode in modes_to_run:
         mode_id = str(mode["id"])
         kind = str(mode["kind"])
         for repetition in range(1, repetitions + 1):
@@ -701,6 +718,13 @@ def run_hyperhive_test(
 
                 terminal = bool(final_summary.get("final"))
                 validated = terminal and not warnings
+                if validated:
+                    for discovered in discovered_modes:
+                        if discovered.get("id") == mode_id:
+                            discovered["observed"] = True
+                            discovered["validated"] = True
+                            discovered["discovery_state"] = "VALIDATED"
+                            break
                 successes += int(validated)
                 proof = {
                     "runtime": "hyperhive-jsonrpc",
