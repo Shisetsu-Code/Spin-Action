@@ -264,7 +264,7 @@ class BGamingProvider(BGamingExecutionMixin, ProviderAdapter):
                         )
                         progress(
                             f"BGaming catálogo inconsistente: total REST cambió "
-                            f"{expected_total}→{reported_total} en página {page}."
+                            f"{expected_total_pages}→{reported_total} en página {page}."
                         )
                         break
 
@@ -281,7 +281,7 @@ class BGamingProvider(BGamingExecutionMixin, ProviderAdapter):
                         f"nuevos={added}, acumulados={len(by_slug)}, hasMore={has_more}"
                         + (
                             f", total_paginas={expected_total_pages}"
-                            if expected_total is not None
+                            if expected_total_pages is not None
                             else ""
                         )
                     )
