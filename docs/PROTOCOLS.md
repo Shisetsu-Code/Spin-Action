@@ -1624,6 +1624,77 @@ No tratar `layout.rows` como altura fija para Megaways/Trueways. En esos motores
 Durante `command=freespin`, `outcome.bet` tampoco es un invariante universal entre juegos BGaming. La autoridad es débito cero + evolución correcta del balance. Por ello no se compara `outcome.bet` contra la apuesta base en continuaciones.
 
 
+## 7.12 API v2 con opciones dinámicas y apuesta efectiva
+
+Dos HAR adicionales muestran que `additionalSpinOptions` puede contener
+dimensiones de juego obligatorias que no aparecen como escalares en el init.
+
+Patrón A — selector textual:
+
+```text
+additionalSpinOptions.volatility
+choices descubiertas en cliente: low | medium
+
+spin:
+{
+  "command": "spin",
+  "options": {
+    "bet": 10,
+    "volatility": "low|medium"
+  }
+}
+```
+
+Patrón B — selector de nivel que modifica la apuesta efectiva:
+
+```text
+additionalSpinOptions.gold_symbols_count
+choices descubiertas: 1..5
+
+BET_BY_SPECIAL_LVL:
+1 -> 8
+2 -> 18
+3 -> 38
+4 -> 68
+5 -> 88
+```
+
+Por tanto una request puede contener `bet=1` y `gold_symbols_count=5` mientras
+el backend devuelve `outcome.bet=88`. Eso no es una traducción inexplicada:
+el cliente demuestra explícitamente el multiplicador de apuesta efectiva.
+
+Tester-Spin descubre choices mediante asignaciones literales/ternarias y setters
+invocados con valores literales en el bundle. Una tabla
+`BET_BY_SPECIAL_LVL` sólo se usa si es unívoca y sus niveles coinciden con un
+único selector dinámico; de otro modo no se infiere ningún multiplicador.
+
+Las compras también pueden estar publicadas como mapas multinivel:
+
+```json
+{
+  "freespin_buy": {
+    "1": 750,
+    "2": 1500
+  }
+}
+```
+
+Cada nivel se convierte en un modo independiente y, si el cliente demuestra
+`additionalSpinOptions.purchased_feature_level`, el request usa:
+
+```json
+{
+  "purchased_feature": "freespin_buy",
+  "purchased_feature_level": "2"
+}
+```
+
+Si el selector de apuesta efectiva comparte ese mismo nivel, también se ajusta
+el selector (por ejemplo `gold_symbols_count=2`). El costo se valida sobre la
+apuesta efectiva, no necesariamente sobre el `bet` nominal enviado.
+
+No existe routing por nombre/slug/identifier para ninguno de estos casos.
+
 ## 7.12 API v2 con negociación de `extra_data`
 
 Algunos runtimes API v2 requieren parámetros globales de request antes incluso
