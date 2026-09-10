@@ -5,6 +5,7 @@ import json
 import re
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -160,6 +161,56 @@ def _download_bundle(runtime: BGamingRuntime, timeout_s: float) -> str:
         ):
             return text
     return fallback
+
+
+def _download_engine_contract(
+    runtime: BGamingRuntime,
+    *,
+    timeout_s: float,
+) -> str:
+    origin = _origin(runtime.launch_url)
+    candidates = [
+        origin + "/client.min.js",
+        origin + "/game/game.min.js",
+        origin + "/game/integration.min.js",
+    ]
+    texts: list[str] = []
+    for url in candidates:
+        try:
+            response = runtime.session.get(url, timeout=timeout_s)
+            response.raise_for_status()
+            text = response.text
+        except Exception:
+            continue
+        if text:
+            texts.append(text)
+    return "\n".join(texts)
+
+
+def _hyperhive_rpc_id(engine_contract: str) -> int | str:
+    if re.search(
+        r'id:[A-Za-z_$][A-Za-z0-9_$]*\(\),jsonrpc:["\']2\.0["\']',
+        engine_contract,
+    ):
+        return str(uuid.uuid4())
+    return 0
+
+
+def _pz_custom_req(
+    *,
+    bet: int | float,
+    exponent: int,
+    action: str,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "selectedWinLines": [0] if action == "spin" else [],
+        "perLine": True,
+        "action": action,
+        "exponent": exponent,
+    }
+    if action == "spin":
+        payload["stake"] = bet
+    return payload
 
 
 def discover_modes_from_bundle(
