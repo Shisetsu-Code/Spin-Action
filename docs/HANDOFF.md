@@ -836,6 +836,12 @@ bootstrap
 
 No se usa el 422 como flujo normal de aprendizaje. El 422 es únicamente recovery para cambios de contrato.
 
+Los scripts de terceros presentes en el launch (por ejemplo analytics/tag managers) no pueden convertirse en fuente de protocolo. Sólo se inspeccionan orígenes declarados por el runtime o controlados por BGaming, y los scripts se priorizan por firmas de contrato (`additionalSpinOptions`, `purchased_feature`, `round_series_id`, `flow`, etc.).
+
+Si el cliente demuestra `additionalSpinOptions.<campo>`, el perfil puede resolver el valor de ese campo desde `init.options` o `init.options.layout` antes del primer spin. La mera presencia de `layout.rows` sigue sin ser suficiente.
+
+Cada modo API-v2 se ejecuta en una sesión demo fresca. Un 422/400 en una compra o continuación no contamina el siguiente modo con una ronda abierta.
+
 La validación distingue la intención local del resultado remoto. Un `outcome.bet` distinto de la apuesta solicitada no queda `OK` sólo porque el balance cierre. Una traducción de apuesta debe ser explicada por el perfil wire correspondiente.
 
 ### Compras
@@ -869,6 +875,10 @@ No existe el fallback genérico `state == available_action → ejecutar state`.
 
 Sólo se automatizan transiciones cuyo wire-shape está modelado a nivel del protocolo BGaming. Las acciones desconocidas quedan como cobertura pendiente y no se ejecutan.
 
+Si una continuación conocida por nombre devuelve HTTP 422 y no hay parámetros adicionales demostrables, se marca `CONTRACT_UNRESOLVED`, se conserva la respuesta inicial y el error HTTP sanitizado, y no se repite el mismo wire-shape a ciegas en esa corrida.
+
+Para `preselection_game` existen dos formas observadas a nivel del proveedor: `preselection_game` y `play_preselection_game`. Se usa exclusivamente la que aparezca en `available_actions`.
+
 Esto no es hardcode por juego: es una allowlist de contratos observados del proveedor.
 
 ### HyperHive
@@ -879,8 +889,9 @@ El bootstrap conserva los `<script src>` realmente cargados. HyperHive y API v2
 usan esas URLs —incluidas URLs CDN sin sufijo `.js`— para reconstruir el
 wire-shape antes de ejecutar. Los nombres fijos de bundles son sólo fallback.
 
-Si no se demuestra el contrato base de `play`, HyperHive devuelve
-`PARCIAL / CONTRACT_UNRESOLVED` sin enviar un request adivinado.
+Si no se demuestra el contrato base de `play` dentro del objeto `req` (o mediante asignaciones explícitas a `.req.*`), HyperHive devuelve `PARCIAL / CONTRACT_UNRESOLVED` sin enviar un request adivinado. Literales sueltos como `action:"spin"` ya no bastan para declarar el modo ejecutable.
+
+Si un contrato aparentemente válido recibe JSON-RPC `51100`, queda `REJECTED_51100` para esa corrida y se guardan `contract-diagnostic.json`, request/response RPC sanitizados y hashes del bundle/engine.
 
 Los modos distinguen:
 
@@ -910,7 +921,9 @@ No significa simplemente “hubo HTTP response”.
 
 Por tanto:
 
-- respuesta válida + terminal + invariantes correctos → `OK`;
+- todos los modos ejecutables/requeridos validados y sin errores → `OK`;
+- una acción opcional no clasificada no degrada por sí sola un run validado;
+- una compra `ADVERTISED_ONLY` o continuación `CONTRACT_UNRESOLVED` sí crea un `coverage_gap` y mantiene `PARCIAL`;
 - respondió pero contrato/wire/state no valida → `PARCIAL`;
 - no pudo ejecutar/obtener respuesta válida → `ERROR`;
 - no existe demo resoluble → `SIN_DEMO`.
@@ -921,8 +934,9 @@ Pragmatic, Belatra ni 1spin4win. Los HTTP 502 de comandos con estado no se
 reintentan ciegamente porque una respuesta de gateway no prueba que el backend
 no haya procesado la operación.
 
-Los launches demo persistidos que devuelven 404/410 se invalidan en memoria y
-se vuelven a resolver desde `public_url` antes de declararlos `SIN_DEMO`.
+Los launches demo persistidos que devuelven 404/410 se invalidan en memoria y se vuelven a resolver desde `public_url`. Un candidato nuevo sólo se acepta si tiene estructura completa `/play|games/<identifier>/<currency>`, responde HTTP correctamente y contiene un `window.__OPTIONS__` parseable; URLs truncadas como `/play/Prince` o `/play/Trea` ya no pueden ganar por heurística. Si no existe reemplazo validable, el resultado es `SIN_DEMO`.
+
+Una respuesta de `init` cuyo envelope sólo contiene `errors` se trata como fallo de sesión/provider, no como una nueva familia de runtime. Se renueva launch+sesión una vez antes de fallar explícitamente.
 
 En legacy line-bets, un estado opcional de card/gamble con `finish` anunciado
 se cierra por `finish`; Tester-Spin nunca entra automáticamente en la apuesta
