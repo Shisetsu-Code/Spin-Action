@@ -115,9 +115,15 @@ class BGamingProvider(_BGamingProvider):
         progress: Progress,
     ) -> None:
         game_dir = self.game_dir(game)
+        automatic_har = game_dir / "analysis" / "browser.har"
+        incomplete_backup = game_dir / "analysis" / "browser.bootstrap-only.bak"
+        moved_incomplete_automatic = False
 
-        # Zero-network fast path. When several HARs exist, select by protocol
-        # evidence rather than giving analysis/browser.har unconditional priority.
+        # Reuse only protocol-useful HARs without question. A manually supplied
+        # HAR is never overwritten even when it contains bootstrap only. The one
+        # exception is our own analysis/browser.har: if that automatic artifact
+        # has no play/spin evidence it must not permanently suppress future
+        # capture attempts.
         existing = select_best_har(game_dir)
         if existing is not None:
             quality = inspect_har(existing)
@@ -125,29 +131,80 @@ class BGamingProvider(_BGamingProvider):
                 relative = existing.relative_to(game_dir)
             except ValueError:
                 relative = existing
-            append_har_debug(
-                game_dir,
-                "prepare_reuse_existing_har",
-                path=str(relative),
-                bytes=(existing.stat().st_size if existing.is_file() else 0),
-                quality=(quality.grade if quality is not None else "UNKNOWN"),
-                operations=(quality.operations if quality is not None else 0),
-                plays=(quality.plays if quality is not None else 0),
-                spins=(quality.spins if quality is not None else 0),
-                purchases=(quality.purchases if quality is not None else 0),
-            )
-            if quality is not None:
+
+            is_automatic = False
+            try:
+                is_automatic = existing.resolve() == automatic_har.resolve()
+            except OSError:
+                is_automatic = existing == automatic_har
+
+            if quality is not None and quality.protocol_usable:
+                append_har_debug(
+                    game_dir,
+                    "prepare_reuse_existing_har",
+                    path=str(relative),
+                    bytes=(existing.stat().st_size if existing.is_file() else 0),
+                    quality=quality.grade,
+                    operations=quality.operations,
+                    plays=quality.plays,
+                    spins=quality.spins,
+                    purchases=quality.purchases,
+                )
                 progress(
                     f"[{game.name}] HAR seleccionado: {relative}; "
                     f"calidad={quality.grade}, operaciones={quality.operations}, "
                     f"compras={quality.purchases}; captura omitida."
                 )
-            else:
-                progress(f"[{game.name}] HAR existente: {relative}; captura omitida.")
-            return
+                return
+
+            if not is_automatic:
+                append_har_debug(
+                    game_dir,
+                    "prepare_reuse_manual_incomplete_har",
+                    path=str(relative),
+                    bytes=(existing.stat().st_size if existing.is_file() else 0),
+                    quality=(quality.grade if quality is not None else "UNKNOWN"),
+                )
+                progress(
+                    f"[{game.name}] HAR manual existente: {relative}; "
+                    f"calidad={quality.grade if quality is not None else 'UNKNOWN'}; "
+                    "no se sobrescribe."
+                )
+                return
+
+            try:
+                incomplete_backup.parent.mkdir(parents=True, exist_ok=True)
+                if incomplete_backup.exists():
+                    incomplete_backup.unlink()
+                existing.replace(incomplete_backup)
+                moved_incomplete_automatic = True
+                append_har_debug(
+                    game_dir,
+                    "prepare_retry_incomplete_automatic_har",
+                    previous_quality=(quality.grade if quality is not None else "UNKNOWN"),
+                    backup=incomplete_backup.name,
+                )
+                progress(
+                    f"[{game.name}] HAR automático incompleto "
+                    f"({quality.grade if quality is not None else 'UNKNOWN'}): "
+                    "sin play/spin; reintentando captura."
+                )
+            except OSError as exc:
+                append_har_debug(
+                    game_dir,
+                    "prepare_incomplete_har_backup_failed",
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+                progress(
+                    f"[{game.name}] HAR automático incompleto pero no pudo "
+                    "apartarse para recaptura; se conserva."
+                )
+                return
 
         if stop_event.is_set():
             append_har_debug(game_dir, "prepare_cancelled_before_resolution")
+            if moved_incomplete_automatic and incomplete_backup.exists():
+                incomplete_backup.replace(automatic_har)
             return
 
         public_url = ""
@@ -256,6 +313,7 @@ class BGamingProvider(_BGamingProvider):
                 stop_event=stop_event,
                 progress=progress,
             )
+            result_quality = inspect_har(result.path)
             append_har_debug(
                 game_dir,
                 "prepare_complete",
@@ -264,9 +322,43 @@ class BGamingProvider(_BGamingProvider):
                 provider_posts=result.post_requests,
                 error=result.error,
                 path=str(result.path or ""),
+                quality=(result_quality.grade if result_quality is not None else "UNKNOWN"),
+                operations=(result_quality.operations if result_quality is not None else 0),
             )
+            if result.path is not None and result_quality is not None:
+                if result_quality.protocol_usable:
+                    progress(
+                        f"[{game.name}] HAR listo para protocolo: "
+                        f"{result_quality.grade}, operaciones={result_quality.operations}."
+                    )
+                else:
+                    progress(
+                        f"[{game.name}] HAR sigue incompleto: {result_quality.grade}; "
+                        "no contiene play/spin y se reintentará en la próxima corrida."
+                    )
         finally:
             session.close()
+            # Keep a failed recapture from destroying the previous bootstrap HAR.
+            if moved_incomplete_automatic and incomplete_backup.exists():
+                if automatic_har.is_file() and automatic_har.stat().st_size > 0:
+                    try:
+                        incomplete_backup.unlink()
+                    except OSError:
+                        pass
+                else:
+                    try:
+                        incomplete_backup.replace(automatic_har)
+                        append_har_debug(
+                            game_dir,
+                            "prepare_restored_previous_automatic_har",
+                            path=str(automatic_har),
+                        )
+                    except OSError as exc:
+                        append_har_debug(
+                            game_dir,
+                            "prepare_restore_previous_har_failed",
+                            error=f"{type(exc).__name__}: {exc}",
+                        )
             append_har_debug(game_dir, "prepare_session_closed")
 
 
