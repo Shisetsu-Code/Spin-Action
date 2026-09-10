@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 from abc import ABC, abstractmethod
 from collections.abc import Callable
+from pathlib import Path
 
 from tester_spin.models import Game, GameTestResult
 
@@ -60,6 +61,14 @@ class ProviderAdapter(ABC):
         Providers may override this to capture reusable diagnostics such as HARs.
         The default is intentionally a no-op so provider implementations remain
         autonomous.
+        """
+        return None
+
+    def har_artifact_dir(self, game: Game) -> Path | None:
+        """Return the folder containing this game's HAR/diagnostics, if any.
+
+        The GUI uses this hook instead of knowing provider-specific storage layouts.
+        Providers that do not maintain HAR artifacts keep the default no-op.
         """
         return None
 
