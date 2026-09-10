@@ -93,6 +93,16 @@ class BGamingExecutionMixin:
         pending_actions: set[str] = set()
         previous_remote_identity: tuple[Any, Any, str] | None = None
 
+        game_json = self.game_dir(game) / "game.json"
+        public_url = ""
+        if game_json.is_file():
+            try:
+                persisted_game = json.loads(game_json.read_text(encoding="utf-8"))
+                if isinstance(persisted_game, dict):
+                    public_url = str(persisted_game.get("public_url") or "").strip()
+            except Exception:
+                public_url = ""
+
         session = self._new_session()
         execution_url = game.url
         if not is_demo_url(execution_url):
@@ -134,7 +144,6 @@ class BGamingExecutionMixin:
                     run_dir=str(run_dir),
                 )
 
-        game_json = self.game_dir(game) / "game.json"
         persisted_profile = load_profile(game_json)
         active_profile: BGamingProfile | None = None
 
@@ -172,7 +181,41 @@ class BGamingExecutionMixin:
             progress(
                 f"[{game.name}] BGaming: bootstrap HTML → window.__OPTIONS__ → init API v2."
             )
-            runtime = bootstrap_game(session, execution_url, timeout_s=timeout_s)
+            try:
+                runtime = bootstrap_game(
+                    session,
+                    execution_url,
+                    timeout_s=timeout_s,
+                )
+            except requests.HTTPError as launch_exc:
+                status_code = (
+                    int(launch_exc.response.status_code)
+                    if launch_exc.response is not None
+                    else 0
+                )
+                if (
+                    status_code not in {404, 410}
+                    or not public_url
+                    or public_url == execution_url
+                ):
+                    raise
+                progress(
+                    f"[{game.name}] launch guardado devolvió HTTP {status_code}; "
+                    "resolviendo un demo fresco desde la ficha pública."
+                )
+                fresh_demo_url = resolve_fresh_demo_url(
+                    session,
+                    public_url,
+                    timeout_s=timeout_s,
+                )
+                if not fresh_demo_url or fresh_demo_url == execution_url:
+                    raise
+                execution_url = fresh_demo_url
+                runtime = bootstrap_game(
+                    session,
+                    execution_url,
+                    timeout_s=timeout_s,
+                )
             game.symbol = runtime.identifier
 
             _write_json(
