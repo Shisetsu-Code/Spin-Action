@@ -62,7 +62,8 @@ class RubyPlayRuntimeTests(unittest.TestCase):
             "https://prrpeu3.com/launcher?gamename=rp_235&operator=rubyplay.com"
             "&server_url=https://srv.prrpeu3.com&currency=EUR&mode=fun&lang=en"
         )
-        html = f'<html><body><iframe src="{url}"></iframe></body></html>'
+        escaped = url.replace("&", "&amp;")
+        html = f'<html><body><iframe src="{escaped}"></iframe></body></html>'
         self.assertEqual(
             extract_launcher_url(html, "https://rubyplay.com/games/x/"),
             url,
