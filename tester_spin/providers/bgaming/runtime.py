@@ -467,6 +467,54 @@ def validate_line_spin(
     return warnings, inferred_win
 
 
+def _provider_script_url(runtime: BGamingRuntime, url: str) -> bool:
+    """Accept launch scripts only from BGaming-controlled/declared origins."""
+    parsed = urlparse(str(url or ""))
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return False
+    host = parsed.hostname.casefold()
+
+    declared_hosts: set[str] = set()
+    for candidate in (
+        runtime.launch_url,
+        runtime.api_url,
+        str(runtime.options.get("resources_path") or ""),
+        str(runtime.options.get("game_bundle_source") or ""),
+        str(runtime.options.get("games_loader_source") or ""),
+    ):
+        candidate_host = urlparse(candidate).hostname
+        if candidate_host:
+            declared_hosts.add(candidate_host.casefold())
+
+    return (
+        host in declared_hosts
+        or host == "bgaming-network.com"
+        or host.endswith(".bgaming-network.com")
+    )
+
+
+def _bundle_contract_score(text: str) -> int:
+    value = text or ""
+    score = 0
+    markers = (
+        ("additionalSpinOptions", 12),
+        ("purchased_feature", 10),
+        ("round_series_id", 8),
+        ("feature_multipliers", 8),
+        ("available_actions", 6),
+        ("last_action_id", 6),
+        ("flow", 4),
+        ("outcome", 4),
+    )
+    for marker, weight in markers:
+        if marker in value:
+            score += weight
+    if re.search(r"['\"]command['\"]\\s*:", value):
+        score += 5
+    if re.search(r"['\"]spin['\"]", value):
+        score += 2
+    return score
+
 def _runtime_bundle_candidates(
     runtime: BGamingRuntime,
     *,
@@ -530,11 +578,19 @@ def _runtime_bundle_candidates(
     if configured:
         candidates.append(configured)
 
-    # Prefer scripts the launch page actually loaded over guessed filenames.
-    # A <script src> is protocol evidence even when a CDN URL has no .js suffix.
+    # Prefer scripts the launch page actually loaded over guessed filenames,
+    # but never treat third-party analytics as provider protocol evidence.
     for script_url in runtime.script_urls:
-        if script_url:
+        if script_url and _provider_script_url(runtime, script_url):
             candidates.append(script_url)
+        elif script_url and diagnostics is not None:
+            diagnostics.append(
+                {
+                    "kind": "script-skip",
+                    "url": sanitize_session_url(script_url),
+                    "reason": "third-party-origin",
+                }
+            )
 
     out: list[str] = []
     seen: set[str] = set()
