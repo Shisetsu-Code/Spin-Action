@@ -1526,8 +1526,9 @@ con JSON-RPC 2.0.
 
 Detección actual:
 
-- launch final `/hyperhive`; o
-- `game_bundle_source` presente + `game=slots/...` + `version=1.0.0`.
+- launch final `/hyperhive` como firma fuerte del transporte.
+
+`game_bundle_source`, `game` o `version` por sí solos no clasifican HyperHive porque también aparecen en otros runtimes BGaming.
 
 Init:
 
@@ -1602,7 +1603,9 @@ buy_bonus/freeSpinRandom:
   coste observado x200
 ```
 
-Los modos HyperHive se descubren desde literales realmente presentes en `game_bundle_source`, no desde la lista genérica `config.purchased_features`.
+Los modos HyperHive se descubren desde el cliente realmente cargado. Un literal `purchased_feature` aislado se registra como `DISCOVERED_LITERAL_ONLY` y NO se ejecuta. Sólo perfiles con un wire-shape reconocido se consideran ejecutables; pasan a `VALIDATED` únicamente después de completar una ronda terminal sin warnings.
+
+Si una respuesta `final=false` publica `nextAction`, Tester-Spin sólo transforma esa acción en request cuando el mismo valor aparece en el vocabulario `action:"..."` del bundle/engine contract cargado. Una acción desconocida detiene la continuación y conserva evidencia en lugar de inventar el payload.
 
 Validación de balance HyperHive:
 
@@ -1690,18 +1693,13 @@ todavía no contiene `rows`, se reintenta una vez usando ese valor. Si el
 retry funciona, el perfil `rows-required` queda aprendido para el resto de
 la sesión y se aplica a spins, compras y continuaciones.
 
-Este HAR también confirma una segunda escala de
-`feature_multipliers`. Cuando no existe `base_bet` explícito, esta familia
-usa base porcentual 100:
+Este HAR mostró débitos equivalentes a x80 y x2, pero Tester-Spin ya no codifica una base porcentual implícita. Cuando `feature_multipliers` no publica un `base_bet`/denominador, el `cost_multiplier` queda inicialmente desconocido.
+
+La primera ejecución demo de esa compra obtiene el débito autoritativo mediante:
 
 ```text
-freespin_buy:
-8000 / 100 = x80
-bet 30 → débito 2400
-
-freespin_chance:
-200 / 100 = x2
-bet 30 → débito 60
+observed_debit = balance_previo + win - balance_final
+cost_multiplier = observed_debit / requested_bet
 ```
 
-Los débitos son confirmados por la evolución del balance del HAR.
+El multiplicador aprendido se usa para validar repeticiones posteriores. De este modo la evidencia histórica x80/x2 sigue siendo válida para esos HAR, pero no se convierte en una regla hardcodeada para otros juegos.
