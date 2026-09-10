@@ -1624,6 +1624,58 @@ No tratar `layout.rows` como altura fija para Megaways/Trueways. En esos motores
 Durante `command=freespin`, `outcome.bet` tampoco es un invariante universal entre juegos BGaming. La autoridad es débito cero + evolución correcta del balance. Por ello no se compara `outcome.bet` contra la apuesta base en continuaciones.
 
 
+## 7.12 API v2 con negociación de `extra_data`
+
+Algunos runtimes API v2 requieren parámetros globales de request antes incluso
+del primer `init`. No constituyen otra familia: el cliente declara defaults en
+`extraDataOptions.extra_data` y la capa API los fusiona en cada request.
+
+HAR observado de Book of Pyramids:
+
+```text
+init sin default:
+{"command":"init","extra_data":{"round_series_id":...}}
+→ {"errors":[{"code":204,...}]}
+
+cliente cargado:
+setExtraDataOptions(){
+  this.extraDataOptions={extra_data:{api_version:2}}
+}
+
+init correcto:
+{"command":"init","extra_data":{"round_series_id":...,"api_version":2}}
+→ api_version="2" + options + balance + flow
+
+spin:
+{"command":"spin","options":{"bet":90},
+ "extra_data":{"api_version":2,"round_series_id":...}}
+→ HTTP 200, flow.state=closed
+```
+
+Tester-Spin descubre estos defaults desde los scripts controlados/declarados por
+BGaming **antes del primer init**. Sólo acepta literales escalares bajo
+`extraDataOptions.extra_data`; no evalúa JavaScript y rechaza claves sensibles
+como tokens, sesiones, CSRF, secrets o keys.
+
+El resultado se conserva como trait del perfil:
+
+```json
+"request_extra_data": {
+  "api_version": 2
+}
+```
+
+`post_command()` combina siempre:
+
+```text
+round_series_id
++ request_extra_data descubierto
++ extra_data específico del comando
+```
+
+Por tanto el trait también sobrevive a sesiones frescas por modo y a
+continuaciones. No existe ninguna condición por nombre, slug o identifier.
+
 ## 7.12 API v2 con `rows` — BigAtlantisFrenzy
 
 HAR manual 2026-09-09 confirma una variante API v2 donde `layout.rows`
