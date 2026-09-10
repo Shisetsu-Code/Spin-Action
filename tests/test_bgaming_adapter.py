@@ -219,6 +219,7 @@ class BGamingAdapterContractTests(unittest.TestCase):
                         family=API_V2,
                         confidence=1.0,
                         source="init",
+                        purchase_features=["bonus_buy"],
                     ),
                 ),
                 patch(
