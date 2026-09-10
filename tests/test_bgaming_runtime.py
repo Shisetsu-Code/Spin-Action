@@ -10,6 +10,7 @@ from tester_spin.providers.bgaming.runtime import (
     balance_total,
     build_line_bets,
     discover_api_v2_wire_profile,
+    discover_client_extra_data_defaults,
     discover_purchase_modes,
     extract_options,
     extract_script_urls,
@@ -82,6 +83,71 @@ class BGamingRuntimeTests(unittest.TestCase):
                 "https://cdn.example/game-b2.js",
             ],
         )
+
+    def test_client_extra_data_defaults_are_extracted_without_eval(self) -> None:
+        bundle = (
+            'class X{setExtraDataOptions(){'
+            'this.extraDataOptions={extra_data:{api_version:2,flag:true,'
+            'label:"v2",token:"secret",dynamic:window.value}}'
+            '}}'
+        )
+        self.assertEqual(
+            discover_client_extra_data_defaults(bundle),
+            {
+                "api_version": 2,
+                "flag": True,
+                "label": "v2",
+            },
+        )
+
+    def test_post_command_merges_runtime_extra_data_defaults(self) -> None:
+        runtime = BGamingRuntime(
+            session=requests.Session(),
+            launch_url="https://demo.bgaming-network.com/games/Example/FUN",
+            api_url="https://demo.bgaming-network.com/api/Example/1/session",
+            identifier="Example",
+            csrf_header_name="X-CSRF",
+            csrf_header_value="secret",
+            options={},
+            round_series_id=12345,
+            request_extra_data={"api_version": 2},
+        )
+
+        class Response:
+            status_code = 200
+            text = "{}"
+
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self):
+                return {}
+
+        captured = {}
+
+        def fake_post(url, **kwargs):
+            captured["url"] = url
+            captured["json"] = kwargs["json"]
+            return Response()
+
+        with patch.object(runtime.session, "post", side_effect=fake_post):
+            _response, payload, _data = post_command(
+                runtime,
+                "spin",
+                timeout_s=1,
+                options={"bet": 90},
+                extra_data={"client_marker": 7},
+            )
+
+        self.assertEqual(
+            payload["extra_data"],
+            {
+                "round_series_id": 12345,
+                "api_version": 2,
+                "client_marker": 7,
+            },
+        )
+        self.assertEqual(captured["json"], payload)
 
     def test_protocol_discovery_ignores_gtag_and_uses_bgaming_bundle(self) -> None:
         runtime = BGamingRuntime(
