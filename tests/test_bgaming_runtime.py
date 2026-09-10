@@ -83,6 +83,54 @@ class BGamingRuntimeTests(unittest.TestCase):
             ],
         )
 
+    def test_protocol_discovery_ignores_gtag_and_uses_bgaming_bundle(self) -> None:
+        runtime = BGamingRuntime(
+            session=requests.Session(),
+            launch_url="https://demo.bgaming-network.com/games/Example/FUN",
+            api_url="https://demo.bgaming-network.com/api/Example/1/session",
+            identifier="Example",
+            csrf_header_name="X-CSRF",
+            csrf_header_value="secret",
+            options={},
+            round_series_id=1,
+            script_urls=[
+                "https://www.googletagmanager.com/gtag/js",
+                "https://cdn.bgaming-network.com/html/Example/bundle.js",
+            ],
+        )
+
+        class Response:
+            text = (
+                'this.additionalSpinOptions.rows=this.rows;'
+                'purchased_feature:"bonus_buy";'
+                'round_series_id'
+            )
+            status_code = 200
+            headers = {}
+
+            def raise_for_status(self) -> None:
+                return None
+
+        called: list[str] = []
+
+        def fake_get(url, **_kwargs):
+            called.append(url)
+            return Response()
+
+        with patch.object(runtime.session, "get", side_effect=fake_get):
+            profile = discover_api_v2_wire_profile(runtime, timeout_s=1)
+
+        self.assertEqual(
+            called,
+            ["https://cdn.bgaming-network.com/html/Example/bundle.js"],
+        )
+        self.assertEqual(
+            profile["source"],
+            "https://cdn.bgaming-network.com/html/Example/bundle.js",
+        )
+        self.assertEqual(profile["required_option_fields"], ["rows"])
+        self.assertEqual(profile["purchase_features"], ["bonus_buy"])
+
     def test_legacy_optional_gamble_prefers_non_wagering_finish(self) -> None:
         payload = {
             "game": {"state": "check_card", "action": "spin"},
