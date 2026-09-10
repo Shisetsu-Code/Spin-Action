@@ -81,13 +81,12 @@ def _formatted_request_literals(compact: str) -> dict[str, Any]:
 
     HyperHive clients can construct custom_req through a formatted request object.
     Previous discovery only noticed action/exponent/stake and silently dropped
-    literal protocol flags such as isNormalBuy=false / isSuperBuy=false.  Those
+    literal protocol flags such as isNormalBuy=false / isSuperBuy=false. Those
     flags are part of the wire contract and omitting them can produce RPC 51100.
     """
     found: dict[str, Any] = {}
     scalar = r'(?:true|false|null|-?\d+(?:\.\d+)?|"[^"\\]{0,200}"|\'[^\'\\]{0,200}\')'
 
-    # Direct writes: x.formattedRequest.params.isNormalBuy=false
     for match in re.finditer(
         rf"formattedRequest\.params\.([A-Za-z_$][A-Za-z0-9_$]*)=({scalar})",
         compact,
@@ -100,7 +99,6 @@ def _formatted_request_literals(compact: str) -> dict[str, Any]:
         except ValueError:
             continue
 
-    # Object replacement: x.formattedRequest.params={isNormalBuy:false,...}
     object_patterns = (
         r"formattedRequest\.params=\{([^{}]{1,1600})\}",
         r"formattedRequest=\{params:\{([^{}]{1,1600})\}",
@@ -120,8 +118,6 @@ def _formatted_request_literals(compact: str) -> dict[str, Any]:
                 except ValueError:
                     continue
 
-    # Dynamic fields are rebuilt from the current request/session instead of
-    # freezing whatever literal happened to appear nearby in minified code.
     for dynamic in ("action", "exponent", "stake"):
         found.pop(dynamic, None)
     return found
@@ -206,6 +202,28 @@ def apply_observed_play_wire(
 
     out["req"] = req
     return out
+
+
+def _has_req_bet_evidence(text: str) -> bool:
+    """Require direct evidence that bet is part of JSON-RPC params.req."""
+    value = text or ""
+    return bool(
+        re.search(
+            r'(?:\breq\s*:\s*\{[^{}]{0,1600}\bbet\s*:|\.req\.bet\s*=|\.req\[["\']bet["\']\]\s*=)',
+            value,
+        )
+    )
+
+
+def _has_req_bet_type_evidence(text: str) -> bool:
+    """Distinguish a req-scoped bet_type from unrelated loose literals."""
+    value = text or ""
+    return bool(
+        re.search(
+            r'(?:\breq\s*:\s*\{[^{}]{0,1600}\bbet_type\s*:|\.req\.bet_type\s*=|\.req\[["\']bet_type["\']\]\s*=)',
+            value,
+        )
+    )
 
 
 _install_lock = threading.Lock()
@@ -325,6 +343,33 @@ def install_observed_wire_adapter() -> None:
             profile = analyze_engine_wire(engine_contract)
             _profiles[id(runtime)] = profile
             har = current_thread_har_evidence()
+            combined = (bundle_text or "") + "\n" + (engine_contract or "")
+            req_bet_observed = _has_req_bet_evidence(combined)
+            req_bet_type_observed = _has_req_bet_type_evidence(combined)
+
+            # The legacy discovery function historically injected bet_type="bet"
+            # and marked SPIN executable even with no req evidence. Enforce the
+            # documented fail-closed contract at the active provider boundary:
+            # without a HAR play or client proof of params.req.bet, no wager is sent.
+            if modes:
+                base = modes[0]
+                request = base.get("request")
+                if isinstance(request, dict):
+                    if (
+                        request.get("bet_type") == "bet"
+                        and not req_bet_type_observed
+                        and not profile.bet_type
+                        and not har.bet_type
+                    ):
+                        request.pop("bet_type", None)
+                if not har.usable and not req_bet_observed:
+                    base["executable"] = False
+                    base["discovery_state"] = "CONTRACT_UNRESOLVED"
+                    base["source"] = "client-evidence-incomplete"
+                    for mode in modes[1:]:
+                        if mode.get("kind") == "PURCHASE" and mode.get("executable"):
+                            mode["executable"] = False
+                            mode["discovery_state"] = "BASE_CONTRACT_UNRESOLVED"
 
             if profile.bet_type and not har.bet_type:
                 for mode in modes:
@@ -337,8 +382,9 @@ def install_observed_wire_adapter() -> None:
                 if not str(base.get("custom_req_profile") or ""):
                     base["custom_req_profile"] = profile.custom_profile
                     base["custom_req_literal_keys"] = sorted(profile.custom_literals)
-                    base["discovery_state"] = "OBSERVED_ENGINE_CONTRACT"
-                    base["source"] = "game_bundle_source+engine_contract"
+                    if bool(base.get("executable")):
+                        base["discovery_state"] = "OBSERVED_ENGINE_CONTRACT"
+                        base["source"] = "game_bundle_source+engine_contract"
 
             if har.usable and modes:
                 base = modes[0]
@@ -347,12 +393,12 @@ def install_observed_wire_adapter() -> None:
                         request = mode.get("request")
                         if isinstance(request, dict):
                             request["bet_type"] = har.bet_type
+                base["executable"] = True
+                base["discovery_state"] = "HAR_OBSERVED_WIRE"
+                base["source"] = "observed-har-play"
                 if har.spin is not None and har.spin.custom_req:
                     base["custom_req_profile"] = "har-observed"
                     base["custom_req_literal_keys"] = sorted(har.spin.custom_req)
-                    base["discovery_state"] = "HAR_OBSERVED_WIRE"
-                    base["source"] = "observed-har-play"
-                    base["executable"] = True
 
                 for feature in sorted(har.purchase_features):
                     existing = None
