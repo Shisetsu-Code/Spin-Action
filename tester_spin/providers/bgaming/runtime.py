@@ -386,12 +386,31 @@ def build_line_bets(data: dict[str, Any], line_bet: int | float) -> dict[str, in
     return {str(index): line_bet for index in range(count)}
 
 
+def legacy_safe_terminal_command(data: dict[str, Any]) -> str:
+    """Return a non-wagering legacy command that safely closes the current round.
+
+    Legacy line-bet games can expose an optional card/gamble state after a win.
+    We never enter that wager. When the server itself advertises `finish` and
+    no new `spin` is available, `finish` is the provider-level terminal path.
+    """
+    game = data.get("game")
+    commands = data.get("available_commands")
+    if not isinstance(game, dict) or not isinstance(commands, list):
+        return ""
+    command_names = {str(item) for item in commands}
+    state = str(game.get("state") or "")
+    if state != "closed" and "finish" in command_names and "spin" not in command_names:
+        return "finish"
+    return ""
+
+
 def validate_line_spin(
     data: dict[str, Any],
     *,
     requested_line_bet: int | float,
     line_count: int,
     previous_balance_total: int | float | None,
+    allow_safe_finish: bool = False,
 ) -> tuple[list[str], int | float | None]:
     warnings: list[str] = []
 
@@ -414,17 +433,22 @@ def validate_line_spin(
         if bad:
             warnings.append(f"line-spin apuestas distintas en líneas={bad[:8]}")
 
+    safe_finish = legacy_safe_terminal_command(data) if allow_safe_finish else ""
     game = data.get("game")
     if not isinstance(game, dict):
         warnings.append("line-spin sin game")
     else:
         if str(game.get("action") or "") != "spin":
             warnings.append(f"line-spin action inesperada={game.get('action')!r}")
-        if str(game.get("state") or "") != "closed":
+        if str(game.get("state") or "") != "closed" and not safe_finish:
             warnings.append(f"line-spin state no terminal={game.get('state')!r}")
 
     commands = data.get("available_commands")
-    if isinstance(commands, list) and "spin" not in {str(item) for item in commands}:
+    if (
+        isinstance(commands, list)
+        and "spin" not in {str(item) for item in commands}
+        and not safe_finish
+    ):
         warnings.append(f"line-spin sin spin disponible: {commands!r}")
 
     current_balance = balance_total(data)
