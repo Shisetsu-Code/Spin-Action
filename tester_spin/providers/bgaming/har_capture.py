@@ -155,9 +155,47 @@ def _is_bgaming_state_post(request: Any) -> bool:
         ):
             return False
         path = parsed.path.casefold()
-        return path == "/api" or "/api/" in path
+        return (
+            path == "/api"
+            or "/api/" in path
+            or path.endswith("/hyperhive")
+            or "/hyperhive/" in path
+        )
     except Exception:
         return False
+
+
+def _request_payload_shape(request: Any) -> dict[str, Any]:
+    """Return protocol structure without logging tokens, bets or other values."""
+    try:
+        payload = request.post_data_json
+    except Exception:
+        payload = None
+    if not isinstance(payload, dict):
+        return {}
+
+    shape: dict[str, Any] = {"keys": sorted(str(key) for key in payload)}
+    for name in ("command", "method", "jsonrpc"):
+        value = payload.get(name)
+        if isinstance(value, (str, int, float, bool)):
+            shape[name] = value
+
+    options = payload.get("options")
+    if isinstance(options, dict):
+        shape["option_keys"] = sorted(str(key) for key in options)
+
+    extra_data = payload.get("extra_data")
+    if isinstance(extra_data, dict):
+        shape["extra_data_keys"] = sorted(str(key) for key in extra_data)
+
+    params = payload.get("params")
+    if isinstance(params, dict):
+        shape["params_keys"] = sorted(str(key) for key in params)
+        req = params.get("req")
+        if isinstance(req, dict):
+            shape["req_keys"] = sorted(str(key) for key in req)
+
+    return shape
 
 
 def _frame_summary(page: Any) -> list[dict[str, Any]]:
@@ -307,12 +345,6 @@ def _capture_browser_har(
     if target.exists():
         target.unlink()
 
-    debug_log = target.parent / "har-debug.jsonl"
-    try:
-        debug_log.write_text("", encoding="utf-8")
-    except Exception:
-        pass
-
     append_har_debug(
         game_dir,
         "capture_start",
@@ -354,6 +386,7 @@ def _capture_browser_har(
                         method=str(request.method),
                         url=str(request.url),
                         resource_type=str(getattr(request, "resource_type", "") or ""),
+                        payload_shape=_request_payload_shape(request),
                     )
 
             def on_response(response: Any) -> None:
@@ -568,7 +601,6 @@ def ensure_analysis_har(
                     "elapsed_ms": elapsed_ms,
                     "interaction": "provider-generic-entry+canvas-space",
                     "debug_log": debug_log.name,
-                    "spin_probe_observed_provider_post": post_requests > 0,
                 },
                 ensure_ascii=False,
                 indent=2,
