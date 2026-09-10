@@ -27,7 +27,7 @@ def _show_error(message: str) -> None:
 
 def main() -> int:
     try:
-        from tester_spin.app_current import main as app_main
+        from tester_spin.app_har import main as app_main
 
         app_main()
         return 0
