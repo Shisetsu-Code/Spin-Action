@@ -582,13 +582,14 @@ def run_hyperhive_test(
         runtime,
         timeout_s=timeout_s,
     )
+    rpc_contract = bundle_text + "\n" + engine_contract
 
     init_response, init_request, init_data = _rpc(
         runtime,
         "init",
         timeout_s=timeout_s,
         params={"token": token},
-        rpc_id=_hyperhive_rpc_id(engine_contract),
+        rpc_id=_hyperhive_rpc_id(rpc_contract),
     )
     init_result = init_data["result"]
     config = init_result.get("config")
@@ -632,7 +633,7 @@ def run_hyperhive_test(
     action_vocabulary = discover_action_vocabulary(bundle_text, engine_contract)
     state_lock = init_result.get("state_lock")
     modes_to_run = [mode for mode in modes if bool(mode.get("executable"))]
-    rpc_id_probe = _hyperhive_rpc_id(engine_contract)
+    rpc_id_probe = _hyperhive_rpc_id(rpc_contract)
     contract_diagnostic = {
         "runtime": "hyperhive-jsonrpc",
         "script_urls": [
@@ -758,7 +759,7 @@ def run_hyperhive_test(
                     "play",
                     timeout_s=timeout_s,
                     params=play_params,
-                    rpc_id=_hyperhive_rpc_id(engine_contract),
+                    rpc_id=_hyperhive_rpc_id(rpc_contract),
                 )
                 responded += 1
                 steps = 1
@@ -827,7 +828,7 @@ def run_hyperhive_test(
                         "play",
                         timeout_s=timeout_s,
                         params=play_params,
-                        rpc_id=_hyperhive_rpc_id(engine_contract),
+                        rpc_id=_hyperhive_rpc_id(rpc_contract),
                     )
                     steps += 1
                     last_status = int(response.status_code)
