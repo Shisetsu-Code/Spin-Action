@@ -204,7 +204,7 @@ class BGamingProvider(BGamingExecutionMixin, ProviderAdapter):
         else:
             page = 2
             has_more = True
-            expected_total: int | None = None
+            expected_total_pages: int | None = None
 
             while has_more and page <= limit and not stop_event.is_set():
                 params = {
@@ -251,16 +251,16 @@ class BGamingProvider(BGamingExecutionMixin, ProviderAdapter):
                         reported_total = int(payload.get("total") or 0) or None
                     except (TypeError, ValueError):
                         reported_total = None
-                    if expected_total is None:
-                        expected_total = reported_total
+                    if expected_total_pages is None:
+                        expected_total_pages = reported_total
                     elif (
                         reported_total is not None
-                        and reported_total != expected_total
+                        and reported_total != expected_total_pages
                     ):
                         self.set_catalog_authority(
                             False,
                             f"total REST cambió durante el crawl: "
-                            f"{expected_total}→{reported_total}",
+                            f"{expected_total_pages}→{reported_total}",
                         )
                         progress(
                             f"BGaming catálogo inconsistente: total REST cambió "
@@ -280,7 +280,7 @@ class BGamingProvider(BGamingExecutionMixin, ProviderAdapter):
                         f"slots={len(records)}, descartados_no_slot={len(rejected)}, "
                         f"nuevos={added}, acumulados={len(by_slug)}, hasMore={has_more}"
                         + (
-                            f", total_reportado={expected_total}"
+                            f", total_paginas={expected_total_pages}"
                             if expected_total is not None
                             else ""
                         )
@@ -313,18 +313,18 @@ class BGamingProvider(BGamingExecutionMixin, ProviderAdapter):
 
             if (
                 not has_more
-                and expected_total is not None
-                and len(by_slug) != expected_total
+                and expected_total_pages is not None
+                and (page - 1) != expected_total_pages
             ):
                 self.set_catalog_authority(
                     False,
-                    "total REST no coincide con slots únicos descubiertos: "
-                    f"reportado={expected_total}, descubiertos={len(by_slug)}",
+                    "página terminal no coincide con total REST: "
+                    f"terminal={page - 1}, total_paginas={expected_total_pages}",
                 )
                 progress(
                     "BGaming catálogo incompleto: "
-                    f"total reportado={expected_total}, "
-                    f"slots únicos descubiertos={len(by_slug)}."
+                    f"página terminal={page - 1}, "
+                    f"total_paginas={expected_total_pages}."
                 )
 
         records = sorted(by_slug.values(), key=lambda item: item.game.name.casefold())
