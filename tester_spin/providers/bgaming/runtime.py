@@ -680,6 +680,163 @@ def discover_client_extra_data_defaults(bundle: str) -> dict[str, Any]:
     return found
 
 
+def _dedupe_values(values: list[Any]) -> list[Any]:
+    out: list[Any] = []
+    seen: set[tuple[str, str]] = set()
+    for value in values:
+        if value in ("", None):
+            continue
+        key = (type(value).__name__, str(value))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(value)
+    return out
+
+
+def discover_additional_spin_option_choices(bundle: str) -> dict[str, list[Any]]:
+    """Discover finite client-side choices for additionalSpinOptions fields."""
+    fields = list(
+        dict.fromkeys(
+            re.findall(
+                r"additionalSpinOptions\.([A-Za-z_][A-Za-z0-9_]*)",
+                bundle or "",
+            )
+        )
+    )
+    discovered: dict[str, list[Any]] = {}
+
+    for field in fields:
+        values: list[Any] = []
+
+        for match in re.finditer(
+            rf"additionalSpinOptions\.{re.escape(field)}\s*=\s*"
+            r"([\"'][^\"']{0,80}[\"'])",
+            bundle or "",
+        ):
+            raw = match.group(1)
+            values.append(raw[1:-1])
+
+        for match in re.finditer(
+            rf"additionalSpinOptions\.{re.escape(field)}\s*=\s*"
+            r"[^,;]{0,220}\?\s*[\"']([^\"']{0,80})[\"']"
+            r"\s*:\s*[\"']([^\"']{0,80})[\"']",
+            bundle or "",
+        ):
+            values.extend([match.group(1), match.group(2)])
+
+        for occurrence in re.finditer(
+            rf"additionalSpinOptions\.{re.escape(field)}\s*=",
+            bundle or "",
+        ):
+            left = (bundle or "")[
+                max(0, occurrence.start() - 1200) : occurrence.start()
+            ]
+            methods = list(
+                re.finditer(
+                    r"([A-Za-z_$][A-Za-z0-9_$]*)"
+                    r"\(([A-Za-z_$][A-Za-z0-9_$]*)(?:,[^)]*)?\)\{",
+                    left,
+                )
+            )
+            if not methods:
+                continue
+
+            method_match = methods[-1]
+            method_name = method_match.group(1)
+            parameter = method_match.group(2)
+            rhs = (bundle or "")[occurrence.end() : occurrence.end() + 120]
+            if not re.search(rf"\b{re.escape(parameter)}\b", rhs):
+                continue
+
+            stringify = bool(
+                re.search(
+                    rf'(?:""\s*\+\s*{re.escape(parameter)}'
+                    rf"|''\s*\+\s*{re.escape(parameter)}"
+                    rf"|String\(\s*{re.escape(parameter)}\s*\))",
+                    rhs,
+                )
+            )
+            numeric_literals: list[str] = []
+            numeric_literals.extend(
+                re.findall(
+                    re.escape(method_name) + r"`([0-9]+(?:\.[0-9]+)?)",
+                    bundle or "",
+                )
+            )
+            numeric_literals.extend(
+                re.findall(
+                    re.escape(method_name)
+                    + r"\(\s*([0-9]+(?:\.[0-9]+)?)\s*[,)]",
+                    bundle or "",
+                )
+            )
+            for raw_number in numeric_literals:
+                if stringify:
+                    values.append(raw_number)
+                elif "." in raw_number:
+                    values.append(float(raw_number))
+                else:
+                    values.append(int(raw_number))
+
+        clean = _dedupe_values(values)
+        if clean:
+            discovered[field] = clean
+
+    return discovered
+
+
+def discover_effective_bet_multipliers(bundle: str) -> dict[str, float]:
+    """Discover an unambiguous BET_BY_SPECIAL_LVL map from provider JS."""
+    references = list(
+        dict.fromkeys(
+            re.findall(
+                r"\bBET_BY_SPECIAL_LVL\s*=\s*"
+                r"([A-Za-z_$][A-Za-z0-9_$]*)",
+                bundle or "",
+            )
+        )
+    )
+    maps: list[dict[str, float]] = []
+    for variable in references:
+        match = re.search(
+            rf"\b{re.escape(variable)}\s*=\s*\{{([^{{}}]{{1,500}})\}}",
+            bundle or "",
+        )
+        if not match:
+            continue
+        pairs = re.findall(
+            r"(?:[\"']?)(\d+)(?:[\"']?)\s*:\s*"
+            r"(-?\d+(?:\.\d+)?)",
+            match.group(1),
+        )
+        if len(pairs) < 2:
+            continue
+        maps.append({key: float(value) for key, value in pairs})
+
+    unique: dict[tuple[tuple[str, float], ...], dict[str, float]] = {}
+    for mapping in maps:
+        unique[tuple(sorted(mapping.items()))] = mapping
+    if len(unique) != 1:
+        return {}
+    return next(iter(unique.values()))
+
+
+def effective_bet_for_options(
+    requested_bet: int | float,
+    *,
+    selector_field: str,
+    multipliers: dict[str, float],
+    options: dict[str, Any],
+) -> float:
+    if not selector_field or not multipliers:
+        return float(requested_bet)
+    selected = options.get(selector_field)
+    multiplier = multipliers.get(str(selected))
+    if not isinstance(multiplier, (int, float)) or multiplier <= 0:
+        return float(requested_bet)
+    return float(requested_bet) * float(multiplier)
+
 def discover_api_v2_wire_profile(
     runtime: BGamingRuntime,
     *,
@@ -753,6 +910,9 @@ def discover_api_v2_wire_profile(
 
     request_extra_data = discover_client_extra_data_defaults(bundle)
 
+    spin_option_choices = discover_additional_spin_option_choices(bundle)
+    effective_bet_multipliers = discover_effective_bet_multipliers(bundle)
+
     required_option_fields = sorted(
         {
             str(match)
@@ -760,6 +920,7 @@ def discover_api_v2_wire_profile(
                 r"additionalSpinOptions\.([A-Za-z_][A-Za-z0-9_]*)",
                 bundle,
             )
+            if str(match) not in {"purchased_feature", "purchased_feature_level"}
         }
     )
 
@@ -767,7 +928,21 @@ def discover_api_v2_wire_profile(
         "spin_options": {},
         "request_extra_data": dict(request_extra_data),
         "purchase_features": sorted(purchase_features),
+        "dynamic_purchased_feature": bool(
+            re.search(
+                r"additionalSpinOptions\.purchased_feature(?:\b|\s*=)",
+                bundle,
+            )
+        ),
+        "purchase_feature_level_supported": bool(
+            re.search(
+                r"additionalSpinOptions\.purchased_feature_level(?:\b|\s*=)",
+                bundle,
+            )
+        ),
         "required_option_fields": required_option_fields,
+        "spin_option_choices": spin_option_choices,
+        "effective_bet_multipliers": effective_bet_multipliers,
         "source": sanitize_session_url(source) if source else "",
         "bundle_sha256": (
             hashlib.sha256(bundle.encode("utf-8", errors="replace")).hexdigest()
