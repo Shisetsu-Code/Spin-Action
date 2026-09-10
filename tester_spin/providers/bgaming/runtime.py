@@ -11,6 +11,11 @@ from urllib.parse import urlparse
 import requests
 from bs4 import BeautifulSoup
 
+from tester_spin.providers.bgaming.contracts import (
+    CONTINUATION_BY_STATE,
+    SAFE_CONTINUATION_COMMANDS,
+)
+
 
 SENSITIVE_OPTION_KEYS = {
     "play_token",
@@ -430,6 +435,11 @@ def discover_api_v2_wire_profile(
     profile: dict[str, Any] = {
         "spin_options": {},
         "source": sanitize_session_url(source) if source else "",
+        "bundle_sha256": (
+            hashlib.sha256(bundle.encode("utf-8", errors="replace")).hexdigest()
+            if bundle
+            else ""
+        ),
     }
     if not bundle:
         return profile
@@ -603,6 +613,11 @@ def flow_available_actions(data: dict[str, Any]) -> list[str]:
 
 
 def flow_continuation_command(data: dict[str, Any]) -> str:
+    """Return only provider-level continuation commands with a known wire shape.
+
+    Unknown server-advertised actions remain diagnostic coverage and are never
+    executed merely because state == available_action.
+    """
     flow = data.get("flow")
     if not isinstance(flow, dict):
         return ""
@@ -613,28 +628,17 @@ def flow_continuation_command(data: dict[str, Any]) -> str:
         if isinstance(actions, list)
         else set()
     )
-    if state == "freespins" and "freespin" in action_names:
-        return "freespin"
-    if state == "gamble" and "close" in action_names:
-        # HAR-confirmed terminal path: collect/close instead of placing an
-        # unsolicited gamble bet.
-        return "close"
-    if (
-        state == "preselection_game"
-        and "play_preselection_game" in action_names
-    ):
-        return "play_preselection_game"
-    if state in {"", "closed", "ready", "init", "spin"}:
-        return ""
-    if state in action_names:
-        return state
+    command = CONTINUATION_BY_STATE.get(state, "")
+    if command and command in SAFE_CONTINUATION_COMMANDS and command in action_names:
+        return command
     return ""
 
 
 def pending_flow_actions(data: dict[str, Any]) -> list[str]:
     actions = set(flow_available_actions(data))
     continuation = flow_continuation_command(data)
-    handled = {"init", "spin", "freespin", "preselection_game"}
+    handled = {"init", "spin"}
+    handled.update(SAFE_CONTINUATION_COMMANDS)
     if continuation:
         handled.add(continuation)
     return sorted(actions - handled)
