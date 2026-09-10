@@ -21,6 +21,7 @@ from tester_spin.providers.bgaming.runtime import (
     legacy_safe_terminal_command,
     line_bet_count,
     pending_flow_actions,
+    post_command,
     preselection_multiplier,
     purchase_expected_debit,
     purchase_names_equivalent,
