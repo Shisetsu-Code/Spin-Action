@@ -326,7 +326,7 @@ class BGamingAdapterContractTests(unittest.TestCase):
                         family=API_V2,
                         confidence=1.0,
                         source="init",
-                        purchase_features=["bonus_buy"],
+                        purchase_features=[],
                     ),
                 ),
                 patch(
@@ -350,6 +350,11 @@ class BGamingAdapterContractTests(unittest.TestCase):
             )
             self.assertEqual(purchase["cost_multiplier"], 50.0)
             self.assertEqual(purchase["cost_source"], "observed_balance_delta")
+            self.assertEqual(
+                purchase["discovery_state"],
+                "SERVER_ADVERTISED_PROBE",
+            )
+            self.assertTrue(purchase["executable"])
 
     def test_level_selector_drives_effective_bet_and_purchase_level(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
