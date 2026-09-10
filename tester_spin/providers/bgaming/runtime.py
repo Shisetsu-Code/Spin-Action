@@ -421,6 +421,7 @@ def _runtime_bundle_candidates(
     runtime: BGamingRuntime,
     *,
     timeout_s: float,
+    diagnostics: list[dict[str, Any]] | None = None,
 ) -> list[str]:
     candidates: list[str] = []
     configured = str(runtime.options.get("game_bundle_source") or "").strip()
@@ -432,8 +433,31 @@ def _runtime_bundle_candidates(
             response = runtime.session.get(loader_url, timeout=timeout_s)
             response.raise_for_status()
             loader_text = response.text
-        except Exception:
+            if diagnostics is not None:
+                diagnostics.append(
+                    {
+                        "kind": "loader",
+                        "url": sanitize_session_url(loader_url),
+                        "status": int(response.status_code),
+                        "ok": True,
+                    }
+                )
+        except Exception as exc:
             loader_text = ""
+            if diagnostics is not None:
+                diagnostics.append(
+                    {
+                        "kind": "loader",
+                        "url": sanitize_session_url(loader_url),
+                        "status": int(exc.response.status_code)
+                        if isinstance(exc, requests.HTTPError) and exc.response is not None
+                        else None,
+                        "ok": False,
+                        "error": sanitize_error_text(
+                            f"{type(exc).__name__}: {exc}"
+                        ),
+                    }
+                )
 
         if loader_text:
             version = ""
@@ -477,12 +501,39 @@ def discover_api_v2_wire_profile(
     """
     bundle = ""
     source = ""
-    for url in _runtime_bundle_candidates(runtime, timeout_s=timeout_s):
+    diagnostics: list[dict[str, Any]] = []
+    for url in _runtime_bundle_candidates(
+        runtime,
+        timeout_s=timeout_s,
+        diagnostics=diagnostics,
+    ):
         try:
             response = runtime.session.get(url, timeout=timeout_s)
             response.raise_for_status()
             text = response.text
-        except Exception:
+            diagnostics.append(
+                {
+                    "kind": "bundle",
+                    "url": sanitize_session_url(url),
+                    "status": int(response.status_code),
+                    "ok": True,
+                    "bytes": len(response.content),
+                }
+            )
+        except Exception as exc:
+            diagnostics.append(
+                {
+                    "kind": "bundle",
+                    "url": sanitize_session_url(url),
+                    "status": int(exc.response.status_code)
+                    if isinstance(exc, requests.HTTPError) and exc.response is not None
+                    else None,
+                    "ok": False,
+                    "error": sanitize_error_text(
+                        f"{type(exc).__name__}: {exc}"
+                    ),
+                }
+            )
             continue
         if not text:
             continue
@@ -502,6 +553,7 @@ def discover_api_v2_wire_profile(
             if bundle
             else ""
         ),
+        "diagnostics": diagnostics,
     }
     if not bundle:
         return profile
