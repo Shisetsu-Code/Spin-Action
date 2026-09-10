@@ -7,6 +7,7 @@ import requests
 
 from tester_spin.providers.bgaming.hyperhive import (
     _download_engine_contract,
+    _hyperhive_rpc_id,
     _pz_custom_req,
     _result_summary,
     discover_action_vocabulary,
@@ -140,7 +141,7 @@ class BGamingHyperHiveTests(unittest.TestCase):
 
         self.assertIn('bet_type="bet"', contract)
 
-    def test_loose_action_literals_do_not_make_hyperhive_executable(self) -> None:
+    def test_provider_jsonrpc_literals_can_complete_base_request(self) -> None:
         runtime = BGamingRuntime(
             session=requests.Session(),
             launch_url="https://demo.example/hyperhive",
@@ -158,10 +159,9 @@ class BGamingHyperHiveTests(unittest.TestCase):
             engine_contract="",
         )
         self.assertTrue(modes[0]["executable"])
-        self.assertEqual(modes[0]["request"], {})
         self.assertEqual(
-            modes[0]["discovery_state"],
-            "MINIMAL_PROVIDER_CONTRACT",
+            modes[0]["request"],
+            {"bet_type": "bet", "action": "spin"},
         )
 
     def test_unresolved_hyperhive_contract_is_discovery_only(self) -> None:
@@ -186,7 +186,18 @@ class BGamingHyperHiveTests(unittest.TestCase):
             modes[0]["discovery_state"],
             "MINIMAL_PROVIDER_CONTRACT",
         )
-        self.assertEqual(modes[0]["request"], {})
+        self.assertEqual(modes[0]["request"], {"bet_type": "bet"})
+
+    def test_rpc_id_defaults_to_uuid_without_explicit_zero_contract(self) -> None:
+        rpc_id = _hyperhive_rpc_id('jsonrpc:"2.0";method:"play"')
+        self.assertIsInstance(rpc_id, str)
+        self.assertTrue(rpc_id)
+
+    def test_rpc_id_uses_zero_only_when_client_serializes_zero(self) -> None:
+        self.assertEqual(
+            _hyperhive_rpc_id('id:0,jsonrpc:"2.0",method:"play"'),
+            0,
+        )
 
     def test_big_bucks_bundle_uses_bet_only_and_buy_bonus_x120(self) -> None:
         runtime = BGamingRuntime(
