@@ -133,6 +133,92 @@ class BGamingProfileTests(unittest.TestCase):
         self.assertEqual(profile.spin_options, {"rows": 5})
         self.assertIn("client.additionalSpinOptions.rows", profile.evidence)
 
+    def test_profile_resolves_client_choices_and_effective_bet_selector(self) -> None:
+        runtime = self.runtime()
+        init = {
+            "api_version": "2",
+            "options": {
+                "default_bet": 1,
+                "layout": {"reels": 5, "rows": 3},
+                "feature_options": {
+                    "feature_multipliers": {
+                        "freespin_buy": {"1": 5500, "5": 5500}
+                    },
+                    "disabled_features": [],
+                },
+            },
+            "flow": {"command": "init", "state": "ready"},
+        }
+        wire = {
+            "spin_options": {},
+            "request_extra_data": {},
+            "required_option_fields": ["gold_symbols_count"],
+            "spin_option_choices": {
+                "gold_symbols_count": ["1", "5"]
+            },
+            "effective_bet_multipliers": {"1": 8.0, "5": 88.0},
+            "dynamic_purchased_feature": True,
+            "purchase_feature_level_supported": True,
+            "purchase_features": [],
+            "source": "https://cdn.bgaming-network.com/game/bundle.js",
+            "bundle_sha256": "level-contract",
+            "diagnostics": [],
+        }
+        profile = discover_profile(
+            runtime,
+            init,
+            timeout_s=1,
+            wire_profile=wire,
+        )
+        self.assertEqual(
+            profile.spin_options,
+            {"gold_symbols_count": "1"},
+        )
+        self.assertEqual(profile.effective_bet_selector, "gold_symbols_count")
+        self.assertEqual(
+            profile.effective_bet_multipliers,
+            {"1": 8.0, "5": 88.0},
+        )
+        self.assertTrue(profile.dynamic_purchased_feature)
+        self.assertTrue(profile.purchase_feature_level_supported)
+        self.assertEqual(profile.purchase_features, ["freespin_buy"])
+
+    def test_old_profile_generation_is_rediscovered(self) -> None:
+        runtime = self.runtime()
+        init = {
+            "api_version": "2",
+            "options": {"default_bet": 10, "layout": {"reels": 5, "rows": 3}},
+        }
+        stale = BGamingProfile(
+            capability_version=0,
+            family=API_V2,
+            confidence=1.0,
+            validated=True,
+            source="old-bundle",
+        )
+        wire = {
+            "spin_options": {},
+            "request_extra_data": {},
+            "required_option_fields": ["volatility"],
+            "spin_option_choices": {"volatility": ["low", "medium"]},
+            "effective_bet_multipliers": {},
+            "dynamic_purchased_feature": False,
+            "purchase_feature_level_supported": False,
+            "purchase_features": [],
+            "source": "https://cdn.bgaming-network.com/new/bundle.js",
+            "bundle_sha256": "new",
+            "diagnostics": [],
+        }
+        profile = discover_profile(
+            runtime,
+            init,
+            timeout_s=1,
+            persisted=stale,
+            wire_profile=wire,
+        )
+        self.assertEqual(profile.spin_options, {"volatility": "low"})
+        self.assertEqual(profile.source, wire["source"])
+
     def test_profile_persists_request_extra_data_defaults(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             game_json = Path(temp) / "game.json"
