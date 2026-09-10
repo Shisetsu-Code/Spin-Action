@@ -12,9 +12,11 @@ from tester_spin.providers.bgaming.runtime import (
     discover_api_v2_wire_profile,
     discover_purchase_modes,
     extract_options,
+    extract_script_urls,
     flow_continuation_command,
     infer_observed_debit,
     is_line_bet_init,
+    legacy_safe_terminal_command,
     line_bet_count,
     pending_flow_actions,
     preselection_multiplier,
@@ -47,6 +49,43 @@ class BGamingRuntimeTests(unittest.TestCase):
         options = extract_options(html)
         self.assertEqual(options["identifier"], "TreasureOfAnubis")
         self.assertEqual(options["csrfTokenHeaderName"], "X-CSRF-Token")
+
+    def test_extracts_actual_launch_script_urls(self) -> None:
+        html = """
+        <html><head>
+          <script src="/assets/runtime-a1.js"></script>
+          <script src="https://cdn.example/game-b2.js"></script>
+        </head></html>
+        """
+        self.assertEqual(
+            extract_script_urls(html, "https://demo.example/hyperhive"),
+            [
+                "https://demo.example/assets/runtime-a1.js",
+                "https://cdn.example/game-b2.js",
+            ],
+        )
+
+    def test_legacy_optional_gamble_prefers_non_wagering_finish(self) -> None:
+        payload = {
+            "game": {"state": "check_card", "action": "spin"},
+            "available_commands": ["check_card", "finish", "init"],
+            "bets": {"lines": {"0": 1}},
+            "balance": 100005,
+        }
+        self.assertEqual(legacy_safe_terminal_command(payload), "finish")
+        warnings, _win = validate_line_spin(
+            payload,
+            requested_line_bet=1,
+            line_count=1,
+            previous_balance_total=100000,
+            allow_safe_finish=True,
+        )
+        self.assertFalse(
+            any("state no terminal" in warning for warning in warnings)
+        )
+        self.assertFalse(
+            any("sin spin disponible" in warning for warning in warnings)
+        )
 
     def test_sanitizes_session_tokens_and_csrf(self) -> None:
         clean = sanitize_options(
