@@ -606,14 +606,14 @@ def discover_api_v2_wire_profile(
     *,
     timeout_s: float,
 ) -> dict[str, Any]:
-    """Discover request options encoded by the loaded BGaming game bundle.
+    """Discover wire options from BGaming-controlled client scripts.
 
-    BurningChilliX HAR proves a family where the visible selectable line mode
-    is sent as options.mode and is not derivable from init.options alone.
+    Multiple scripts may participate in request construction. Provider-owned
+    scripts with protocol markers are combined; HTML script order is not an
+    authority signal.
     """
-    bundle = ""
-    source = ""
     diagnostics: list[dict[str, Any]] = []
+    contract_parts: list[tuple[int, str, str]] = []
     for url in _runtime_bundle_candidates(
         runtime,
         timeout_s=timeout_s,
@@ -622,7 +622,8 @@ def discover_api_v2_wire_profile(
         try:
             response = runtime.session.get(url, timeout=timeout_s)
             response.raise_for_status()
-            text = response.text
+            script_text = response.text
+            score = _bundle_contract_score(script_text)
             diagnostics.append(
                 {
                     "kind": "bundle",
@@ -633,9 +634,10 @@ def discover_api_v2_wire_profile(
                         getattr(
                             response,
                             "content",
-                            text.encode("utf-8", errors="replace"),
+                            script_text.encode("utf-8", errors="replace"),
                         )
                     ),
+                    "contract_score": score,
                 }
             )
         except Exception as exc:
@@ -653,19 +655,17 @@ def discover_api_v2_wire_profile(
                 }
             )
             continue
-        if not text:
+        if not script_text or score <= 0:
             continue
-        if not bundle:
-            bundle = text
-            source = url
-        if "additionalSpinOptions.mode" in text:
-            bundle = text
-            source = url
-            break
+        contract_parts.append((score, url, script_text))
+
+    contract_parts.sort(key=lambda item: item[0], reverse=True)
+    bundle = "\n".join(item[2] for item in contract_parts)
+    source = contract_parts[0][1] if contract_parts else ""
 
     purchase_features: set[str] = set()
     for match in re.finditer(
-        r'(?:["\']?purchased_feature["\']?\s*[:=]\s*["\'])([A-Za-z0-9_\-]+)',
+        r"(?:['\"]?purchased_feature['\"]?\s*[:=]\s*['\"])([A-Za-z0-9_\-]+)",
         bundle,
     ):
         value = str(match.group(1) or "").strip()
@@ -703,7 +703,6 @@ def discover_api_v2_wire_profile(
             profile["kind"] = "selectable-lines-mode"
 
     return profile
-
 
 def infer_missing_wire_options(
     response: requests.Response,
