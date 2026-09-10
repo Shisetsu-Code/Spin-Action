@@ -287,11 +287,26 @@ class BGamingProvider(ProviderAdapter):
                             f"página REST inesperada: pedida={page}, recibida={reported_page}"
                         )
 
+                    try:
+                        reported_total = int(payload.get("total") or 0) or None
+                    except (TypeError, ValueError):
+                        reported_total = None
                     if expected_total is None:
-                        try:
-                            expected_total = int(payload.get("total") or 0) or None
-                        except (TypeError, ValueError):
-                            expected_total = None
+                        expected_total = reported_total
+                    elif (
+                        reported_total is not None
+                        and reported_total != expected_total
+                    ):
+                        self.set_catalog_authority(
+                            False,
+                            f"total REST cambió durante el crawl: "
+                            f"{expected_total}→{reported_total}",
+                        )
+                        progress(
+                            f"BGaming catálogo inconsistente: total REST cambió "
+                            f"{expected_total}→{reported_total} en página {page}."
+                        )
+                        break
 
                     added = self._consume_records(
                         records,
@@ -305,7 +320,7 @@ class BGamingProvider(ProviderAdapter):
                         f"slots={len(records)}, descartados_no_slot={len(rejected)}, "
                         f"nuevos={added}, acumulados={len(by_slug)}, hasMore={has_more}"
                         + (
-                            f", total_paginas_reportado={expected_total}"
+                            f", total_reportado={expected_total}"
                             if expected_total is not None
                             else ""
                         )
