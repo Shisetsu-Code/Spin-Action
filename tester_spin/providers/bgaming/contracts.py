@@ -8,6 +8,7 @@ SAFE_CONTINUATION_COMMANDS = frozenset(
         "freespin",
         "respin",
         "play_bonus",
+        "preselection_game",
         "play_preselection_game",
         "close",
     }
