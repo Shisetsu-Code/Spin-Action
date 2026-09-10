@@ -76,6 +76,26 @@ class RubyPlayRuntimeTests(unittest.TestCase):
             "https://srv.prrpeu3.com/gameserver/demo",
         )
 
+    def test_launcher_accepts_repeated_identical_parameters(self) -> None:
+        url = (
+            "https://prrpeu3.com/launcher?gamename=rp_235&operator=rubyplay.com"
+            "&server_url=https://srv.prrpeu3.com&currency=EUR&currency=EUR"
+            "&mode=fun&lang=en"
+        )
+        parsed = parse_launcher_url(url)
+        self.assertEqual(parsed.currency, "EUR")
+        self.assertEqual(parsed.gamename, "rp_235")
+        self.assertEqual(parsed.server_url, "https://srv.prrpeu3.com")
+
+    def test_launcher_rejects_repeated_conflicting_parameters(self) -> None:
+        url = (
+            "https://prrpeu3.com/launcher?gamename=rp_235&operator=rubyplay.com"
+            "&server_url=https://srv.prrpeu3.com&currency=EUR&currency=USD"
+            "&mode=fun&lang=en"
+        )
+        with self.assertRaisesRegex(ValueError, "currency.*no unívoco"):
+            parse_launcher_url(url)
+
     def test_client_contract_is_discovered_without_game_name_routing(self) -> None:
         bundle = (
             'tt.VERSION=2,tt.BYTE_SIZE=8;'
