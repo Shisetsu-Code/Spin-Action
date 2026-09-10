@@ -311,6 +311,22 @@ class BGamingProvider(BGamingExecutionMixin, ProviderAdapter):
                     f"crawl limitado manualmente a {limit} páginas",
                 )
 
+            if (
+                not has_more
+                and expected_total is not None
+                and len(by_slug) != expected_total
+            ):
+                self.set_catalog_authority(
+                    False,
+                    "total REST no coincide con slots únicos descubiertos: "
+                    f"reportado={expected_total}, descubiertos={len(by_slug)}",
+                )
+                progress(
+                    "BGaming catálogo incompleto: "
+                    f"total reportado={expected_total}, "
+                    f"slots únicos descubiertos={len(by_slug)}."
+                )
+
         records = sorted(by_slug.values(), key=lambda item: item.game.name.casefold())
         games = [record.game for record in records]
         (self.provider_root / "catalog.json").write_text(
