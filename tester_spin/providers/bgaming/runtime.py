@@ -40,6 +40,7 @@ class BGamingRuntime:
     options: dict[str, Any]
     round_series_id: int
     script_urls: list[str] = field(default_factory=list)
+    request_extra_data: dict[str, Any] = field(default_factory=dict)
 
 
 def extract_script_urls(html: str, base_url: str) -> list[str]:
@@ -261,11 +262,13 @@ def post_command(
     payload: dict[str, Any] = {"command": command}
     if options is not None:
         payload["options"] = options
-    payload["extra_data"] = (
-        dict(extra_data)
-        if extra_data is not None
-        else {"round_series_id": runtime.round_series_id}
-    )
+    merged_extra_data: dict[str, Any] = {
+        "round_series_id": runtime.round_series_id,
+    }
+    merged_extra_data.update(runtime.request_extra_data)
+    if extra_data is not None:
+        merged_extra_data.update(extra_data)
+    payload["extra_data"] = merged_extra_data
 
     parsed = urlparse(runtime.api_url)
     headers = {
@@ -514,6 +517,8 @@ def _bundle_contract_score(text: str) -> int:
     score = 0
     markers = (
         ("additionalSpinOptions", 12),
+        ("extraDataOptions", 12),
+        ("api_version", 10),
         ("purchased_feature", 10),
         ("round_series_id", 8),
         ("feature_multipliers", 8),
@@ -617,6 +622,64 @@ def _runtime_bundle_candidates(
     return out
 
 
+def _parse_safe_js_scalar(value: str) -> Any:
+    raw = str(value or "").strip()
+    if not raw:
+        raise ValueError("empty literal")
+    if (
+        (raw.startswith('"') and raw.endswith('"'))
+        or (raw.startswith("'") and raw.endswith("'"))
+    ):
+        return raw[1:-1]
+    lowered = raw.casefold()
+    if lowered == "true":
+        return True
+    if lowered == "false":
+        return False
+    if lowered == "null":
+        return None
+    if re.fullmatch(r"-?\d+(?:\.\d+)?", raw):
+        return float(raw) if "." in raw else int(raw)
+    raise ValueError("non-literal JavaScript value")
+
+
+def _safe_extra_data_key(key: str) -> bool:
+    lowered = str(key or "").casefold()
+    if not lowered:
+        return False
+    forbidden = ("token", "session", "csrf", "secret", "password", "key")
+    return not any(marker in lowered for marker in forbidden)
+
+
+def discover_client_extra_data_defaults(bundle: str) -> dict[str, Any]:
+    """Extract literal provider request defaults from the loaded client.
+
+    Only values nested under extraDataOptions.extra_data are accepted. Dynamic
+    expressions are ignored rather than evaluated, keeping discovery deterministic.
+    """
+    found: dict[str, Any] = {}
+    patterns = [
+        r"extraDataOptions\s*=\s*\{\s*extra_data\s*:\s*\{([^{}]{1,800})\}\s*\}",
+        r"extraDataOptions\s*=\s*\{\s*["']extra_data["']\s*:\s*\{([^{}]{1,800})\}\s*\}",
+    ]
+    for pattern in patterns:
+        for match in re.finditer(pattern, bundle or ""):
+            body = match.group(1)
+            for pair in re.finditer(
+                r"(?:["']?)([A-Za-z_][A-Za-z0-9_]*)(?:["']?)\s*:\s*([^,}]+)",
+                body,
+            ):
+                key = str(pair.group(1) or "").strip()
+                if not _safe_extra_data_key(key):
+                    continue
+                try:
+                    value = _parse_safe_js_scalar(pair.group(2))
+                except ValueError:
+                    continue
+                found[key] = value
+    return found
+
+
 def discover_api_v2_wire_profile(
     runtime: BGamingRuntime,
     *,
@@ -688,6 +751,8 @@ def discover_api_v2_wire_profile(
         if value:
             purchase_features.add(value)
 
+    request_extra_data = discover_client_extra_data_defaults(bundle)
+
     required_option_fields = sorted(
         {
             str(match)
@@ -700,6 +765,7 @@ def discover_api_v2_wire_profile(
 
     profile: dict[str, Any] = {
         "spin_options": {},
+        "request_extra_data": dict(request_extra_data),
         "purchase_features": sorted(purchase_features),
         "required_option_fields": required_option_fields,
         "source": sanitize_session_url(source) if source else "",
