@@ -16,6 +16,7 @@ from tester_spin.models import Game, GameTestResult, SpinAttempt, utc_now_iso
 from tester_spin.providers.base import Progress
 from tester_spin.providers.bgaming.runtime import (
     BGamingRuntime,
+    _provider_script_url,
     response_fingerprint,
     sanitize_error_text,
     sanitize_session_url,
@@ -139,7 +140,7 @@ def _download_bundle(runtime: BGamingRuntime, timeout_s: float) -> str:
                     )
 
     for script_url in runtime.script_urls:
-        if script_url:
+        if script_url and _provider_script_url(runtime, script_url):
             candidates.append(script_url)
 
     candidates.append(origin + "/main.js")
@@ -180,7 +181,10 @@ def _download_engine_contract(
     """
     origin = _origin(runtime.launch_url)
     candidates = [
-        *runtime.script_urls,
+        *[
+            url for url in runtime.script_urls
+            if _provider_script_url(runtime, url)
+        ],
         origin + "/client.min.js",
         origin + "/game/game.min.js",
         origin + "/game/integration.min.js",
