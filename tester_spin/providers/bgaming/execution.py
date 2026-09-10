@@ -29,6 +29,7 @@ from tester_spin.providers.bgaming.runtime import (
     balance_total,
     bootstrap_game,
     build_line_bets,
+    discover_api_v2_wire_profile,
     discover_purchase_modes,
     flow_continuation_command,
     http_error_evidence,
@@ -289,6 +290,26 @@ class BGamingExecutionMixin:
                 finally:
                     session.close()
 
+            preinit_wire_profile = discover_api_v2_wire_profile(
+                runtime,
+                timeout_s=timeout_s,
+            )
+            persisted_extra_data = (
+                dict(persisted_profile.request_extra_data)
+                if persisted_profile is not None
+                else {}
+            )
+            discovered_extra_data = preinit_wire_profile.get("request_extra_data")
+            runtime.request_extra_data.update(persisted_extra_data)
+            if isinstance(discovered_extra_data, dict):
+                runtime.request_extra_data.update(discovered_extra_data)
+
+            if runtime.request_extra_data:
+                progress(
+                    f"[{game.name}] contrato pre-init: extra_data="
+                    f"{sanitize_options(runtime.request_extra_data)!r}."
+                )
+
             _init_response, init_request, init_data = post_command(
                 runtime,
                 "init",
@@ -318,6 +339,9 @@ class BGamingExecutionMixin:
                                 recovery_session,
                                 fresh_demo_url,
                                 timeout_s=timeout_s,
+                            )
+                            recovered_runtime.request_extra_data.update(
+                                runtime.request_extra_data
                             )
                             (
                                 _recovery_response,
@@ -371,6 +395,7 @@ class BGamingExecutionMixin:
                 init_data,
                 timeout_s=timeout_s,
                 persisted=persisted_profile,
+                wire_profile=preinit_wire_profile,
             )
             persist_profile_snapshot()
             progress(
@@ -753,6 +778,10 @@ class BGamingExecutionMixin:
                     execution_url,
                     timeout_s=timeout_s,
                 )
+                if active_profile is not None:
+                    new_runtime.request_extra_data.update(
+                        active_profile.request_extra_data
+                    )
                 _response, init_request, new_init = post_command(
                     new_runtime,
                     "init",
