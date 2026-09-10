@@ -63,7 +63,7 @@ class BGamingHyperHiveTests(unittest.TestCase):
             round_series_id=1,
         )
         bundle = (
-            'bet_type:"betting" action:"spin" action:"bonus" '
+            'req:{bet:x,bet_type:"betting",action:"spin"} action:"bonus" '
             'purchased_feature:"buy_bonus" purchased_feature:"buy_chance" '
             'state_lock'
         )
@@ -139,6 +139,26 @@ class BGamingHyperHiveTests(unittest.TestCase):
             contract = _download_engine_contract(runtime, timeout_s=1)
 
         self.assertIn('bet_type="bet"', contract)
+
+    def test_loose_action_literals_do_not_make_hyperhive_executable(self) -> None:
+        runtime = BGamingRuntime(
+            session=requests.Session(),
+            launch_url="https://demo.example/hyperhive",
+            api_url="https://unused.example/api/session",
+            identifier="Generic",
+            csrf_header_name="X-CSRF",
+            csrf_header_value="secret",
+            options={},
+            round_series_id=1,
+        )
+        modes = discover_modes_from_bundle(
+            runtime,
+            timeout_s=1,
+            bundle_text='action:"spin";bet_type:"bet";jsonrpc:"2.0"',
+            engine_contract="",
+        )
+        self.assertFalse(modes[0]["executable"])
+        self.assertEqual(modes[0]["request"], {})
 
     def test_unresolved_hyperhive_contract_is_discovery_only(self) -> None:
         runtime = BGamingRuntime(
