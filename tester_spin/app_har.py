@@ -10,6 +10,7 @@ from tkinter import messagebox, ttk
 
 from tester_spin.app_current import CurrentTesterSpinApp
 from tester_spin.models import Game
+from tester_spin.providers import RubyPlayProvider
 
 
 def _open_directory(path: Path) -> None:
@@ -38,6 +39,16 @@ def _find_button_by_text(root: Any, text: str):
 
 class HARToolTesterSpinApp(CurrentTesterSpinApp):
     """Current GUI plus direct access to per-game HAR diagnostics."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        # run.py enters through this application layer. Register RubyPlay here so
+        # the established GUI/scheduler/storage remain protocol-neutral while the
+        # provider itself stays isolated under providers/rubyplay/.
+        rubyplay = RubyPlayProvider(self.data_root)
+        self.registry.register(rubyplay)
+        self._display_to_key[rubyplay.display_name] = rubyplay.key
+        self.provider_combo.configure(values=list(self._display_to_key))
 
     def _build(self) -> None:
         super()._build()
