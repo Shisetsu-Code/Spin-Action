@@ -6,6 +6,7 @@ from unittest.mock import patch
 import requests
 
 from tester_spin.providers.bgaming.hyperhive import (
+    _pz_custom_req,
     _result_summary,
     discover_modes_from_bundle,
     is_hyperhive_runtime,
@@ -142,6 +143,41 @@ class BGamingHyperHiveTests(unittest.TestCase):
         summary = _result_summary(data)
         self.assertEqual(summary["total_win"], 7454.0)
         self.assertEqual(summary["balance"], 102614)
+
+    def test_bling_blitz_discovers_custom_req_engine_profile(self) -> None:
+        runtime = BGamingRuntime(
+            session=requests.Session(),
+            launch_url="https://bling.example/hyperhive",
+            api_url="https://bling.example/api/session",
+            identifier="BlingBlitzDiamondDrop",
+            csrf_header_name="X-CSRF-Token",
+            csrf_header_value="secret",
+            options={},
+            round_series_id=1,
+        )
+        engine = (
+            'params:{token:x,req:{bet:t.stake,bet_type:"bet"}};'
+            'c.params.req.custom_req=t.formattedRequest.params;'
+            'params:{selectedWinLines:[0],perLine:!0};'
+        )
+        modes = discover_modes_from_bundle(
+            runtime,
+            timeout_s=1,
+            bundle_text="",
+            engine_contract=engine,
+        )
+        self.assertEqual(modes[0]["request"], {"bet_type": "bet"})
+        self.assertEqual(modes[0]["custom_req_profile"], "pz-per-line")
+        self.assertEqual(
+            _pz_custom_req(bet=200, exponent=2, action="spin"),
+            {
+                "selectedWinLines": [0],
+                "perLine": True,
+                "action": "spin",
+                "exponent": 2,
+                "stake": 200,
+            },
+        )
 
     def test_nested_hyperhive_game_total_win_is_accepted(self) -> None:
         data = {
