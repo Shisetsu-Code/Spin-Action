@@ -255,6 +255,53 @@ class BGamingRuntimeTests(unittest.TestCase):
         )
         self.assertEqual(captured["json"], payload)
 
+    def test_protocol_discovery_follows_wrapper_to_game_bundle(self) -> None:
+        runtime = BGamingRuntime(
+            session=requests.Session(),
+            launch_url="https://demo.bgaming-network.com/games/Generic/FUN",
+            api_url="https://demo.bgaming-network.com/api/Generic/1/session",
+            identifier="Generic",
+            csrf_header_name="X-CSRF",
+            csrf_header_value="secret",
+            options={},
+            round_series_id=1,
+            script_urls=["https://boost2.bgaming-network.com/wrapper.js"],
+        )
+
+        class Response:
+            status_code = 200
+            headers = {}
+
+            def __init__(self, text):
+                self.text = text
+                self.content = text.encode("utf-8")
+
+            def raise_for_status(self) -> None:
+                return None
+
+        responses = {
+            "https://boost2.bgaming-network.com/wrapper.js": Response(
+                'var game="https://cdn.bgaming-network.com/html/Generic/v1/bundle.js";'
+            ),
+            "https://cdn.bgaming-network.com/html/Generic/v1/bundle.js": Response(
+                'additionalSpinOptions.mode="60";'
+                'purchased_feature:"bonus_buy";'
+                'round_series_id'
+            ),
+        }
+
+        def fake_get(url, **_kwargs):
+            return responses[url]
+
+        with patch.object(runtime.session, "get", side_effect=fake_get):
+            profile = discover_api_v2_wire_profile(runtime, timeout_s=1)
+
+        self.assertEqual(
+            profile["source"],
+            "https://cdn.bgaming-network.com/html/Generic/v1/bundle.js",
+        )
+        self.assertEqual(profile["purchase_features"], ["bonus_buy"])
+
     def test_protocol_discovery_ignores_gtag_and_uses_bgaming_bundle(self) -> None:
         runtime = BGamingRuntime(
             session=requests.Session(),
