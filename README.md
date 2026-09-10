@@ -56,18 +56,18 @@ Proveedores disponibles: **Pragmatic Play**, **1spin4win (D1)**, **Belatra Games
 
 ### BGaming
 
-- Catálogo de slots: `https://bgaming.com/game-type/slots`.
-- La primera página se parsea desde tarjetas `[data-catalog-card]`; las siguientes se obtienen directamente por `GET /wp-json/bg/v1/games/search?page=N`.
-- La respuesta REST observada contiene `page`, `total`, `hasMore` y `html`; el crawl completo sólo se considera autoritativo al alcanzar `hasMore=false`.
-- Cada tarjeta conserva nombre, slug, miniatura, RTP, volatilidad, tipo de juego, URL pública y `identifier` cuando existe un demo estable.
-- Los enlaces demo que ya contienen `play_token`/`launch_token` no se persisten: quedan como `EPHEMERAL_DEMO` para evitar conservar credenciales de sesión.
-- Runtime observado: HTTP JSON API v2. El demo redirige al juego, cuyo HTML expone `window.__OPTIONS__` con `identifier`, URL `api`, nombre/valor del header CSRF y metadata de reglas.
-- Tester-Spin usa esos datos sólo en memoria y persiste una versión sanitizada de `window.__OPTIONS__`; tokens, CSRF y URLs de sesión se redactan.
-- Flujo base confirmado por HAR: `init → spin`.
-- `init` entrega `available_bets`, `default_bet`, `layout`, `currency`, `balance` y `flow`.
-- Cada `spin` se valida contra `outcome.bet`, `outcome.win`, dimensiones de `screen`, `flow.command/state` y la conservación contable `wallet + game = balance_previo - bet + win`.
-- El contrato observado terminal es `flow.command=spin`, `flow.state=closed`, con `available_actions=[init, spin]`.
-- Acciones no observadas todavía (bonus/free-spins/respin/select/buy) no se automatizan: si aparecen, el intento queda `PARCIAL` y se guarda la respuesta para clasificarla.
+- BGaming permanece aislado en `tester_spin/providers/bgaming/`; un test de arquitectura prohíbe importar internals de Pragmatic, Belatra o 1spin4win.
+- `adapter.py` gestiona catálogo/registro y `execution.py` la ejecución. `profile.py` clasifica el runtime y persiste aprendizaje; `runtime.py`, `hyperhive.py` y `switchable.py` implementan contratos BGaming.
+- Catálogo de slots: `https://bgaming.com/game-type/slots`. La primera página usa HTML y las siguientes `GET /wp-json/bg/v1/games/search?page=N`.
+- Un crawl sólo es autoritativo si termina normalmente con `hasMore=false`; cambios del `total`, páginas inconsistentes, límites manuales, stop o errores HTTP degradan la autoridad y no habilitan borrados.
+- Tokens `play_token`/`launch_token`, CSRF y URLs de sesión no se persisten. Si un catálogo sólo expone un demo efímero, la URL se resuelve nuevamente al ejecutar y vive sólo en RAM.
+- La clasificación de runtime usa evidencia del wire/bootstrap, nunca nombres, slugs ni IDs de juegos. Familias actuales: `api-v2`, `legacy-lines`, `hyperhive-jsonrpc`, `switchable-container` y `unknown`.
+- Cada juego puede conservar un `provider_protocol` validado en `game.json`: familia, opciones wire, hash/source del bundle y diagnóstico de discovery. Un perfil validado se reutiliza; un 422 o un SPIN base que deja de validar lo invalida y fuerza redescubrimiento.
+- API v2 descubre opciones adicionales desde el cliente antes del primer spin. El 422 queda como recovery, no como mecanismo normal de aprendizaje.
+- No existe lógica por título. Los estados desconocidos quedan `PARCIAL` y se preservan; sólo se ejecutan continuaciones cuyo wire-shape está modelado a nivel del proveedor.
+- HyperHive separa `DISCOVERED` de `executable/VALIDATED`: un literal encontrado en JavaScript no basta para ejecutar una compra. `nextAction` sólo se usa si también aparece en el contrato cliente cargado.
+- Las compras no asumen escalas implícitas. Si `feature_multipliers` no publica denominador, el costo queda desconocido y se aprende del débito remoto `balance_previo + win - balance_final`.
+- `SpinAttempt.ok` significa validación completa, no solamente que hubo respuesta HTTP. Un resultado que respondió pero no validó permanece `PARCIAL`.
 
 ## Modos Pragmatic
 
