@@ -138,6 +138,10 @@ def _download_bundle(runtime: BGamingRuntime, timeout_s: float) -> str:
                         f"{resources_path}/{version}/bundle.js"
                     )
 
+    for script_url in runtime.script_urls:
+        if urlparse(script_url).path.casefold().endswith(".js"):
+            candidates.append(script_url)
+
     candidates.append(origin + "/main.js")
 
     fallback = ""
@@ -168,22 +172,55 @@ def _download_engine_contract(
     *,
     timeout_s: float,
 ) -> str:
+    """Download the actual client-side JSON-RPC contract when possible.
+
+    Launch pages increasingly use hashed/versioned scripts, so fixed filenames
+    are only fallbacks. Script URLs captured from the bootstrap HTML are the
+    primary evidence source.
+    """
     origin = _origin(runtime.launch_url)
     candidates = [
+        *runtime.script_urls,
         origin + "/client.min.js",
         origin + "/game/game.min.js",
         origin + "/game/integration.min.js",
     ]
     texts: list[str] = []
+    seen: set[str] = set()
+    total_bytes = 0
+    max_contract_bytes = 8 * 1024 * 1024
     for url in candidates:
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        if not urlparse(url).path.casefold().endswith(".js"):
+            continue
         try:
             response = runtime.session.get(url, timeout=timeout_s)
             response.raise_for_status()
             text = response.text
         except Exception:
             continue
-        if text:
-            texts.append(text)
+        if not text:
+            continue
+        lower = text.casefold()
+        if not any(
+            marker in lower
+            for marker in (
+                "jsonrpc",
+                "state_lock",
+                "bet_type",
+                "custom_req",
+                "purchased_feature",
+                "method",
+            )
+        ):
+            continue
+        encoded_size = len(text.encode("utf-8", errors="replace"))
+        if total_bytes + encoded_size > max_contract_bytes:
+            continue
+        texts.append(text)
+        total_bytes += encoded_size
     return "\n".join(texts)
 
 
@@ -213,16 +250,26 @@ def _pz_custom_req(
     return payload
 
 
+def _literal_assignments(text: str, key: str) -> set[str]:
+    escaped = re.escape(key)
+    patterns = [
+        rf'\b{escaped}\b\s*:\s*["\']([A-Za-z0-9_\-]+)["\']',
+        rf'\.{escaped}\s*=\s*["\']([A-Za-z0-9_\-]+)["\']',
+        rf'\[["\']{escaped}["\']\]\s*=\s*["\']([A-Za-z0-9_\-]+)["\']',
+    ]
+    values: set[str] = set()
+    for pattern in patterns:
+        values.update(re.findall(pattern, text or ""))
+    return {str(value).strip() for value in values if str(value).strip()}
+
+
 def discover_action_vocabulary(bundle_text: str, engine_contract: str = "") -> set[str]:
     """Discover action values actually encoded by the loaded HyperHive client."""
     combined = (bundle_text or "") + "\n" + (engine_contract or "")
-    actions = set(
-        re.findall(
-            r'action\s*:\s*["\']([A-Za-z0-9_\-]+)["\']',
-            combined,
-        )
-    )
-    return {str(action).strip().casefold() for action in actions if str(action).strip()}
+    return {
+        action.casefold()
+        for action in _literal_assignments(combined, "action")
+    }
 
 
 def discover_modes_from_bundle(
@@ -239,25 +286,34 @@ def discover_modes_from_bundle(
         else bundle_text
     )
     combined = bundle + "\n" + engine_contract
-    if 'bet_type:"betting"' in combined:
+    bet_type_values = {
+        value.casefold()
+        for value in _literal_assignments(combined, "bet_type")
+    }
+    # freebet is a conditional mode, not the ordinary paid spin contract.
+    normal_bet_types = bet_type_values - {"freebet"}
+    if "betting" in normal_bet_types:
         bet_type = "betting"
-    elif 'bet_type:"bet"' in combined:
+    elif "bet" in normal_bet_types:
         bet_type = "bet"
+    elif len(normal_bet_types) == 1:
+        bet_type = next(iter(normal_bet_types))
     else:
         bet_type = ""
 
+    action_vocabulary = discover_action_vocabulary(bundle, engine_contract)
     spin_request: dict[str, Any] = {}
     if bet_type:
         spin_request["bet_type"] = bet_type
-    if 'action:"spin"' in bundle:
+    if "spin" in action_vocabulary:
         spin_request["action"] = "spin"
 
     custom_req_profile = (
         "pz-per-line"
         if (
             "custom_req" in engine_contract
-            and "selectedWinLines:[0]" in engine_contract
-            and "perLine:!0" in engine_contract
+            and re.search(r"selectedWinLines\s*:\s*\[\s*0\s*\]", engine_contract)
+            and re.search(r"perLine\s*:\s*(?:!0|true)", engine_contract)
         )
         else ""
     )
