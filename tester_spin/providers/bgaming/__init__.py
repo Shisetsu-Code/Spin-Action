@@ -13,6 +13,7 @@ from tester_spin.providers.bgaming.har_capture import (
 )
 from tester_spin.providers.bgaming.har_select import inspect_har, select_best_har
 from tester_spin.providers.bgaming.hyperhive_wire import install_observed_wire_adapter
+from tester_spin.providers.bgaming.hyperhive_transport import install_hyperhive_transport_adapter
 from tester_spin.providers.bgaming.runner_diagnostics import diagnose_progress_event
 from tester_spin.providers.bgaming.runtime import (
     is_demo_url,
@@ -22,9 +23,12 @@ from tester_spin.providers.bgaming.runtime import (
 
 
 # HyperHive clients do not all serialize the same play payload. Install the
-# provider-local adapter once so execution follows the contract demonstrated by
-# the scripts/HAR loaded by each runtime instead of a game-name allowlist.
+# provider-local wire adapter first, then wrap it with the inner-frame transport
+# context. This order makes every production RPC both adapt the request from the
+# live client contract and use the same /?token=<play_token> Referer as the
+# browser. No game-name allowlist is involved.
 install_observed_wire_adapter()
+install_hyperhive_transport_adapter()
 
 
 class BGamingProvider(_BGamingProvider):
