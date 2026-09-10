@@ -6,7 +6,7 @@ import re
 import time
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -112,6 +112,68 @@ def sanitize_session_url(url: str) -> str:
         parts[-1] = "<session>"
     path = "/" + "/".join(parts) if parts else parsed.path
     return parsed._replace(path=path, query="").geturl()
+
+
+def is_demo_url(url: str) -> bool:
+    parsed = urlparse(str(url or ""))
+    return (
+        "bgaming-network.com" in parsed.netloc.casefold()
+        and ("/play/" in parsed.path or "/games/" in parsed.path)
+    )
+
+
+def resolve_fresh_demo_url(
+    session: requests.Session,
+    public_or_demo_url: str,
+    *,
+    timeout_s: float,
+) -> str:
+    """Resolve a current demo launch URL without persisting ephemeral credentials."""
+    source = str(public_or_demo_url or "").strip()
+    if is_demo_url(source):
+        return source
+    if not source:
+        return ""
+
+    response = session.get(source, timeout=timeout_s, allow_redirects=True)
+    response.raise_for_status()
+    if is_demo_url(response.url):
+        return response.url
+
+    soup = BeautifulSoup(response.text or "", "html.parser")
+    candidates: list[str] = []
+    for node in soup.select("a[href], iframe[src]"):
+        raw = str(node.get("href") or node.get("src") or "").strip()
+        if not raw:
+            continue
+        candidate = urljoin(response.url, raw)
+        if is_demo_url(candidate):
+            candidates.append(candidate)
+
+    # Some pages expose the launch URL inside inline JSON/JavaScript rather than
+    # a clickable node. Only accept URLs on the provider demo domain.
+    for match in re.findall(
+        r'https?://[^"\'<>\\s]+bgaming-network\.com[^"\'<>\\s]+',
+        response.text or "",
+        flags=re.IGNORECASE,
+    ):
+        candidate = match.replace("\\/", "/")
+        if is_demo_url(candidate):
+            candidates.append(candidate)
+
+    if not candidates:
+        return ""
+
+    # Stable /play/ launches are preferred; token-bearing /games/ launches remain
+    # valid for the current in-memory session and are never persisted by callers.
+    candidates = list(dict.fromkeys(candidates))
+    candidates.sort(
+        key=lambda value: (
+            0 if "/play/" in urlparse(value).path else 1,
+            len(value),
+        )
+    )
+    return candidates[0]
 
 
 def bootstrap_game(
