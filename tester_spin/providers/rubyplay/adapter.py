@@ -11,6 +11,7 @@ import requests
 
 from tester_spin.models import Game, utc_now_iso
 from tester_spin.providers.base import GameCallback, Progress, ProviderAdapter
+from tester_spin.providers.rubyplay.browser_catalog import RubyPlayBrowserCatalogClient
 from tester_spin.providers.rubyplay.catalog import (
     BricksCatalogState,
     RubyPlayCatalogRecord,
@@ -153,31 +154,21 @@ class RubyPlayProvider(RubyPlayExecutionMixin, ProviderAdapter):
                 on_game(record.game)
         return added
 
-    def _fetch_bricks_page(
+    def _parse_bricks_page_data(
         self,
         state: BricksCatalogState,
         page: int,
+        data: dict[str, Any],
         *,
-        timeout_s: float,
         artifact_dir: Path,
+        source: str,
     ) -> tuple[list[RubyPlayCatalogRecord], dict[str, int]]:
-        headers: dict[str, str] = {}
-        if state.wp_rest_nonce:
-            headers["X-WP-Nonce"] = state.wp_rest_nonce
-        api = self.http.post(
-            state.load_query_url,
-            params={"lang": state.language},
-            json=load_query_payload(state, page),
-            headers=headers,
-            timeout=timeout_s,
-        )
-        api.raise_for_status()
-        data = api.json()
         if not isinstance(data, dict):
             raise ValueError("respuesta Bricks no es objeto JSON")
 
         artifact_dir.mkdir(parents=True, exist_ok=True)
-        (artifact_dir / f"page-{page:03d}.json").write_text(
+        suffix = "" if source == "http" else f"-{_safe_artifact_component(source)}"
+        (artifact_dir / f"page-{page:03d}{suffix}.json").write_text(
             json.dumps(data, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
@@ -201,6 +192,46 @@ class RubyPlayProvider(RubyPlayExecutionMixin, ProviderAdapter):
             )
         return records, meta
 
+    def _fetch_bricks_page(
+        self,
+        state: BricksCatalogState,
+        page: int,
+        *,
+        timeout_s: float,
+        artifact_dir: Path,
+    ) -> tuple[list[RubyPlayCatalogRecord], dict[str, int]]:
+        headers: dict[str, str] = {
+            "Accept": "application/json, text/plain, */*",
+            "Content-Type": "application/json; charset=UTF-8",
+            "Referer": self.catalog_url,
+            "Origin": f"{urlparse(self.catalog_url).scheme}://{urlparse(self.catalog_url).netloc}",
+        }
+        if state.wp_rest_nonce:
+            headers["X-WP-Nonce"] = state.wp_rest_nonce
+        api = self.http.post(
+            state.load_query_url,
+            params={"lang": state.language},
+            json=load_query_payload(state, page),
+            headers=headers,
+            timeout=timeout_s,
+        )
+        if api.status_code >= 400:
+            artifact_dir.mkdir(parents=True, exist_ok=True)
+            (artifact_dir / f"page-{page:03d}-http-{api.status_code}.txt").write_text(
+                api.text or "",
+                encoding="utf-8",
+                errors="replace",
+            )
+            api.raise_for_status()
+        data = api.json()
+        return self._parse_bricks_page_data(
+            state,
+            page,
+            data,
+            artifact_dir=artifact_dir,
+            source="http",
+        )
+
     def crawl_catalog(
         self,
         *,
@@ -217,6 +248,7 @@ class RubyPlayProvider(RubyPlayExecutionMixin, ProviderAdapter):
         raw_dir = self.provider_root / "catalog-pages"
         raw_dir.mkdir(parents=True, exist_ok=True)
         authority_gaps: list[str] = []
+        browser_transport: RubyPlayBrowserCatalogClient | None = None
 
         progress(
             "RubyPlay catálogo: enumerando todos los query Bricks "
@@ -293,12 +325,51 @@ class RubyPlayProvider(RubyPlayExecutionMixin, ProviderAdapter):
                     authority_gaps.append("crawl detenido por el usuario")
                     break
                 try:
-                    page_records, meta = self._fetch_bricks_page(
-                        state,
-                        page,
-                        timeout_s=30.0,
-                        artifact_dir=query_dir,
-                    )
+                    try:
+                        page_records, meta = self._fetch_bricks_page(
+                            state,
+                            page,
+                            timeout_s=30.0,
+                            artifact_dir=query_dir,
+                        )
+                    except requests.HTTPError as http_exc:
+                        status = (
+                            int(http_exc.response.status_code)
+                            if http_exc.response is not None
+                            else 0
+                        )
+                        if status != 403:
+                            raise
+                        body = (
+                            str(http_exc.response.text or "")
+                            if http_exc.response is not None
+                            else ""
+                        )
+                        excerpt = " ".join(body.split())[:220]
+                        progress(
+                            f"RubyPlay loop {query_id} página {page}: HTTP 403 en "
+                            "replay directo; se reintenta desde el origen del navegador"
+                            + (f" ({excerpt})" if excerpt else ".")
+                        )
+                        if browser_transport is None:
+                            browser_transport = RubyPlayBrowserCatalogClient(
+                                base_url,
+                                timeout_s=30.0,
+                            )
+                            browser_transport.start()
+                            progress(
+                                "RubyPlay catálogo: fallback Chromium activo; "
+                                "se reutilizará la misma sesión para paginación bloqueada."
+                            )
+                        browser_response = browser_transport.fetch_page(state, page)
+                        page_records, meta = self._parse_bricks_page_data(
+                            state,
+                            page,
+                            browser_response.data,
+                            artifact_dir=query_dir,
+                            source="browser",
+                        )
+
                     if meta["max_pages"] != expected_pages:
                         raise ValueError(
                             f"max_num_pages cambió {expected_pages}->{meta['max_pages']}"
@@ -352,6 +423,9 @@ class RubyPlayProvider(RubyPlayExecutionMixin, ProviderAdapter):
                         authority_gaps.append(
                             f"{query_id}: únicos={len(loop_slugs)} != rango={expected_single}"
                         )
+
+        if browser_transport is not None:
+            browser_transport.close()
 
         if not by_slug:
             self.set_catalog_authority(False, "ningún loop produjo juegos parseables")
