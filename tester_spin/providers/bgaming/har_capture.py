@@ -7,6 +7,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from tester_spin.models import utc_now_iso
 from tester_spin.providers.base import Progress
@@ -73,6 +74,55 @@ def _click_standard_entry_controls(page: Any) -> None:
         pass
 
 
+def _is_bgaming_state_post(request: Any) -> bool:
+    try:
+        if str(request.method).upper() != "POST":
+            return False
+        parsed = urlparse(str(request.url or ""))
+        host = (parsed.hostname or "").casefold()
+        if not (
+            host == "bgaming-network.com"
+            or host.endswith(".bgaming-network.com")
+        ):
+            return False
+        path = parsed.path.casefold()
+        return path == "/api" or "/api/" in path
+    except Exception:
+        return False
+
+
+def _attempt_provider_generic_spin(page: Any, baseline_posts: int, get_posts) -> None:
+    """Try standard canvas/keyboard interaction without title-specific selectors."""
+    for _attempt in range(2):
+        if get_posts() > baseline_posts:
+            return
+
+        focused = False
+        for frame in list(page.frames):
+            try:
+                canvas = frame.locator("canvas").first
+                if canvas.count() and canvas.is_visible(timeout=500):
+                    canvas.click(timeout=750, force=True)
+                    frame.locator("body").press("Space", timeout=750)
+                    focused = True
+                    page.wait_for_timeout(1800)
+                    if get_posts() > baseline_posts:
+                        return
+            except Exception:
+                continue
+
+        if focused:
+            continue
+
+        try:
+            page.mouse.click(720, 450)
+            page.wait_for_timeout(400)
+            page.keyboard.press("Space")
+            page.wait_for_timeout(1800)
+        except Exception:
+            return
+
+
 def _capture_browser_har(
     *,
     launch_url: str,
@@ -83,9 +133,9 @@ def _capture_browser_har(
     """Record a full embedded-content HAR and attempt one demo spin.
 
     The interaction is intentionally generic: launch, dismiss ordinary DOM entry
-    buttons, focus the game surface and press Space. BGaming clients commonly map
-    Space to spin; if a particular runtime does not, the HAR still preserves the
-    bootstrap/init and loaded client contracts for diagnosis.
+    buttons, focus a canvas in any frame and press Space. If a particular runtime
+    does not expose a standard shortcut, the HAR still preserves bootstrap/init,
+    scripts and other network responses needed for protocol diagnosis.
     """
     from playwright.sync_api import sync_playwright
 
@@ -114,11 +164,8 @@ def _capture_browser_har(
 
         def on_request(request: Any) -> None:
             nonlocal post_requests
-            try:
-                if str(request.method).upper() == "POST":
-                    post_requests += 1
-            except Exception:
-                return
+            if _is_bgaming_state_post(request):
+                post_requests += 1
 
         page.on("request", on_request)
         try:
@@ -134,24 +181,12 @@ def _capture_browser_har(
             _click_standard_entry_controls(page)
             page.wait_for_timeout(1200)
 
-            # Canvas/WebGL games normally need focus before keyboard shortcuts.
-            try:
-                page.mouse.click(720, 450)
-                page.wait_for_timeout(600)
-            except Exception:
-                pass
-
             baseline_posts = post_requests
-            for _attempt in range(2):
-                if stop_event.is_set():
-                    break
-                try:
-                    page.keyboard.press("Space")
-                    page.wait_for_timeout(1800)
-                except Exception:
-                    break
-                if post_requests > baseline_posts:
-                    break
+            _attempt_provider_generic_spin(
+                page,
+                baseline_posts,
+                lambda: post_requests,
+            )
         finally:
             # HAR is flushed on context.close().
             try:
@@ -224,9 +259,9 @@ def ensure_analysis_har(
                     "launch_url": sanitize_session_url(launch_url),
                     "path": str(target.name),
                     "bytes": target.stat().st_size,
-                    "post_requests": post_requests,
+                    "provider_post_requests": post_requests,
                     "elapsed_ms": elapsed_ms,
-                    "interaction": "provider-generic-entry+space",
+                    "interaction": "provider-generic-entry+canvas-space",
                 },
                 ensure_ascii=False,
                 indent=2,
@@ -235,7 +270,8 @@ def ensure_analysis_har(
         )
         progress(
             f"[{game_name}] HAR guardado: analysis/{target.name} "
-            f"({target.stat().st_size / 1024 / 1024:.1f} MiB, POSTs={post_requests})."
+            f"({target.stat().st_size / 1024 / 1024:.1f} MiB, "
+            f"POSTs BGaming={post_requests})."
         )
         return HARCaptureResult(
             path=target,
