@@ -96,6 +96,7 @@ class BGamingExecutionMixin:
         discovered_modes: list[dict[str, Any]] = []
         discovered_mode_ids: set[str] = set()
         pending_actions: set[str] = set()
+        unresolved_continuations: set[str] = set()
         previous_remote_identity: tuple[Any, Any, str] | None = None
 
         game_json = self.game_dir(game) / "game.json"
@@ -1175,10 +1176,47 @@ class BGamingExecutionMixin:
                                 }
                             )
 
+                            if continuation_command in unresolved_continuations:
+                                warnings.append(
+                                    "continuación con wire-shape pendiente de resolver: "
+                                    f"{continuation_command}"
+                                )
+                                pending_actions.add(
+                                    f"CONTINUATION_{continuation_command.upper()}"
+                                )
+                                runtime_needs_refresh = True
+                                break
+
                             before_total = previous_total
-                            cont_response, cont_request, cont_data = send_api_command(
-                                continuation_command,
-                            )
+                            try:
+                                cont_response, cont_request, cont_data = send_api_command(
+                                    continuation_command,
+                                )
+                            except requests.HTTPError as continuation_exc:
+                                continuation_status = (
+                                    int(continuation_exc.response.status_code)
+                                    if continuation_exc.response is not None
+                                    else 0
+                                )
+                                if continuation_status != 422:
+                                    raise
+                                unresolved_continuations.add(continuation_command)
+                                pending_actions.add(
+                                    f"CONTINUATION_{continuation_command.upper()}"
+                                )
+                                warnings.append(
+                                    "continuación BGaming respondió HTTP 422; "
+                                    f"wire-shape no resuelto para {continuation_command}"
+                                )
+                                runtime_needs_refresh = True
+                                progress(
+                                    f"[{game.name}] {mode_id} "
+                                    f"{continuation_command.upper()} "
+                                    "CONTRACT_UNRESOLVED (HTTP 422); "
+                                    "se conserva la ronda inicial y no se adivinan parámetros."
+                                )
+                                break
+
                             wire_steps += 1
                             last_status_code = int(cont_response.status_code)
                             _write_json(
