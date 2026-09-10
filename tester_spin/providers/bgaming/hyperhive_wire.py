@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 import threading
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from tester_spin.providers.bgaming.hyperhive_har import (
@@ -14,6 +14,18 @@ from tester_spin.providers.bgaming.hyperhive_har import (
 )
 
 
+_SAFE_LITERAL_KEY = re.compile(r"^[A-Za-z_$][A-Za-z0-9_$]*$")
+_SENSITIVE_LITERAL_PARTS = (
+    "token",
+    "secret",
+    "password",
+    "session",
+    "csrf",
+    "nonce",
+    "seed",
+)
+
+
 @dataclass(slots=True)
 class ObservedHyperHiveWire:
     bet_type: str = ""
@@ -21,6 +33,7 @@ class ObservedHyperHiveWire:
     custom_action: bool = False
     custom_exponent: bool = False
     custom_stake_on_spin: bool = False
+    custom_literals: dict[str, Any] = field(default_factory=dict)
     exponent: int = 2
 
     @property
@@ -32,6 +45,86 @@ class ObservedHyperHiveWire:
             if self.custom_stake_on_spin
             else "observed-formatted"
         )
+
+
+def _safe_literal_key(key: str) -> bool:
+    text = str(key or "")
+    lowered = text.casefold()
+    return bool(
+        _SAFE_LITERAL_KEY.fullmatch(text)
+        and not any(part in lowered for part in _SENSITIVE_LITERAL_PARTS)
+    )
+
+
+def _parse_js_scalar(raw: str) -> Any:
+    text = str(raw or "").strip()
+    if text == "true":
+        return True
+    if text == "false":
+        return False
+    if text == "null":
+        return None
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in {'"', "'"}:
+        value = text[1:-1]
+        if len(value) <= 200:
+            return value
+        raise ValueError("oversized literal")
+    if re.fullmatch(r"-?\d+", text):
+        return int(text)
+    if re.fullmatch(r"-?(?:\d+\.\d*|\d*\.\d+)", text):
+        return float(text)
+    raise ValueError("dynamic expression")
+
+
+def _formatted_request_literals(compact: str) -> dict[str, Any]:
+    """Extract only scalar literals proven inside formattedRequest.params.
+
+    HyperHive clients can construct custom_req through a formatted request object.
+    Previous discovery only noticed action/exponent/stake and silently dropped
+    literal protocol flags such as isNormalBuy=false / isSuperBuy=false.  Those
+    flags are part of the wire contract and omitting them can produce RPC 51100.
+    """
+    found: dict[str, Any] = {}
+    scalar = r'(?:true|false|null|-?\d+(?:\.\d+)?|"[^"\\]{0,200}"|\'[^\'\\]{0,200}\')'
+
+    # Direct writes: x.formattedRequest.params.isNormalBuy=false
+    for match in re.finditer(
+        rf"formattedRequest\.params\.([A-Za-z_$][A-Za-z0-9_$]*)=({scalar})",
+        compact,
+    ):
+        key = match.group(1)
+        if not _safe_literal_key(key):
+            continue
+        try:
+            found[key] = _parse_js_scalar(match.group(2))
+        except ValueError:
+            continue
+
+    # Object replacement: x.formattedRequest.params={isNormalBuy:false,...}
+    object_patterns = (
+        r"formattedRequest\.params=\{([^{}]{1,1600})\}",
+        r"formattedRequest=\{params:\{([^{}]{1,1600})\}",
+    )
+    for pattern in object_patterns:
+        for object_match in re.finditer(pattern, compact):
+            body = object_match.group(1)
+            for pair in re.finditer(
+                rf"(?:^|,)([A-Za-z_$][A-Za-z0-9_$]*):({scalar})(?=,|$)",
+                body,
+            ):
+                key = pair.group(1)
+                if not _safe_literal_key(key):
+                    continue
+                try:
+                    found[key] = _parse_js_scalar(pair.group(2))
+                except ValueError:
+                    continue
+
+    # Dynamic fields are rebuilt from the current request/session instead of
+    # freezing whatever literal happened to appear nearby in minified code.
+    for dynamic in ("action", "exponent", "stake"):
+        found.pop(dynamic, None)
+    return found
 
 
 def analyze_engine_wire(engine_contract: str) -> ObservedHyperHiveWire:
@@ -65,6 +158,11 @@ def analyze_engine_wire(engine_contract: str) -> ObservedHyperHiveWire:
         custom_req
         and re.search(r"formattedRequest\.params\.stake", compact)
     )
+    custom_literals = (
+        _formatted_request_literals(compact)
+        if custom_req
+        else {}
+    )
 
     return ObservedHyperHiveWire(
         bet_type="default" if default_bet_type else "",
@@ -72,6 +170,7 @@ def analyze_engine_wire(engine_contract: str) -> ObservedHyperHiveWire:
         custom_action=custom_action,
         custom_exponent=custom_exponent,
         custom_stake_on_spin=custom_stake_on_spin,
+        custom_literals=custom_literals,
     )
 
 
@@ -91,7 +190,7 @@ def apply_observed_play_wire(
 
     if profile.custom_req and "custom_req" not in req:
         action = str(req.pop("action", "") or "spin")
-        custom: dict[str, Any] = {}
+        custom: dict[str, Any] = dict(profile.custom_literals)
         if profile.custom_action:
             custom["action"] = action
         if profile.custom_exponent:
@@ -237,6 +336,7 @@ def install_observed_wire_adapter() -> None:
                 base = modes[0]
                 if not str(base.get("custom_req_profile") or ""):
                     base["custom_req_profile"] = profile.custom_profile
+                    base["custom_req_literal_keys"] = sorted(profile.custom_literals)
                     base["discovery_state"] = "OBSERVED_ENGINE_CONTRACT"
                     base["source"] = "game_bundle_source+engine_contract"
 
@@ -249,6 +349,7 @@ def install_observed_wire_adapter() -> None:
                             request["bet_type"] = har.bet_type
                 if har.spin is not None and har.spin.custom_req:
                     base["custom_req_profile"] = "har-observed"
+                    base["custom_req_literal_keys"] = sorted(har.spin.custom_req)
                     base["discovery_state"] = "HAR_OBSERVED_WIRE"
                     base["source"] = "observed-har-play"
                     base["executable"] = True
