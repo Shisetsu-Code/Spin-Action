@@ -17,6 +17,7 @@ from tester_spin.providers.bgaming.hyperhive_har import (
     set_thread_har_path,
 )
 from tester_spin.providers.bgaming.hyperhive_har_bridge import install_har_bridge
+from tester_spin.providers.bgaming.hyperhive_har_script_bridge import install_har_script_bridge
 from tester_spin.providers.bgaming.hyperhive_wire import install_observed_wire_adapter
 from tester_spin.providers.bgaming.hyperhive_transport import install_hyperhive_transport_adapter
 from tester_spin.providers.bgaming.runner_diagnostics import diagnose_progress_event
@@ -28,12 +29,14 @@ from tester_spin.providers.bgaming.runtime import (
 
 
 # HyperHive clients do not all serialize the same play payload. Keep transport
-# context and live-client discovery provider-local, then let an explicitly
-# selected HAR override only wire shapes that it actually observed. No title,
+# context and live-client discovery provider-local. Exact play requests in a
+# selected HAR are strongest; when the automatic HAR is bootstrap-only, embedded
+# BGaming JS is still valid contract evidence for the serializer. No title,
 # slug or identifier allowlist participates in this routing.
 install_observed_wire_adapter()
 install_hyperhive_transport_adapter()
 install_har_bridge()
+install_har_script_bridge()
 
 
 class BGamingProvider(_BGamingProvider):
@@ -70,8 +73,8 @@ class BGamingProvider(_BGamingProvider):
         )
 
         # Bind the best per-game HAR to this worker thread for the duration of
-        # the run. HyperHive uses it only when it contains actual JSON-RPC play
-        # evidence; API-v2 and bootstrap-only HARs remain unaffected.
+        # the run. HyperHive uses exact play evidence when present; bootstrap-only
+        # HARs can still contribute embedded BGaming serializer scripts.
         selected_har = select_best_har(game_dir)
         set_thread_har_path(selected_har)
         if selected_har is not None:
