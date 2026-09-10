@@ -182,6 +182,34 @@ class BGamingHyperHiveHARTests(unittest.TestCase):
         self.assertTrue(adapted["req"]["custom_req"]["isSuperBuy"])
         self.assertFalse(adapted["req"]["custom_req"]["isNormalBuy"])
 
+    def test_continuation_template_survives_prior_static_custom_req(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "browser.har"
+            self._write_har(path)
+            evidence = analyze_hyperhive_har(path)
+
+        adapted = apply_har_play_wire(
+            {
+                "token": "fresh-token",
+                "req": {
+                    "bet": 100,
+                    "bet_type": "bet",
+                    "custom_req": {
+                        "action": "fg_jackpot_respin",
+                        "exponent": 2,
+                        "stake": 100,
+                    },
+                },
+                "state_lock": "fresh-lock",
+            },
+            evidence,
+        )
+        self.assertEqual(
+            adapted["req"]["custom_req"],
+            {"action": "fg_jackpot_respin", "exponent": 2},
+        )
+        self.assertNotIn("stake", adapted["req"]["custom_req"])
+
     def test_nested_engine_result_supplies_next_action_and_total_win(self) -> None:
         summary = _har_result_summary(
             {
