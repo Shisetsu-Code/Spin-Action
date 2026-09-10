@@ -303,7 +303,17 @@ def apply_har_play_wire(
     if evidence.bet_type:
         req["bet_type"] = evidence.bet_type
 
-    requested_action = str(req.get("action") or "").strip().casefold()
+    existing_custom = req.get("custom_req")
+    custom_action = (
+        existing_custom.get("action")
+        if isinstance(existing_custom, dict)
+        else ""
+    )
+    requested_action = str(
+        req.get("action")
+        or custom_action
+        or ""
+    ).strip().casefold()
     feature = str(req.get("purchased_feature") or "").strip()
     template: HARPlayTemplate | None = None
     if feature:
