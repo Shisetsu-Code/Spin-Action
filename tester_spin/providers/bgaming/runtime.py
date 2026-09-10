@@ -660,13 +660,13 @@ def discover_client_extra_data_defaults(bundle: str) -> dict[str, Any]:
     found: dict[str, Any] = {}
     patterns = [
         r"extraDataOptions\s*=\s*\{\s*extra_data\s*:\s*\{([^{}]{1,800})\}\s*\}",
-        r"extraDataOptions\s*=\s*\{\s*["']extra_data["']\s*:\s*\{([^{}]{1,800})\}\s*\}",
+        r'extraDataOptions\s*=\s*\{\s*["\']extra_data["\']\s*:\s*\{([^{}]{1,800})\}\s*\}',
     ]
     for pattern in patterns:
         for match in re.finditer(pattern, bundle or ""):
             body = match.group(1)
             for pair in re.finditer(
-                r"(?:["']?)([A-Za-z_][A-Za-z0-9_]*)(?:["']?)\s*:\s*([^,}]+)",
+                r'(?:["\']?)([A-Za-z_][A-Za-z0-9_]*)(?:["\']?)\s*:\s*([^,}]+)',
                 body,
             ):
                 key = str(pair.group(1) or "").strip()
