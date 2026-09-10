@@ -48,6 +48,7 @@ class BGamingProfile:
     evidence: list[str] = field(default_factory=list)
     spin_options: dict[str, Any] = field(default_factory=dict)
     command_options: dict[str, dict[str, Any]] = field(default_factory=dict)
+    request_extra_data: dict[str, Any] = field(default_factory=dict)
     purchase_features: list[str] = field(default_factory=list)
     rows_required: bool = False
     line_count: int = 0
@@ -70,6 +71,7 @@ class BGamingProfile:
                 for command, options in self.command_options.items()
                 if isinstance(options, dict)
             },
+            "request_extra_data": dict(self.request_extra_data),
             "purchase_features": list(self.purchase_features),
             "rows_required": self.rows_required,
             "line_count": self.line_count,
@@ -90,6 +92,7 @@ class BGamingProfile:
         family = str(value.get("family") or UNKNOWN)
         options = value.get("spin_options")
         command_options = value.get("command_options")
+        request_extra_data = value.get("request_extra_data")
         purchase_features = value.get("purchase_features")
         continuations = value.get("allowed_continuations")
         evidence = value.get("evidence")
@@ -104,6 +107,9 @@ class BGamingProfile:
                 for command, command_value in command_options.items()
                 if isinstance(command_value, dict)
             } if isinstance(command_options, dict) else {},
+            request_extra_data=dict(request_extra_data)
+            if isinstance(request_extra_data, dict)
+            else {},
             purchase_features=[
                 str(item) for item in purchase_features if str(item)
             ] if isinstance(purchase_features, list) else [],
@@ -263,6 +269,7 @@ def discover_profile(
             command: dict(options)
             for command, options in persisted.command_options.items()
         }
+        profile.request_extra_data = dict(persisted.request_extra_data)
         profile.purchase_features = list(persisted.purchase_features)
         profile.rows_required = persisted.rows_required
         profile.allowed_continuations = [
@@ -285,6 +292,10 @@ def discover_profile(
             profile.evidence.append("refresh:purchase-contract-missing")
 
     wire = discover_api_v2_wire_profile(runtime, timeout_s=timeout_s)
+    request_extra_data = wire.get("request_extra_data")
+    if isinstance(request_extra_data, dict):
+        profile.request_extra_data.update(request_extra_data)
+
     options = wire.get("spin_options")
     if isinstance(options, dict):
         profile.spin_options.update(options)
