@@ -802,8 +802,13 @@ family
 confidence
 evidence
 spin_options
+spin_option_choices
 command_options
 request_extra_data
+effective_bet_selector
+effective_bet_multipliers
+dynamic_purchased_feature
+purchase_feature_level_supported
 purchase_features
 rows_required
 line_count
@@ -845,7 +850,17 @@ en init/spin/continuaciones. Esto cubre runtimes que negocian, por ejemplo,
 
 Los scripts de terceros presentes en el launch (por ejemplo analytics/tag managers) no pueden convertirse en fuente de protocolo. Sólo se inspeccionan orígenes declarados por el runtime o controlados por BGaming, y los scripts se priorizan por firmas de contrato (`additionalSpinOptions`, `purchased_feature`, `round_series_id`, `flow`, etc.).
 
-Si el cliente demuestra `additionalSpinOptions.<campo>`, el perfil puede resolver el valor de ese campo desde `init.options` o `init.options.layout` antes del primer spin. La mera presencia de `layout.rows` sigue sin ser suficiente.
+Si el cliente demuestra `additionalSpinOptions.<campo>`, el perfil puede resolver el valor de ese campo desde `init.options`, `init.options.layout` o desde choices finitas demostradas por el propio bundle. La mera presencia de `layout.rows` sigue sin ser suficiente.
+
+Los selectores dinámicos pueden ser textuales (por ejemplo dos valores de una
+ternaria) o niveles numéricos expuestos por setters. Si un único selector
+numérico coincide con una tabla cliente `BET_BY_SPECIAL_LVL`, el perfil
+registra `effective_bet_selector` + `effective_bet_multipliers` y la
+validación distingue bet nominal de bet efectivo.
+
+`feature_multipliers` puede contener mapas por nivel. En ese caso cada nivel
+es un modo separado y sólo se envía `purchased_feature_level` cuando el bundle
+demuestra soporte para ese campo.
 
 Cada modo API-v2 se ejecuta en una sesión demo fresca. Un 422/400 en una compra o continuación no contamina el siguiente modo con una ronda abierta.
 
