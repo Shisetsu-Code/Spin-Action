@@ -531,10 +531,9 @@ def _runtime_bundle_candidates(
         candidates.append(configured)
 
     # Prefer scripts the launch page actually loaded over guessed filenames.
-    # This catches hashed/versioned bundles without per-title rules.
+    # A <script src> is protocol evidence even when a CDN URL has no .js suffix.
     for script_url in runtime.script_urls:
-        parsed = urlparse(script_url)
-        if parsed.path.casefold().endswith(".js"):
+        if script_url:
             candidates.append(script_url)
 
     out: list[str] = []
@@ -608,8 +607,18 @@ def discover_api_v2_wire_profile(
             source = url
             break
 
+    purchase_features: set[str] = set()
+    for match in re.finditer(
+        r'(?:["\']?purchased_feature["\']?\s*[:=]\s*["\'])([A-Za-z0-9_\-]+)',
+        bundle,
+    ):
+        value = str(match.group(1) or "").strip()
+        if value:
+            purchase_features.add(value)
+
     profile: dict[str, Any] = {
         "spin_options": {},
+        "purchase_features": sorted(purchase_features),
         "source": sanitize_session_url(source) if source else "",
         "bundle_sha256": (
             hashlib.sha256(bundle.encode("utf-8", errors="replace")).hexdigest()
