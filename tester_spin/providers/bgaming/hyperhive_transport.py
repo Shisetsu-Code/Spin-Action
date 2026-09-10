@@ -18,6 +18,18 @@ _installed = False
 # ids after GC, which could incorrectly skip iframe discovery for a later game.
 _hydrated_clients: weakref.WeakKeyDictionary[Any, str] = weakref.WeakKeyDictionary()
 
+# These are provider-level script roles advertised by HyperHive's own hash
+# manifests. A role script is contract evidence even when it does not itself
+# contain the transport words jsonrpc/state_lock. In particular,
+# integration.min.js can contain only feature-buy selector logic such as
+# isNormalBuy/isSuperBuy while client.min.js owns the JSON-RPC serializer.
+_ENGINE_CONTRACT_BASENAMES = {
+    "client.min.js",
+    "common.min.js",
+    "game.min.js",
+    "integration.min.js",
+}
+
 
 def hyperhive_client_url(runtime: Any) -> str:
     """Return the real inner HyperHive client URL for the current live session.
@@ -204,6 +216,56 @@ def prepare_hyperhive_client(
     return response_url
 
 
+def _engine_role_script(url: str) -> bool:
+    basename = urlparse(str(url or "")).path.rsplit("/", 1)[-1].casefold()
+    return basename in _ENGINE_CONTRACT_BASENAMES
+
+
+def _append_engine_role_contracts(
+    runtime: Any,
+    base_contract: str,
+    *,
+    timeout_s: float,
+) -> str:
+    """Append live HyperHive role scripts that the generic marker filter dropped.
+
+    The old collector kept a script only when that *individual file* contained a
+    transport marker. HyperHive splits responsibilities across files, so a
+    feature serializer can be semantically required while containing none of
+    those words. Keep exact role files advertised by the live hash manifests and
+    merge them before wire analysis. This is provider-generic and never routes by
+    game name, slug or identifier.
+    """
+    texts: list[str] = [base_contract] if base_contract else []
+    seen_texts = {base_contract} if base_contract else set()
+    seen_urls: set[str] = set()
+    added_bytes = 0
+    max_extra_bytes = 8 * 1024 * 1024
+
+    for url in list(getattr(runtime, "script_urls", None) or []):
+        if not url or url in seen_urls:
+            continue
+        seen_urls.add(url)
+        if not _provider_script_url(runtime, url) or not _engine_role_script(url):
+            continue
+        try:
+            response = runtime.session.get(url, timeout=timeout_s)
+            response.raise_for_status()
+            text = response.text or ""
+        except Exception:
+            continue
+        if not text or text in seen_texts:
+            continue
+        encoded_size = len(text.encode("utf-8", errors="replace"))
+        if added_bytes + encoded_size > max_extra_bytes:
+            continue
+        texts.append(text)
+        seen_texts.add(text)
+        added_bytes += encoded_size
+
+    return "\n".join(texts)
+
+
 def _hydrate_inner_client(runtime: Any, client_url: str, timeout_s: float) -> None:
     """Best-effort iframe hydration for callers that reached RPC directly."""
     if not client_url:
@@ -217,7 +279,7 @@ def _hydrate_inner_client(runtime: Any, client_url: str, timeout_s: float) -> No
 
 
 def install_hyperhive_transport_adapter() -> None:
-    """Wrap the HyperHive RPC path with the live inner-frame request context."""
+    """Wrap HyperHive discovery/RPC with the live inner-frame request context."""
     global _installed
     with _install_lock:
         if _installed:
@@ -226,6 +288,28 @@ def install_hyperhive_transport_adapter() -> None:
         from tester_spin.providers.bgaming import hyperhive
 
         original_rpc = hyperhive._rpc
+        original_download_engine_contract = hyperhive._download_engine_contract
+
+        def complete_engine_contract(
+            runtime,
+            *,
+            timeout_s: float,
+        ) -> str:
+            # Hydrate first so runtime.script_urls contains the exact keyed role
+            # scripts advertised by the inner page's manifests.
+            try:
+                prepare_hyperhive_client(runtime, timeout_s=timeout_s)
+            except Exception:
+                pass
+            base_contract = original_download_engine_contract(
+                runtime,
+                timeout_s=timeout_s,
+            )
+            return _append_engine_role_contracts(
+                runtime,
+                base_contract,
+                timeout_s=timeout_s,
+            )
 
         def contextual_rpc(
             runtime,
@@ -264,6 +348,7 @@ def install_hyperhive_transport_adapter() -> None:
             finally:
                 runtime.launch_url = outer_url
 
+        hyperhive._download_engine_contract = complete_engine_contract
         hyperhive._rpc = contextual_rpc
         _installed = True
 
