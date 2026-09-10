@@ -12,11 +12,13 @@ import requests
 from tester_spin.models import Game, utc_now_iso
 from tester_spin.providers.base import GameCallback, Progress, ProviderAdapter
 from tester_spin.providers.rubyplay.catalog import (
+    BricksCatalogState,
     RubyPlayCatalogRecord,
     load_query_payload,
-    parse_bricks_catalog_state,
+    parse_bricks_catalog_states,
     parse_catalog_html,
     query_loop_html,
+    updated_query_element_id,
     updated_query_meta,
 )
 from tester_spin.providers.rubyplay.execution import RubyPlayExecutionMixin
@@ -26,6 +28,11 @@ from tester_spin.providers.rubyplay.http import mount_rubyplay_system_trust
 def _safe_folder(value: str) -> str:
     clean = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", value).strip(" .")
     return clean[:140] or "game"
+
+
+def _safe_artifact_component(value: str) -> str:
+    clean = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value or "")).strip("._")
+    return clean[:80] or "query"
 
 
 class RubyPlayProvider(RubyPlayExecutionMixin, ProviderAdapter):
@@ -146,6 +153,54 @@ class RubyPlayProvider(RubyPlayExecutionMixin, ProviderAdapter):
                 on_game(record.game)
         return added
 
+    def _fetch_bricks_page(
+        self,
+        state: BricksCatalogState,
+        page: int,
+        *,
+        timeout_s: float,
+        artifact_dir: Path,
+    ) -> tuple[list[RubyPlayCatalogRecord], dict[str, int]]:
+        headers: dict[str, str] = {}
+        if state.wp_rest_nonce:
+            headers["X-WP-Nonce"] = state.wp_rest_nonce
+        api = self.http.post(
+            state.load_query_url,
+            params={"lang": state.language},
+            json=load_query_payload(state, page),
+            headers=headers,
+            timeout=timeout_s,
+        )
+        api.raise_for_status()
+        data = api.json()
+        if not isinstance(data, dict):
+            raise ValueError("respuesta Bricks no es objeto JSON")
+
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        (artifact_dir / f"page-{page:03d}.json").write_text(
+            json.dumps(data, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+        returned_id = updated_query_element_id(data)
+        if returned_id and returned_id != state.query_element_id:
+            raise ValueError(
+                f"updated_query.element_id={returned_id!r} no coincide con "
+                f"queryElementId={state.query_element_id!r}"
+            )
+        meta = updated_query_meta(data)
+        records = parse_catalog_html(
+            str(data.get("html") or ""),
+            self.catalog_url,
+        )
+        expected_page_items = max(0, meta["end"] - meta["start"] + 1)
+        if len(records) != expected_page_items:
+            raise ValueError(
+                f"página {page}: parseados={len(records)}, "
+                f"rango declara={expected_page_items}"
+            )
+        return records, meta
+
     def crawl_catalog(
         self,
         *,
@@ -154,16 +209,19 @@ class RubyPlayProvider(RubyPlayExecutionMixin, ProviderAdapter):
         max_pages: int = 100,
         on_game: GameCallback | None = None,
     ) -> list[Game]:
-        limit = max(1, int(max_pages))
+        raw_limit = int(max_pages)
+        # The active GUI contract is 0=todas. Keep that meaning instead of
+        # silently coercing zero to one page.
+        limit: int | None = None if raw_limit <= 0 else max(1, raw_limit)
         by_slug: dict[str, RubyPlayCatalogRecord] = {}
         raw_dir = self.provider_root / "catalog-pages"
         raw_dir.mkdir(parents=True, exist_ok=True)
-        self.set_catalog_authority(True, "")
+        authority_gaps: list[str] = []
 
         progress(
-            "RubyPlay catálogo: query Bricks post_type=games + "
-            "/wp-json/bricks/v1/load_query_page; sin Playwright ni IDs "
-            "de elemento hardcodeados."
+            "RubyPlay catálogo: enumerando todos los query Bricks "
+            "post_type=games; cada loop se pagina y el resultado se deduplica "
+            "por slug, sin IDs de elemento hardcodeados."
         )
         response = self.http.get(
             self.catalog_url,
@@ -172,149 +230,140 @@ class RubyPlayProvider(RubyPlayExecutionMixin, ProviderAdapter):
         )
         response.raise_for_status()
         initial_html = response.text
-        (raw_dir / "page-001.html").write_text(initial_html, encoding="utf-8")
-        state = parse_bricks_catalog_state(
-            initial_html,
-            response.url or self.catalog_url,
-        )
-
-        selected_html = query_loop_html(initial_html, state.query_element_id)
-        if not selected_html:
-            if state.candidate_count == 1:
-                selected_html = initial_html
-            else:
-                self.set_catalog_authority(
-                    False,
-                    "no se pudo aislar el loop Bricks seleccionado entre múltiples candidatos",
-                )
-                raise RuntimeError(
-                    "RubyPlay: se seleccionó el query principal pero no se pudo "
-                    "aislar su HTML renderizado."
-                )
-
-        records = parse_catalog_html(
-            selected_html,
-            response.url or self.catalog_url,
-        )
-        if not records:
-            self.set_catalog_authority(
-                False,
-                "loop principal sin /games/<slug>/ parseables",
-            )
-            raise RuntimeError("RubyPlay: catálogo inicial vacío/no parseable.")
-
-        self._consume_records(
-            records,
-            by_slug=by_slug,
-            progress=progress,
-            on_game=on_game,
-        )
+        (raw_dir / "initial.html").write_text(initial_html, encoding="utf-8")
+        base_url = response.url or self.catalog_url
+        states = parse_bricks_catalog_states(initial_html, base_url)
         progress(
-            f"RubyPlay catálogo: {state.candidate_count} queries post_type=games; "
-            f"seleccionado={state.query_element_id} por estructura/capacidad."
-        )
-        progress(
-            f"RubyPlay catálogo página 1: juegos={len(records)}, "
-            f"rango={state.start}-{state.end}, max_pages={state.max_pages}."
+            f"RubyPlay catálogo: {len(states)} query loops games descubiertos; "
+            "se recorrerán todos."
         )
 
-        expected_pages = state.max_pages
-        expected_count: int | None = None
-        previous_end = state.end
-
-        if limit < expected_pages:
-            self.set_catalog_authority(
-                False,
-                f"crawl limitado manualmente a {limit} páginas",
-            )
-
-        for page in range(2, min(expected_pages, limit) + 1):
+        for loop_index, state in enumerate(states, start=1):
             if stop_event.is_set():
+                authority_gaps.append("crawl detenido por el usuario")
                 break
-            payload = load_query_payload(state, page)
-            headers = {}
-            if state.wp_rest_nonce:
-                headers["X-WP-Nonce"] = state.wp_rest_nonce
-            try:
-                api = self.http.post(
-                    state.load_query_url,
-                    params={"lang": state.language},
-                    json=payload,
-                    headers=headers,
-                    timeout=30.0,
+
+            query_id = state.query_element_id
+            query_dir = raw_dir / f"{loop_index:02d}-{_safe_artifact_component(query_id)}"
+            loop_slugs: set[str] = set()
+            expected_pages = state.max_pages
+            expected_count: int | None = None
+            previous_end = state.end
+
+            fragment = query_loop_html(initial_html, query_id)
+            if not fragment and len(states) == 1:
+                fragment = initial_html
+            first_records = parse_catalog_html(fragment, base_url) if fragment else []
+            expected_first_items = (
+                max(0, state.end - state.start + 1)
+                if state.end >= state.start
+                else 0
+            )
+            if expected_first_items and len(first_records) != expected_first_items:
+                authority_gaps.append(
+                    f"{query_id}: página inicial parseada={len(first_records)} "
+                    f"pero rango={expected_first_items}"
                 )
-                api.raise_for_status()
-                data = api.json()
-                if not isinstance(data, dict):
-                    raise ValueError("respuesta Bricks no es objeto JSON")
-                (raw_dir / f"page-{page:03d}.json").write_text(
-                    json.dumps(data, ensure_ascii=False, indent=2),
-                    encoding="utf-8",
-                )
-                meta = updated_query_meta(data)
-                if meta["max_pages"] != expected_pages:
-                    raise ValueError(
-                        f"max_num_pages cambió {expected_pages}->{meta['max_pages']}"
-                    )
-                if expected_count is None:
-                    expected_count = meta["count"]
-                elif meta["count"] != expected_count:
-                    raise ValueError(
-                        f"count cambió {expected_count}->{meta['count']}"
-                    )
-                if previous_end and meta["start"] != previous_end + 1:
-                    raise ValueError(
-                        f"rango discontinuo: previo_end={previous_end}, "
-                        f"start={meta['start']}"
-                    )
-                page_records = parse_catalog_html(
-                    str(data.get("html") or ""),
-                    self.catalog_url,
-                )
-                expected_page_items = max(0, meta["end"] - meta["start"] + 1)
-                if len(page_records) != expected_page_items:
-                    raise ValueError(
-                        f"página {page}: parseados={len(page_records)}, "
-                        f"rango declara={expected_page_items}"
-                    )
+            if not first_records:
+                authority_gaps.append(f"{query_id}: no se pudo aislar/renderizar página 1")
+            else:
+                loop_slugs.update(record.game.slug for record in first_records)
                 added = self._consume_records(
-                    page_records,
+                    first_records,
                     by_slug=by_slug,
                     progress=progress,
                     on_game=on_game,
                 )
-                previous_end = meta["end"]
+                (query_dir / "page-001.html").parent.mkdir(parents=True, exist_ok=True)
+                (query_dir / "page-001.html").write_text(fragment, encoding="utf-8")
                 progress(
-                    f"RubyPlay catálogo página {page}: "
-                    f"recibidos={len(page_records)}, nuevos={added}, "
-                    f"acumulados={len(by_slug)}, "
-                    f"rango={meta['start']}-{meta['end']}, total={meta['count']}."
+                    f"RubyPlay loop {loop_index}/{len(states)} id={query_id} página 1: "
+                    f"recibidos={len(first_records)}, nuevos={added}, "
+                    f"max_pages={expected_pages}, acumulados={len(by_slug)}."
                 )
-            except Exception as exc:
-                self.set_catalog_authority(
-                    False,
-                    f"falló página Bricks {page}: {type(exc).__name__}: {exc}",
-                )
-                progress(
-                    f"RubyPlay catálogo PARCIAL página {page}: "
-                    f"{type(exc).__name__}: {exc}"
-                )
-                break
 
-        if stop_event.is_set():
-            self.set_catalog_authority(False, "crawl detenido por el usuario")
-        elif self.catalog_crawl_authoritative and limit >= expected_pages:
-            if expected_count is not None and len(by_slug) != expected_count:
-                self.set_catalog_authority(
-                    False,
-                    f"count final no coincide: únicos={len(by_slug)}, "
-                    f"servidor={expected_count}",
+            if limit is not None and limit < expected_pages:
+                authority_gaps.append(
+                    f"{query_id}: limitado a {limit}/{expected_pages} páginas"
                 )
-            elif expected_count is None and expected_pages > 1:
-                self.set_catalog_authority(
-                    False,
-                    "no se observó updated_query.count",
-                )
+            target_pages = expected_pages if limit is None else min(expected_pages, limit)
+
+            for page in range(2, target_pages + 1):
+                if stop_event.is_set():
+                    authority_gaps.append("crawl detenido por el usuario")
+                    break
+                try:
+                    page_records, meta = self._fetch_bricks_page(
+                        state,
+                        page,
+                        timeout_s=30.0,
+                        artifact_dir=query_dir,
+                    )
+                    if meta["max_pages"] != expected_pages:
+                        raise ValueError(
+                            f"max_num_pages cambió {expected_pages}->{meta['max_pages']}"
+                        )
+                    if expected_count is None:
+                        expected_count = meta["count"]
+                    elif meta["count"] != expected_count:
+                        raise ValueError(
+                            f"count cambió {expected_count}->{meta['count']}"
+                        )
+                    if previous_end and meta["start"] != previous_end + 1:
+                        raise ValueError(
+                            f"rango discontinuo: previo_end={previous_end}, "
+                            f"start={meta['start']}"
+                        )
+                    previous_end = meta["end"]
+                    loop_slugs.update(record.game.slug for record in page_records)
+                    added = self._consume_records(
+                        page_records,
+                        by_slug=by_slug,
+                        progress=progress,
+                        on_game=on_game,
+                    )
+                    progress(
+                        f"RubyPlay loop {loop_index}/{len(states)} id={query_id} "
+                        f"página {page}: recibidos={len(page_records)}, nuevos={added}, "
+                        f"loop={len(loop_slugs)}/{meta['count']}, "
+                        f"acumulados={len(by_slug)}."
+                    )
+                except Exception as exc:
+                    authority_gaps.append(
+                        f"{query_id} p{page}: {type(exc).__name__}: {exc}"
+                    )
+                    progress(
+                        f"RubyPlay loop {query_id} PARCIAL página {page}: "
+                        f"{type(exc).__name__}: {exc}"
+                    )
+                    break
+
+            loop_complete = not stop_event.is_set() and target_pages >= expected_pages
+            if loop_complete:
+                if expected_count is not None and len(loop_slugs) != expected_count:
+                    authority_gaps.append(
+                        f"{query_id}: únicos={len(loop_slugs)} != count={expected_count}"
+                    )
+                elif expected_count is None and expected_pages == 1:
+                    # For a one-page loop, Bricks' initial start/end range is
+                    # sufficient to validate the rendered number of posts.
+                    expected_single = expected_first_items
+                    if expected_single and len(loop_slugs) != expected_single:
+                        authority_gaps.append(
+                            f"{query_id}: únicos={len(loop_slugs)} != rango={expected_single}"
+                        )
+
+        if not by_slug:
+            self.set_catalog_authority(False, "ningún loop produjo juegos parseables")
+            raise RuntimeError("RubyPlay: ningún query Bricks produjo juegos parseables.")
+
+        if authority_gaps:
+            detail = "; ".join(authority_gaps[:4])
+            if len(authority_gaps) > 4:
+                detail += f"; +{len(authority_gaps) - 4} incidencias"
+            self.set_catalog_authority(False, detail)
+        else:
+            self.set_catalog_authority(True, "")
 
         records_out = sorted(
             by_slug.values(),
@@ -330,7 +379,13 @@ class RubyPlayProvider(RubyPlayExecutionMixin, ProviderAdapter):
             encoding="utf-8",
         )
         progress(
-            f"RubyPlay catálogo terminado: {len(games)} juegos; "
-            f"autoridad={'sí' if self.catalog_crawl_authoritative else 'no'}."
+            f"RubyPlay catálogo terminado: {len(games)} juegos únicos desde "
+            f"{len(states)} loops; autoridad="
+            f"{'sí' if self.catalog_crawl_authoritative else 'no'}."
         )
+        if authority_gaps:
+            progress(
+                "RubyPlay catálogo incidencias de autoridad: "
+                + "; ".join(authority_gaps[:6])
+            )
         return games
