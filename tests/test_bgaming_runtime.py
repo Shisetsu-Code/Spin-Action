@@ -13,6 +13,7 @@ from tester_spin.providers.bgaming.runtime import (
     discover_purchase_modes,
     extract_options,
     flow_continuation_command,
+    infer_observed_debit,
     is_line_bet_init,
     line_bet_count,
     pending_flow_actions,
@@ -616,7 +617,7 @@ class BGamingRuntimeTests(unittest.TestCase):
             [],
         )
 
-    def test_big_atlantis_percent_basis_feature_multipliers(self) -> None:
+    def test_unreported_purchase_scale_is_not_hardcoded(self) -> None:
         init = {
             "options": {
                 "default_bet": 30,
@@ -632,26 +633,24 @@ class BGamingRuntimeTests(unittest.TestCase):
         }
         modes = discover_purchase_modes(init)
         by_name = {mode["name"]: mode for mode in modes}
-        self.assertEqual(by_name["freespin_chance"]["base_multiplier"], 100)
+        self.assertIsNone(by_name["freespin_chance"]["base_multiplier"])
         self.assertEqual(
             by_name["freespin_chance"]["base_source"],
-            "implicit_percent_basis",
+            "unreported;learn-from-balance",
         )
-        self.assertEqual(
-            by_name["freespin_chance"]["cost_multiplier"],
-            2.0,
+        self.assertIsNone(by_name["freespin_chance"]["cost_multiplier"])
+        self.assertIsNone(by_name["freespin_buy"]["cost_multiplier"])
+        self.assertIsNone(
+            purchase_expected_debit(30, by_name["freespin_chance"])
         )
+
+        response = {
+            "outcome": {"bet": 30, "win": 0},
+            "balance": {"wallet": 9940, "game": 0},
+        }
         self.assertEqual(
-            by_name["freespin_buy"]["cost_multiplier"],
-            80.0,
-        )
-        self.assertEqual(
-            purchase_expected_debit(30, by_name["freespin_chance"]),
+            infer_observed_debit(response, 10000),
             60.0,
-        )
-        self.assertEqual(
-            purchase_expected_debit(30, by_name["freespin_buy"]),
-            2400.0,
         )
 
     def test_base_spin_rejects_unexplained_effective_bet_change(self) -> None:
