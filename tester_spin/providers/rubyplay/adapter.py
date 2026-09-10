@@ -16,6 +16,7 @@ from tester_spin.providers.rubyplay.catalog import (
     load_query_payload,
     parse_bricks_catalog_state,
     parse_catalog_html,
+    query_loop_html,
     updated_query_meta,
 )
 from tester_spin.providers.rubyplay.execution import RubyPlayExecutionMixin
@@ -176,14 +177,29 @@ class RubyPlayProvider(RubyPlayExecutionMixin, ProviderAdapter):
             initial_html,
             response.url or self.catalog_url,
         )
+
+        selected_html = query_loop_html(initial_html, state.query_element_id)
+        if not selected_html:
+            if state.candidate_count == 1:
+                selected_html = initial_html
+            else:
+                self.set_catalog_authority(
+                    False,
+                    "no se pudo aislar el loop Bricks seleccionado entre múltiples candidatos",
+                )
+                raise RuntimeError(
+                    "RubyPlay: se seleccionó el query principal pero no se pudo "
+                    "aislar su HTML renderizado."
+                )
+
         records = parse_catalog_html(
-            initial_html,
+            selected_html,
             response.url or self.catalog_url,
         )
         if not records:
             self.set_catalog_authority(
                 False,
-                "página inicial sin /games/<slug>/ parseables",
+                "loop principal sin /games/<slug>/ parseables",
             )
             raise RuntimeError("RubyPlay: catálogo inicial vacío/no parseable.")
 
@@ -192,6 +208,10 @@ class RubyPlayProvider(RubyPlayExecutionMixin, ProviderAdapter):
             by_slug=by_slug,
             progress=progress,
             on_game=on_game,
+        )
+        progress(
+            f"RubyPlay catálogo: {state.candidate_count} queries post_type=games; "
+            f"seleccionado={state.query_element_id} por estructura/capacidad."
         )
         progress(
             f"RubyPlay catálogo página 1: juegos={len(records)}, "
