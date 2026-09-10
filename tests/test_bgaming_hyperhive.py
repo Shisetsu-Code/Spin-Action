@@ -80,6 +80,7 @@ class BGamingHyperHiveTests(unittest.TestCase):
         ):
             modes = discover_modes_from_bundle(runtime, timeout_s=1)
         by_id = {mode["id"]: mode for mode in modes}
+        self.assertTrue(by_id["SPIN"]["executable"])
         self.assertEqual(
             by_id["SPIN"]["request"],
             {"bet_type": "betting", "action": "spin"},
@@ -88,10 +89,12 @@ class BGamingHyperHiveTests(unittest.TestCase):
             by_id["PURCHASE_BUY_CHANCE"]["request"],
             {"purchased_feature": "buy_chance", "bet_type": "betting"},
         )
+        self.assertTrue(by_id["PURCHASE_BUY_CHANCE"]["executable"])
         self.assertEqual(
             by_id["PURCHASE_BUY_BONUS"]["request"],
             {"purchased_feature": "buy_bonus", "bet_type": "betting"},
         )
+        self.assertTrue(by_id["PURCHASE_BUY_BONUS"]["executable"])
 
     def test_wire_literals_accept_assignment_and_bracket_forms(self) -> None:
         runtime = BGamingRuntime(
@@ -105,6 +108,7 @@ class BGamingHyperHiveTests(unittest.TestCase):
             round_series_id=1,
         )
         contract = (
+            'x.req.bet=stake;'
             'x.req.bet_type="bet";'
             'x.req["action"]="spin";'
             'jsonrpc:"2.0";'
@@ -115,6 +119,7 @@ class BGamingHyperHiveTests(unittest.TestCase):
             bundle_text="",
             engine_contract=contract,
         )
+        self.assertTrue(modes[0]["executable"])
         self.assertEqual(
             modes[0]["request"],
             {"bet_type": "bet", "action": "spin"},
@@ -147,7 +152,7 @@ class BGamingHyperHiveTests(unittest.TestCase):
 
         self.assertIn('bet_type="bet"', contract)
 
-    def test_provider_jsonrpc_literals_can_complete_base_request(self) -> None:
+    def test_loose_jsonrpc_literals_do_not_make_spin_executable(self) -> None:
         runtime = BGamingRuntime(
             session=requests.Session(),
             launch_url="https://demo.example/hyperhive",
@@ -164,11 +169,9 @@ class BGamingHyperHiveTests(unittest.TestCase):
             bundle_text='action:"spin";bet_type:"bet";jsonrpc:"2.0"',
             engine_contract="",
         )
-        self.assertTrue(modes[0]["executable"])
-        self.assertEqual(
-            modes[0]["request"],
-            {"bet_type": "bet", "action": "spin"},
-        )
+        self.assertFalse(modes[0]["executable"])
+        self.assertEqual(modes[0]["discovery_state"], "CONTRACT_UNRESOLVED")
+        self.assertNotIn("bet_type", modes[0]["request"])
 
     def test_unresolved_hyperhive_contract_is_discovery_only(self) -> None:
         runtime = BGamingRuntime(
@@ -187,12 +190,12 @@ class BGamingHyperHiveTests(unittest.TestCase):
             bundle_text="var unrelated=1;",
             engine_contract="",
         )
-        self.assertTrue(modes[0]["executable"])
+        self.assertFalse(modes[0]["executable"])
         self.assertEqual(
             modes[0]["discovery_state"],
-            "MINIMAL_PROVIDER_CONTRACT",
+            "CONTRACT_UNRESOLVED",
         )
-        self.assertEqual(modes[0]["request"], {"bet_type": "bet"})
+        self.assertEqual(modes[0]["request"], {})
 
     def test_rpc_id_defaults_to_uuid_without_explicit_zero_contract(self) -> None:
         rpc_id = _hyperhive_rpc_id('jsonrpc:"2.0";method:"play"')
@@ -230,11 +233,13 @@ class BGamingHyperHiveTests(unittest.TestCase):
         ):
             modes = discover_modes_from_bundle(runtime, timeout_s=1)
         by_id = {mode["id"]: mode for mode in modes}
+        self.assertTrue(by_id["SPIN"]["executable"])
         self.assertEqual(by_id["SPIN"]["request"], {})
         self.assertEqual(
             by_id["PURCHASE_BUY_BONUS"]["request"],
             {"purchased_feature": "buy_bonus"},
         )
+        self.assertTrue(by_id["PURCHASE_BUY_BONUS"]["executable"])
         self.assertEqual(
             by_id["PURCHASE_BUY_BONUS"]["expected_multiplier"],
             120.0,
@@ -319,6 +324,7 @@ class BGamingHyperHiveTests(unittest.TestCase):
             bundle_text="",
             engine_contract=engine,
         )
+        self.assertTrue(modes[0]["executable"])
         self.assertEqual(modes[0]["request"], {"bet_type": "bet"})
         self.assertEqual(modes[0]["custom_req_profile"], "pz-per-line")
         self.assertEqual(
@@ -332,7 +338,7 @@ class BGamingHyperHiveTests(unittest.TestCase):
             },
         )
 
-    def test_historical_minimal_hyperhive_spin_is_end_to_end_ok(self) -> None:
+    def test_historical_minimal_hyperhive_without_wire_is_not_sent(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             runtime = BGamingRuntime(
                 session=requests.Session(),
@@ -369,17 +375,7 @@ class BGamingHyperHiveTests(unittest.TestCase):
                             }
                         },
                     )
-                return (
-                    Response(),
-                    {"id": rpc_id, "method": "play", "params": params},
-                    {
-                        "result": {
-                            "final": True,
-                            "balance": 99900,
-                            "resp": {},
-                        }
-                    },
-                )
+                self.fail("play no debe enviarse sin contrato demostrado")
 
             with (
                 patch(
@@ -407,15 +403,11 @@ class BGamingHyperHiveTests(unittest.TestCase):
                     started_monotonic=time.monotonic(),
                 )
 
-            self.assertEqual(result.status, "OK")
-            self.assertEqual(result.successful_spins, 1)
-            self.assertEqual(calls[1][0], "play")
-            self.assertEqual(
-                calls[1][1]["req"],
-                {"bet": 100, "bet_type": "bet"},
-            )
+            self.assertEqual(result.status, "PARCIAL")
+            self.assertEqual(result.successful_spins, 0)
+            self.assertIn("CONTRACT_UNRESOLVED", result.error)
+            self.assertEqual([call[0] for call in calls], ["init"])
             self.assertIsInstance(calls[0][2], str)
-            self.assertIsInstance(calls[1][2], str)
 
     def test_nested_hyperhive_game_total_win_is_accepted(self) -> None:
         data = {
