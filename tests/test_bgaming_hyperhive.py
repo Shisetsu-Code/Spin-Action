@@ -6,6 +6,7 @@ from unittest.mock import patch
 import requests
 
 from tester_spin.providers.bgaming.hyperhive import (
+    _download_engine_contract,
     _pz_custom_req,
     _result_summary,
     discover_action_vocabulary,
@@ -84,6 +85,60 @@ class BGamingHyperHiveTests(unittest.TestCase):
             by_id["PURCHASE_BUY_BONUS"]["request"],
             {"purchased_feature": "buy_bonus", "bet_type": "betting"},
         )
+
+    def test_wire_literals_accept_assignment_and_bracket_forms(self) -> None:
+        runtime = BGamingRuntime(
+            session=requests.Session(),
+            launch_url="https://demo.example/hyperhive",
+            api_url="https://unused.example/api/session",
+            identifier="Generic",
+            csrf_header_name="X-CSRF",
+            csrf_header_value="secret",
+            options={},
+            round_series_id=1,
+        )
+        contract = (
+            'x.req.bet_type="bet";'
+            'x.req["action"]="spin";'
+            'jsonrpc:"2.0";'
+        )
+        modes = discover_modes_from_bundle(
+            runtime,
+            timeout_s=1,
+            bundle_text="",
+            engine_contract=contract,
+        )
+        self.assertEqual(
+            modes[0]["request"],
+            {"bet_type": "bet", "action": "spin"},
+        )
+        self.assertIn(
+            "spin",
+            discover_action_vocabulary("", contract),
+        )
+
+    def test_engine_contract_prefers_scripts_from_launch_page(self) -> None:
+        runtime = BGamingRuntime(
+            session=requests.Session(),
+            launch_url="https://demo.example/hyperhive",
+            api_url="https://unused.example/api/session",
+            identifier="Generic",
+            csrf_header_name="X-CSRF",
+            csrf_header_value="secret",
+            options={},
+            round_series_id=1,
+            script_urls=["https://cdn.example/assets/runtime-a1b2.js"],
+        )
+
+        class Response:
+            text = 'jsonrpc:"2.0";x.req.bet_type="bet"'
+            def raise_for_status(self) -> None:
+                return None
+
+        with patch.object(runtime.session, "get", return_value=Response()):
+            contract = _download_engine_contract(runtime, timeout_s=1)
+
+        self.assertIn('bet_type="bet"', contract)
 
     def test_big_bucks_bundle_uses_bet_only_and_buy_bonus_x120(self) -> None:
         runtime = BGamingRuntime(
