@@ -350,6 +350,109 @@ def validate_line_spin(
     return warnings, inferred_win
 
 
+def _runtime_bundle_candidates(
+    runtime: BGamingRuntime,
+    *,
+    timeout_s: float,
+) -> list[str]:
+    candidates: list[str] = []
+    configured = str(runtime.options.get("game_bundle_source") or "").strip()
+    resources_path = str(runtime.options.get("resources_path") or "").rstrip("/")
+    loader_url = str(runtime.options.get("games_loader_source") or "").strip()
+
+    if loader_url:
+        try:
+            response = runtime.session.get(loader_url, timeout=timeout_s)
+            response.raise_for_status()
+            loader_text = response.text
+        except Exception:
+            loader_text = ""
+
+        if loader_text:
+            version = ""
+            patterns = [
+                r'res:\w+="([^"]+)"',
+                r"res:\w+='([^']+)'",
+                r'res:t="([^"]+)"',
+                r"res:t='([^']+)'",
+                r'res:"([^"]+)"',
+                r"res:'([^']+)'",
+            ]
+            for pattern in patterns:
+                match = re.search(pattern, loader_text)
+                if match:
+                    version = match.group(1).strip()
+                    break
+            if version and resources_path:
+                candidates.append(f"{resources_path}/{version}/bundle.js")
+
+    if configured:
+        candidates.append(configured)
+
+    out: list[str] = []
+    seen: set[str] = set()
+    for url in candidates:
+        if url and url not in seen:
+            seen.add(url)
+            out.append(url)
+    return out
+
+
+def discover_api_v2_wire_profile(
+    runtime: BGamingRuntime,
+    *,
+    timeout_s: float,
+) -> dict[str, Any]:
+    """Discover request options encoded by the loaded BGaming game bundle.
+
+    BurningChilliX HAR proves a family where the visible selectable line mode
+    is sent as options.mode and is not derivable from init.options alone.
+    """
+    bundle = ""
+    source = ""
+    for url in _runtime_bundle_candidates(runtime, timeout_s=timeout_s):
+        try:
+            response = runtime.session.get(url, timeout=timeout_s)
+            response.raise_for_status()
+            text = response.text
+        except Exception:
+            continue
+        if not text:
+            continue
+        if not bundle:
+            bundle = text
+            source = url
+        if "additionalSpinOptions.mode" in text:
+            bundle = text
+            source = url
+            break
+
+    profile: dict[str, Any] = {
+        "spin_options": {},
+        "source": sanitize_session_url(source) if source else "",
+    }
+    if not bundle:
+        return profile
+
+    if "additionalSpinOptions.mode" in bundle:
+        default_mode = ""
+        patterns = [
+            r'this\.linesCount=this\.linesCount\|\|"([0-9]+)"',
+            r"this\.linesCount=this\.linesCount\|\|'([0-9]+)'",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, bundle)
+            if match:
+                default_mode = match.group(1)
+                break
+        if default_mode:
+            profile["spin_options"]["mode"] = default_mode
+            profile["mode"] = default_mode
+            profile["kind"] = "selectable-lines-mode"
+
+    return profile
+
+
 def resolve_base_bet(data: dict[str, Any]) -> tuple[int | float | None, str]:
     options = data.get("options")
     if not isinstance(options, dict):
