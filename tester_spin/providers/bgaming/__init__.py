@@ -10,8 +10,8 @@ from tester_spin.providers.bgaming.adapter import BGamingProvider as _BGamingPro
 from tester_spin.providers.bgaming.har_capture import (
     append_har_debug,
     ensure_analysis_har,
-    find_existing_har,
 )
+from tester_spin.providers.bgaming.har_select import inspect_har, select_best_har
 from tester_spin.providers.bgaming.hyperhive_wire import install_observed_wire_adapter
 from tester_spin.providers.bgaming.runtime import (
     is_demo_url,
@@ -22,7 +22,7 @@ from tester_spin.providers.bgaming.runtime import (
 
 # HyperHive clients do not all serialize the same play payload. Install the
 # provider-local adapter once so execution follows the contract demonstrated by
-# the scripts loaded by each runtime instead of a game-name allowlist.
+# the scripts/HAR loaded by each runtime instead of a game-name allowlist.
 install_observed_wire_adapter()
 
 
@@ -31,7 +31,7 @@ class BGamingProvider(_BGamingProvider):
 
     def har_artifact_dir(self, game: Game) -> Path | None:
         game_dir = self.game_dir(game)
-        existing = find_existing_har(game_dir)
+        existing = select_best_har(game_dir)
         if existing is not None:
             return existing.parent
         analysis_dir = game_dir / "analysis"
@@ -116,10 +116,11 @@ class BGamingProvider(_BGamingProvider):
     ) -> None:
         game_dir = self.game_dir(game)
 
-        # Zero-network fast path: a manually supplied or previously captured HAR
-        # is authoritative for reuse and must never be overwritten.
-        existing = find_existing_har(game_dir)
+        # Zero-network fast path. When several HARs exist, select by protocol
+        # evidence rather than giving analysis/browser.har unconditional priority.
+        existing = select_best_har(game_dir)
         if existing is not None:
+            quality = inspect_har(existing)
             try:
                 relative = existing.relative_to(game_dir)
             except ValueError:
@@ -129,8 +130,20 @@ class BGamingProvider(_BGamingProvider):
                 "prepare_reuse_existing_har",
                 path=str(relative),
                 bytes=(existing.stat().st_size if existing.is_file() else 0),
+                quality=(quality.grade if quality is not None else "UNKNOWN"),
+                operations=(quality.operations if quality is not None else 0),
+                plays=(quality.plays if quality is not None else 0),
+                spins=(quality.spins if quality is not None else 0),
+                purchases=(quality.purchases if quality is not None else 0),
             )
-            progress(f"[{game.name}] HAR existente: {relative}; captura omitida.")
+            if quality is not None:
+                progress(
+                    f"[{game.name}] HAR seleccionado: {relative}; "
+                    f"calidad={quality.grade}, operaciones={quality.operations}, "
+                    f"compras={quality.purchases}; captura omitida."
+                )
+            else:
+                progress(f"[{game.name}] HAR existente: {relative}; captura omitida.")
             return
 
         if stop_event.is_set():
