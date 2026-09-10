@@ -13,6 +13,8 @@ class BGamingHyperHiveWireTests(unittest.TestCase):
     def test_detects_formatted_custom_req_without_game_name_rules(self) -> None:
         contract = (
             'a={params:{req:{bet:t.stake,bet_type:"bet"}}};'
+            't.formattedRequest.params.isNormalBuy=false;'
+            't.formattedRequest.params.isSuperBuy=false;'
             't.formattedRequest.params.action=t.type;'
             't.formattedRequest.params.exponent=i.getCurrencyMaxExponent();'
             'a.params.req.custom_req=t.formattedRequest.params;'
@@ -22,6 +24,10 @@ class BGamingHyperHiveWireTests(unittest.TestCase):
         self.assertTrue(profile.custom_action)
         self.assertTrue(profile.custom_exponent)
         self.assertFalse(profile.custom_stake_on_spin)
+        self.assertEqual(
+            profile.custom_literals,
+            {"isNormalBuy": False, "isSuperBuy": False},
+        )
         self.assertEqual(profile.custom_profile, "observed-formatted")
 
         params = {
@@ -35,10 +41,28 @@ class BGamingHyperHiveWireTests(unittest.TestCase):
             {
                 "bet": 100,
                 "bet_type": "bet",
-                "custom_req": {"action": "spin", "exponent": 2},
+                "custom_req": {
+                    "isNormalBuy": False,
+                    "isSuperBuy": False,
+                    "action": "spin",
+                    "exponent": 2,
+                },
             },
         )
         self.assertNotIn("custom_req", params["req"])
+
+    def test_detects_literal_flags_inside_formatted_params_object(self) -> None:
+        contract = (
+            't.formattedRequest.params={isNormalBuy:false,isSuperBuy:false,foo:7};'
+            't.formattedRequest.params.action=t.type;'
+            't.formattedRequest.params.exponent=i.getCurrencyMaxExponent();'
+            'a.params.req.custom_req=t.formattedRequest.params;'
+        )
+        profile = analyze_engine_wire(contract)
+        self.assertEqual(
+            profile.custom_literals,
+            {"isNormalBuy": False, "isSuperBuy": False, "foo": 7},
+        )
 
     def test_detects_formatted_custom_req_with_spin_stake(self) -> None:
         contract = (
@@ -118,6 +142,7 @@ class BGamingHyperHiveWireTests(unittest.TestCase):
             custom_action=True,
             custom_exponent=True,
             custom_stake_on_spin=True,
+            custom_literals={"isNormalBuy": False, "isSuperBuy": False},
         )
         original = {
             "selectedWinLines": [0],
