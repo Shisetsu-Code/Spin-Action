@@ -19,6 +19,111 @@ class Response:
 
 
 class BGamingAdapterContractTests(unittest.TestCase):
+    def test_client_extra_data_is_present_before_first_init(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            provider = BGamingProvider(Path(temp))
+            game = Game(
+                provider="bgaming",
+                slug="version-negotiated-slot",
+                name="Version Negotiated Slot",
+                url="https://demo.bgaming-network.com/games/VersionNegotiated/FUN",
+                symbol="VersionNegotiated",
+            )
+            session = requests.Session()
+            runtime = BGamingRuntime(
+                session=session,
+                launch_url="https://demo.bgaming-network.com/games/VersionNegotiated/FUN",
+                api_url="https://demo.bgaming-network.com/api/VersionNegotiated/1/session",
+                identifier="VersionNegotiated",
+                csrf_header_name="X-CSRF-Token",
+                csrf_header_value="secret",
+                options={},
+                round_series_id=777,
+            )
+            init = {
+                "api_version": "2",
+                "options": {
+                    "default_bet": 90,
+                    "available_bets": [90, 225],
+                    "layout": {"reels": 5, "rows": 3},
+                },
+                "balance": {"wallet": 100000, "game": 0},
+                "flow": {
+                    "command": "init",
+                    "state": "ready",
+                    "available_actions": ["init", "spin"],
+                },
+            }
+            spin = {
+                "api_version": "2",
+                "outcome": {
+                    "screen": [["1", "2", "3"]] * 5,
+                    "bet": 90,
+                    "win": 0,
+                },
+                "balance": {"wallet": 99910, "game": 0},
+                "flow": {
+                    "round_id": 1,
+                    "last_action_id": "1_1",
+                    "command": "spin",
+                    "state": "closed",
+                    "available_actions": ["init", "spin"],
+                },
+            }
+            init_seen_extra = []
+
+            def fake_post(runtime_arg, command, **kwargs):
+                if command == "init":
+                    init_seen_extra.append(dict(runtime_arg.request_extra_data))
+                    return Response(), {
+                        "command": "init",
+                        "extra_data": {
+                            "round_series_id": runtime_arg.round_series_id,
+                            **runtime_arg.request_extra_data,
+                        },
+                    }, init
+                return Response(), {"command": command}, spin
+
+            wire = {
+                "spin_options": {},
+                "request_extra_data": {"api_version": 2},
+                "purchase_features": [],
+                "required_option_fields": [],
+                "source": "https://cdn.bgaming-network.com/game/bundle.js",
+                "bundle_sha256": "version-contract",
+                "diagnostics": [],
+            }
+
+            with (
+                patch.object(provider, "_new_session", return_value=session),
+                patch(
+                    "tester_spin.providers.bgaming.execution.bootstrap_game",
+                    return_value=runtime,
+                ),
+                patch(
+                    "tester_spin.providers.bgaming.execution.discover_api_v2_wire_profile",
+                    return_value=wire,
+                ),
+                patch(
+                    "tester_spin.providers.bgaming.profile.discover_api_v2_wire_profile",
+                    return_value=wire,
+                ),
+                patch(
+                    "tester_spin.providers.bgaming.execution.post_command",
+                    side_effect=fake_post,
+                ),
+            ):
+                result = provider.test_game(
+                    game,
+                    spins=1,
+                    timeout_s=5,
+                    stop_event=threading.Event(),
+                    progress=lambda _message: None,
+                )
+
+            self.assertEqual(result.status, "OK")
+            self.assertEqual(init_seen_extra[0], {"api_version": 2})
+
     def test_profile_options_are_present_on_first_spin(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             provider = BGamingProvider(Path(temp))
