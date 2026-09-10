@@ -39,6 +39,7 @@ from tester_spin.providers.bgaming.runtime import (
     purchase_expected_debit,
     purchase_names_equivalent,
     resolve_base_bet,
+    infer_observed_debit,
     is_demo_url,
     resolve_fresh_demo_url,
     sanitize_error_text,
@@ -60,6 +61,10 @@ def _write_json(path: Path, payload: Any) -> None:
         encoding="utf-8",
     )
     tmp.replace(path)
+
+
+def _fmt_number(value: Any) -> str:
+    return f"{float(value):g}" if isinstance(value, (int, float)) else "unknown"
 
 
 class BGamingExecutionMixin:
@@ -361,8 +366,8 @@ class BGamingExecutionMixin:
             for purchase in purchase_modes:
                 progress(
                     f"[{game.name}] COMPRA detectada: {purchase['name']} "
-                    f"x{purchase['cost_multiplier']:g} de la apuesta base "
-                    "(HAR feature_multipliers)."
+                    f"x{_fmt_number(purchase.get('cost_multiplier'))} de la apuesta base "
+                    f"(source={purchase.get('base_source') or 'unknown'})."
                 )
         except Exception as exc:
             message = sanitize_error_text(f"{type(exc).__name__}: {exc}")
@@ -667,7 +672,7 @@ class BGamingExecutionMixin:
                                 f"{'OK' if validated else 'PARCIAL'} "
                                 f"{elapsed_ms:.0f} ms, perfil=line-bets, "
                                 f"líneas={legacy_line_count}, line_bet={default_bet}, "
-                                f"debit={expected_debit:g}, "
+                                f"debit={_fmt_number(expected_debit)}, "
                                 f"win_inferido={inferred_win if inferred_win is not None else '—'}, "
                                 f"balance={current_total if current_total is not None else '—'}"
                                 + (
@@ -678,6 +683,15 @@ class BGamingExecutionMixin:
                             )
                             continue
 
+                        learn_purchase_debit = (
+                            isinstance(purchase, dict)
+                            and expected_debit is None
+                        )
+                        observed_purchase_debit = (
+                            infer_observed_debit(data, previous_total)
+                            if learn_purchase_debit
+                            else None
+                        )
                         warnings.extend(
                             validate_spin(
                                 data,
@@ -688,8 +702,31 @@ class BGamingExecutionMixin:
                                 command="spin",
                                 expected_debit=expected_debit,
                                 variable_layout=variable_layout,
+                                allow_observed_debit=learn_purchase_debit,
                             )
                         )
+
+                        if (
+                            learn_purchase_debit
+                            and isinstance(observed_purchase_debit, (int, float))
+                            and observed_purchase_debit > 0
+                            and float(default_bet) > 0
+                        ):
+                            learned_multiplier = (
+                                float(observed_purchase_debit) / float(default_bet)
+                            )
+                            purchase["cost_multiplier"] = learned_multiplier
+                            purchase["base_source"] = "observed_balance_delta"
+                            expected_debit = float(observed_purchase_debit)
+                            for discovered in discovered_modes:
+                                if discovered.get("id") == mode_id:
+                                    discovered["cost_multiplier"] = learned_multiplier
+                                    discovered["cost_source"] = "observed_balance_delta"
+                                    break
+                            progress(
+                                f"[{game.name}] {mode_id}: costo aprendido desde "
+                                f"balance remoto = x{learned_multiplier:g}."
+                            )
 
                         flow = data.get("flow")
                         if not isinstance(flow, dict):
@@ -977,7 +1014,7 @@ class BGamingExecutionMixin:
                             f"round={final_proof.get('round_id') or '—'}, "
                             f"action={final_proof.get('last_action_id') or '—'}, "
                             f"bet={default_bet}, "
-                            f"debit={expected_debit:g}, "
+                            f"debit={_fmt_number(expected_debit)}, "
                             f"win={final_proof.get('win') if final_proof.get('win') is not None else '—'}, "
                             f"balance={previous_total if previous_total is not None else '—'}, "
                             f"seed={final_proof.get('storage_seed') if final_proof.get('storage_seed') is not None else '—'}, "
@@ -1059,7 +1096,7 @@ class BGamingExecutionMixin:
                 detail.append(
                     "Compras probadas: "
                     + ", ".join(
-                        f"{mode['name']} x{mode['cost_multiplier']:g}"
+                        f"{mode['name']} x{_fmt_number(mode.get('cost_multiplier'))}"
                         for mode in purchase_modes
                     )
                     + "."
