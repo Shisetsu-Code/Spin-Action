@@ -107,6 +107,28 @@ class BGamingProfileTests(unittest.TestCase):
             self.assertIsNotNone(loaded)
             self.assertEqual(loaded.spin_options, {"mode": "60"})
 
+    def test_profile_persists_command_options_and_client_purchase_features(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            game_json = Path(temp) / "game.json"
+            profile = BGamingProfile(
+                family=API_V2,
+                confidence=1.0,
+                command_options={"freespin": {"rows": 3}},
+                purchase_features=["bonus_buy"],
+                validated=True,
+            )
+            save_profile(game_json, profile)
+            loaded = load_profile(game_json)
+            self.assertIsNotNone(loaded)
+            self.assertEqual(
+                loaded.command_options,
+                {"freespin": {"rows": 3}},
+            )
+            self.assertEqual(
+                loaded.purchase_features,
+                ["bonus_buy"],
+            )
+
     def test_validated_persisted_profile_avoids_rediscovery(self) -> None:
         runtime = self.runtime()
         init = {
