@@ -1624,6 +1624,20 @@ No tratar `layout.rows` como altura fija para Megaways/Trueways. En esos motores
 Durante `command=freespin`, `outcome.bet` tampoco es un invariante universal entre juegos BGaming. La autoridad es débito cero + evolución correcta del balance. Por ello no se compara `outcome.bet` contra la apuesta base en continuaciones.
 
 
+## 7.11.1 Cobertura escalar anunciada por servidor
+
+En API v2, una feature escalar publicada por
+`options.feature_options.feature_multipliers` constituye evidencia suficiente
+para realizar un probe controlado en una sesión fresca aunque el bundle del
+título no repita el literal `purchased_feature`.
+
+El modo queda etiquetado `SERVER_ADVERTISED_PROBE`, no `CLIENT_OBSERVED`.
+Esto mantiene separadas las fuentes de evidencia. Los features multinivel siguen
+requiriendo que el cliente demuestre soporte para `purchased_feature_level`.
+
+El probe nunca convierte una respuesta fallida en éxito: HTTP 400/422, estados
+no terminales o continuaciones no resueltas mantienen el resultado parcial/error.
+
 ## 7.12 API v2 con opciones dinámicas y apuesta efectiva
 
 Dos HAR adicionales muestran que `additionalSpinOptions` puede contener
@@ -1839,3 +1853,22 @@ cost_multiplier = observed_debit / requested_bet
 ```
 
 El multiplicador aprendido se usa para validar repeticiones posteriores. De este modo la evidencia histórica x80/x2 sigue siendo válida para esos HAR, pero no se convierte en una regla hardcodeada para otros juegos.
+
+
+### Baseline histórico HyperHive
+
+Las corridas reales del provider demostraron que el contrato mínimo clásico
+aceptado por varios títulos es JSON-RPC `play` con `params.token`,
+`params.req.bet`, `params.req.bet_type="bet"` y un id RPC UUID.
+
+Por tanto ese baseline se usa cuando ningún script BGaming demuestra una
+convención distinta. Overrides explícitos tienen prioridad:
+
+- `id=0` demostrado por el cliente → RPC id cero.
+- `bet_type` pago explícito → usar ese valor.
+- patrón condicional sólo `freebet` con `req.bet` → no forzar bet_type pago.
+- `action:"spin"` se añade sólo cuando aparece en código contractual BGaming
+  asociado a JSON-RPC/play.
+
+La decisión se deriva del contrato combinado bundle+engine y nunca del nombre
+del juego.
