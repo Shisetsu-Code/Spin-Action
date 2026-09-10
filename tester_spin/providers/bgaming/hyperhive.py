@@ -312,7 +312,7 @@ def discover_modes_from_bundle(
     combined = bundle + "\n" + engine_contract
     bet_type_values = {
         value.casefold()
-        for value in _literal_assignments(combined, "bet_type")
+        for value in _request_literal_assignments(combined, "bet_type")
     }
     # freebet is a conditional mode, not the ordinary paid spin contract.
     normal_bet_types = bet_type_values - {"freebet"}
@@ -326,10 +326,14 @@ def discover_modes_from_bundle(
         bet_type = ""
 
     action_vocabulary = discover_action_vocabulary(bundle, engine_contract)
+    request_actions = {
+        value.casefold()
+        for value in _request_literal_assignments(combined, "action")
+    }
     spin_request: dict[str, Any] = {}
     if bet_type:
         spin_request["bet_type"] = bet_type
-    if "spin" in action_vocabulary:
+    if "spin" in request_actions:
         spin_request["action"] = "spin"
 
     custom_req_profile = (
@@ -341,16 +345,9 @@ def discover_modes_from_bundle(
         )
         else ""
     )
-    has_req_bet_contract = bool(
-        re.search(
-            r"(?:\breq\s*:\s*\{[^{}]{0,500}\bbet\s*:|\.req\.bet\s*=|\[\s*[\"']bet[\"']\s*\]\s*=)",
-            combined,
-        )
-    )
+    has_req_bet_contract = _has_request_bet_contract(combined)
     base_contract_observed = bool(
         custom_req_profile
-        or bet_type
-        or "spin" in action_vocabulary
         or has_req_bet_contract
     )
 
