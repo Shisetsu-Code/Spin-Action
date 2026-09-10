@@ -26,6 +26,7 @@ from tester_spin.providers.bgaming.runtime import (
     balance_total,
     bootstrap_game,
     build_line_bets,
+    discover_api_v2_wire_profile,
     discover_purchase_modes,
     flow_continuation_command,
     is_line_bet_init,
@@ -418,6 +419,8 @@ class BGamingProvider(ProviderAdapter):
         legacy_line_bets = False
         legacy_line_count = 0
         rows_required = False
+        api_profile_checked = False
+        learned_wire_options: dict[str, Any] = {}
         purchase_modes: list[dict[str, Any]] = []
         mode_specs: list[dict[str, Any]] = [
             {"id": "SPIN", "kind": "SPIN", "purchase": None}
@@ -593,12 +596,17 @@ class BGamingProvider(ProviderAdapter):
             options_payload: dict[str, Any] | None = None,
             extra_data_payload: dict[str, Any] | None = None,
         ):
-            nonlocal rows_required
+            nonlocal rows_required, api_profile_checked
             merged_options = (
                 dict(options_payload)
                 if isinstance(options_payload, dict)
                 else None
             )
+            if learned_wire_options and not legacy_line_bets:
+                if merged_options is None:
+                    merged_options = {}
+                for key, value in learned_wire_options.items():
+                    merged_options.setdefault(key, value)
             if (
                 rows_required
                 and not legacy_line_bets
@@ -623,10 +631,60 @@ class BGamingProvider(ProviderAdapter):
                     if exc.response is not None
                     else 0
                 )
+                if status != 422 or legacy_line_bets:
+                    raise
+
+                if not api_profile_checked:
+                    api_profile_checked = True
+                    profile = discover_api_v2_wire_profile(
+                        runtime,
+                        timeout_s=timeout_s,
+                    )
+                    profile_options = profile.get("spin_options")
+                    if isinstance(profile_options, dict) and profile_options:
+                        missing = {
+                            key: value
+                            for key, value in profile_options.items()
+                            if (
+                                merged_options is None
+                                or key not in merged_options
+                            )
+                        }
+                        if missing:
+                            retry_options = (
+                                dict(merged_options)
+                                if isinstance(merged_options, dict)
+                                else {}
+                            )
+                            retry_options.update(missing)
+                            progress(
+                                f"[{game.name}] HTTP 422: perfil wire del bundle "
+                                f"detectado → {missing!r}; reintentando {command}."
+                            )
+                            try:
+                                result = post_command(
+                                    runtime,
+                                    command,
+                                    timeout_s=timeout_s,
+                                    options=retry_options,
+                                    extra_data=extra_data_payload,
+                                )
+                            except requests.HTTPError as profile_exc:
+                                if (
+                                    profile_exc.response is None
+                                    or int(profile_exc.response.status_code) != 422
+                                ):
+                                    raise
+                            else:
+                                learned_wire_options.update(missing)
+                                progress(
+                                    f"[{game.name}] Perfil API aprendido desde bundle: "
+                                    f"{learned_wire_options!r}."
+                                )
+                                return result
+
                 can_retry_rows = (
-                    status == 422
-                    and not legacy_line_bets
-                    and isinstance(expected_rows, int)
+                    isinstance(expected_rows, int)
                     and expected_rows > 0
                     and (
                         merged_options is None
