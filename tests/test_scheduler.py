@@ -19,9 +19,21 @@ class _LimitedProvider(ProviderAdapter):
         self._lock = threading.Lock()
         self.active = 0
         self.max_active = 0
+        self.prepared: list[str] = []
 
     def crawl_catalog(self, **_kwargs):
         return []
+
+    def prepare_test_artifacts(
+        self,
+        game: Game,
+        *,
+        timeout_s: float,
+        stop_event: threading.Event,
+        progress,
+    ) -> None:
+        self.prepared.append(game.slug)
+        progress(f"prepared:{game.slug}")
 
     def test_game(
         self,
@@ -87,9 +99,17 @@ class SchedulerConcurrencyTests(unittest.TestCase):
 
         self.assertEqual(len(results), 3)
         self.assertEqual(provider.max_active, 1)
+        self.assertEqual(
+            provider.prepared,
+            ["game-0", "game-1", "game-2"],
+        )
         self.assertTrue(
             any("concurrencia solicitada=3" in line for line in logs),
             logs,
+        )
+        self.assertEqual(
+            sum("prepared:" in line for line in logs),
+            3,
         )
 
 
