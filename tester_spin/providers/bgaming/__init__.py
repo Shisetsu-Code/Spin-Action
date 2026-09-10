@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
+from pathlib import Path
 
 from tester_spin.models import Game
 from tester_spin.providers.base import Progress
@@ -16,6 +17,16 @@ from tester_spin.providers.bgaming.runtime import (
 
 class BGamingProvider(_BGamingProvider):
     """BGaming provider with suite-level reusable diagnostic artifact capture."""
+
+    def har_artifact_dir(self, game: Game) -> Path | None:
+        game_dir = self.game_dir(game)
+        existing = find_existing_har(game_dir)
+        if existing is not None:
+            return existing.parent
+        analysis_dir = game_dir / "analysis"
+        if analysis_dir.is_dir():
+            return analysis_dir
+        return None
 
     def prepare_test_artifacts(
         self,
@@ -57,11 +68,14 @@ class BGamingProvider(_BGamingProvider):
             source_url = public_url or game.url
             if source_url and not is_demo_url(source_url):
                 try:
+                    progress(f"[{game.name}] HAR: resolviendo demo fresco...")
                     capture_url = resolve_fresh_demo_url(
                         session,
                         source_url,
                         timeout_s=timeout_s,
                     )
+                    if capture_url:
+                        progress(f"[{game.name}] HAR: demo fresco resuelto.")
                 except Exception as exc:
                     progress(
                         f"[{game.name}] HAR: no se pudo resolver demo fresco: "
@@ -69,11 +83,13 @@ class BGamingProvider(_BGamingProvider):
                     )
             elif is_demo_url(source_url):
                 capture_url = source_url
+                progress(f"[{game.name}] HAR: usando launch demo ya catalogado.")
 
             # A cataloged demo URL is still useful as fallback when public-page
             # resolution is temporarily unavailable.
             if not capture_url and is_demo_url(game.url):
                 capture_url = game.url
+                progress(f"[{game.name}] HAR: usando launch demo fallback del catálogo.")
 
             if not capture_url:
                 progress(
