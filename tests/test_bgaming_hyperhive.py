@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import tempfile
+import threading
+import time
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import requests
@@ -13,7 +17,9 @@ from tester_spin.providers.bgaming.hyperhive import (
     discover_action_vocabulary,
     discover_modes_from_bundle,
     is_hyperhive_runtime,
+    run_hyperhive_test,
 )
+from tester_spin.models import Game
 from tester_spin.providers.bgaming.runtime import BGamingRuntime, validate_spin
 
 
@@ -325,6 +331,91 @@ class BGamingHyperHiveTests(unittest.TestCase):
                 "stake": 200,
             },
         )
+
+    def test_historical_minimal_hyperhive_spin_is_end_to_end_ok(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            runtime = BGamingRuntime(
+                session=requests.Session(),
+                launch_url="https://blackbeards-bounty.demo.bgaming-network.com/hyperhive",
+                api_url="https://unused.example/api/session",
+                identifier="BlackbeardsBounty",
+                csrf_header_name="X-CSRF-Token",
+                csrf_header_value="secret",
+                options={"play_token": "secret-token"},
+                round_series_id=1,
+            )
+            game = Game(
+                provider="bgaming",
+                slug="blackbeards-bounty",
+                name="Blackbeard's Bounty",
+                url=runtime.launch_url,
+                symbol="BlackbeardsBounty",
+            )
+            calls: list[tuple[str, dict, object]] = []
+
+            class Response:
+                status_code = 200
+
+            def fake_rpc(_runtime, method, *, timeout_s, params, rpc_id=None):
+                calls.append((method, params, rpc_id))
+                if method == "init":
+                    return (
+                        Response(),
+                        {"id": rpc_id, "method": "init", "params": params},
+                        {
+                            "result": {
+                                "config": {"default_bet": 100},
+                                "balance": 100000,
+                            }
+                        },
+                    )
+                return (
+                    Response(),
+                    {"id": rpc_id, "method": "play", "params": params},
+                    {
+                        "result": {
+                            "final": True,
+                            "balance": 99900,
+                            "resp": {},
+                        }
+                    },
+                )
+
+            with (
+                patch(
+                    "tester_spin.providers.bgaming.hyperhive._download_bundle",
+                    return_value="",
+                ),
+                patch(
+                    "tester_spin.providers.bgaming.hyperhive._download_engine_contract",
+                    return_value="",
+                ),
+                patch(
+                    "tester_spin.providers.bgaming.hyperhive._rpc",
+                    side_effect=fake_rpc,
+                ),
+            ):
+                result = run_hyperhive_test(
+                    game=game,
+                    runtime=runtime,
+                    spins=1,
+                    timeout_s=1,
+                    stop_event=threading.Event(),
+                    progress=lambda _message: None,
+                    run_dir=Path(temp) / "bgaming-http-api-v2",
+                    started_iso="2026-09-10T00:00:00+00:00",
+                    started_monotonic=time.monotonic(),
+                )
+
+            self.assertEqual(result.status, "OK")
+            self.assertEqual(result.successful_spins, 1)
+            self.assertEqual(calls[1][0], "play")
+            self.assertEqual(
+                calls[1][1]["req"],
+                {"bet": 100, "bet_type": "bet"},
+            )
+            self.assertIsInstance(calls[0][2], str)
+            self.assertIsInstance(calls[1][2], str)
 
     def test_nested_hyperhive_game_total_win_is_accepted(self) -> None:
         data = {
