@@ -8,6 +8,7 @@ import requests
 from tester_spin.providers.bgaming.hyperhive import (
     _pz_custom_req,
     _result_summary,
+    discover_action_vocabulary,
     discover_modes_from_bundle,
     is_hyperhive_runtime,
 )
@@ -142,6 +143,14 @@ class BGamingHyperHiveTests(unittest.TestCase):
             candidate["discovery_state"],
             "DISCOVERED_LITERAL_ONLY",
         )
+
+    def test_hyperhive_action_vocabulary_is_discovered_from_client_code(self) -> None:
+        actions = discover_action_vocabulary(
+            'action:"spin" action:"bonus"',
+            "var x={action:'respin'};",
+        )
+        self.assertEqual(actions, {"spin", "bonus", "respin"})
+        self.assertNotIn("choose_future", actions)
 
     def test_big_bucks_round_win_is_used_as_cumulative_total(self) -> None:
         data = {
