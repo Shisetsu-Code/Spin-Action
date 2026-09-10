@@ -414,11 +414,7 @@ class BGamingExecutionMixin:
                     or purchase_names_equivalent(observed, name)
                     for observed in client_purchase_features
                 )
-                executable = (
-                    client_observed
-                    if client_purchase_contract_available
-                    else True
-                )
+                executable = client_observed
                 if executable:
                     mode_specs.append(
                         {
