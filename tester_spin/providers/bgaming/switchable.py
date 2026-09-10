@@ -506,7 +506,7 @@ def run_switchable_container_test(
                     attempts.append(
                         SpinAttempt(
                             number=repetition,
-                            ok=True,
+                            ok=validated,
                             mode_id=mode_id,
                             mode_kind="VARIANT",
                             status_code=last_status,
