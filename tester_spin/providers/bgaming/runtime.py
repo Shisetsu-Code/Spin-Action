@@ -438,7 +438,7 @@ def _runtime_bundle_candidates(
                     {
                         "kind": "loader",
                         "url": sanitize_session_url(loader_url),
-                        "status": int(response.status_code),
+                        "status": int(getattr(response, "status_code", 200)),
                         "ok": True,
                     }
                 )
@@ -515,9 +515,15 @@ def discover_api_v2_wire_profile(
                 {
                     "kind": "bundle",
                     "url": sanitize_session_url(url),
-                    "status": int(response.status_code),
+                    "status": int(getattr(response, "status_code", 200)),
                     "ok": True,
-                    "bytes": len(response.content),
+                    "bytes": len(
+                        getattr(
+                            response,
+                            "content",
+                            text.encode("utf-8", errors="replace"),
+                        )
+                    ),
                 }
             )
         except Exception as exc:
