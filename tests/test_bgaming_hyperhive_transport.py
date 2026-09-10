@@ -81,6 +81,64 @@ class BGamingHyperHiveTransportTests(unittest.TestCase):
             runtime.script_urls,
         )
 
+    def test_dynamic_loader_resolves_live_hash_manifests_and_keyed_binaries(self) -> None:
+        runtime = self._runtime()
+        client = hyperhive_client_url(runtime)
+        origin = "https://the-godfather3-pillars-of-power.demo.bgaming-network.com/"
+        inner_html = """
+            <script>
+              var KEY = "key=";
+              var gamePath = "";
+              var versionPath = "";
+              loadScript(getAbsolutePath("./clientfilesHashes.js") + "?" + KEY + Date.now(), function () {
+                loadScript(getAbsolutePath(`./game${versionPath}/gamesFilesHashes.js`) + "?" + KEY + Date.now(), function () {
+                  loadScript(getAbsolutePath("./common.min.js") + "?" + _get_client_hash_by_id("common.min.js"), function () {
+                    loadScript(getAbsolutePath("./client.min.js") + "?" + _get_client_hash_by_id("client.min.js"), function () {});
+                  });
+                });
+              });
+            </script>
+        """
+        client_hashes = """
+            var _clientHash_ = [
+              {"fileName":"client.min.js","hash":"609d00f2da9911664be68a7db8fa706f8cef4baf"},
+              {"fileName":"common.min.js","hash":"e9d2bd44d5d3952e83f1a9f5859c38f4e39b5f52"}
+            ];
+        """
+        game_hashes = """
+            var _gameHash_ = [
+              {"fileName":"game.min.js","hash":"c7f6c8eedd125582dbdbda6af13c2a294f27974f"},
+              {"fileName":"integration.min.js","hash":"1f4508f35fd31143fb66897bb1daba8903da43c3"}
+            ];
+        """
+
+        def fake_get(url, *args, **kwargs):
+            if url == client:
+                return _Response(text=inner_html, url=client)
+            if "clientfilesHashes.js" in url:
+                return _Response(text=client_hashes, url=url)
+            if "gamesFilesHashes.js" in url:
+                return _Response(text=game_hashes, url=url)
+            return _Response(text="", url=url)
+
+        runtime.session.get.side_effect = fake_get
+        prepare_hyperhive_client(runtime, timeout_s=1, force=True)
+
+        self.assertIn(origin + "clientfilesHashes.js", runtime.script_urls)
+        self.assertIn(origin + "game/gamesFilesHashes.js", runtime.script_urls)
+        self.assertIn(
+            origin + "client.min.js?key=609d00f2da9911664be68a7db8fa706f8cef4baf",
+            runtime.script_urls,
+        )
+        self.assertIn(
+            origin + "game/game.min.js?key=c7f6c8eedd125582dbdbda6af13c2a294f27974f",
+            runtime.script_urls,
+        )
+        self.assertIn(
+            origin + "game/integration.min.js?key=1f4508f35fd31143fb66897bb1daba8903da43c3",
+            runtime.script_urls,
+        )
+
     def test_failed_inner_get_is_not_cached_as_hydrated(self) -> None:
         runtime = self._runtime()
         client = hyperhive_client_url(runtime)
