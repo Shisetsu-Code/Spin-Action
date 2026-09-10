@@ -1137,6 +1137,8 @@ Respuesta:
 }
 ```
 
+Con 25 tarjetas por página y `page=2` todavía activa, esta captura confirma que `total=13` representa cantidad total de páginas, no cantidad de juegos. El crawler exige estabilidad de `total` y, al recibir `hasMore=false`, verifica que la página terminal coincida con `total`.
+
 Terminación autoritativa:
 
 ```text
