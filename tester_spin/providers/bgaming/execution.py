@@ -606,6 +606,24 @@ class BGamingExecutionMixin:
                     if exc.response is not None
                     else 0
                 )
+                evidence = http_error_evidence(exc.response)
+                try:
+                    _write_json(
+                        attempt_dir / f"http-{command}-{status or 'error'}.json",
+                        evidence,
+                    )
+                except (NameError, UnboundLocalError):
+                    pass
+                if active_profile is not None:
+                    active_profile.discovery_diagnostics.append(
+                        {
+                            "kind": "http-command-error",
+                            "command": command,
+                            **evidence,
+                        }
+                    )
+                    persist_profile_snapshot()
+
                 if status != 422 or legacy_line_bets:
                     raise
 
