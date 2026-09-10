@@ -1,0 +1,1081 @@
+from __future__ import annotations
+
+import secrets
+import threading
+import time
+from pathlib import Path
+from typing import Any
+
+import requests
+
+from tester_spin.models import Game, GameTestResult, SpinAttempt, utc_now_iso
+from tester_spin.providers.base import Progress
+from tester_spin.providers.bgaming.hyperhive import run_hyperhive_test
+from tester_spin.providers.bgaming.profile import (
+    API_V2,
+    HYPERHIVE,
+    LEGACY_LINES,
+    SWITCHABLE,
+    UNKNOWN,
+    BGamingProfile,
+    classify_runtime,
+    discover_profile,
+    load_profile,
+    profile_fingerprint,
+    save_profile,
+)
+from tester_spin.providers.bgaming.runtime import (
+    balance_total,
+    bootstrap_game,
+    build_line_bets,
+    discover_purchase_modes,
+    flow_continuation_command,
+    is_line_bet_init,
+    line_bet_count,
+    pending_flow_actions,
+    post_command,
+    preselection_multiplier,
+    purchase_expected_debit,
+    purchase_names_equivalent,
+    resolve_base_bet,
+    resolve_fresh_demo_url,
+    sanitize_error_text,
+    sanitize_options,
+    sanitize_session_url,
+    spin_remote_proof,
+    validate_init,
+    validate_line_spin,
+    validate_spin,
+)
+from tester_spin.providers.bgaming.switchable import run_switchable_container_test
+
+
+class BGamingExecutionMixin:
+    def test_game(
+        self,
+        game: Game,
+        *,
+        spins: int,
+        timeout_s: float,
+        stop_event: threading.Event,
+        progress: Progress,
+    ) -> GameTestResult:
+        repetitions = max(1, int(spins))
+        timeout_s = max(1.0, float(timeout_s))
+        started_iso = utc_now_iso()
+        started = time.monotonic()
+        stamp = time.strftime("%Y-%m-%d_%H-%M-%S")
+        run_dir = self.game_dir(game) / "tests" / f"{stamp}-bgaming-http-api-v2"
+        attempts: list[SpinAttempt] = []
+        errors: list[str] = []
+        global_warnings: list[str] = []
+        responded_attempts = 0
+        successes = 0
+        discovered_modes: list[dict[str, Any]] = []
+        discovered_mode_ids: set[str] = set()
+        pending_actions: set[str] = set()
+        previous_remote_identity: tuple[Any, Any, str] | None = None
+
+        session = self._new_session()
+        execution_url = game.url
+        if not self._looks_like_demo_url(execution_url):
+            try:
+                fresh_demo_url = resolve_fresh_demo_url(
+                    session,
+                    execution_url,
+                    timeout_s=timeout_s,
+                )
+            except Exception as exc:
+                fresh_demo_url = ""
+                progress(
+                    f"[{game.name}] resolución demo BGaming: "
+                    f"{sanitize_error_text(f'{type(exc).__name__}: {exc}')}"
+                )
+            if fresh_demo_url:
+                execution_url = fresh_demo_url
+                progress(
+                    f"[{game.name}] demo efímero resuelto en memoria; "
+                    "credenciales de sesión no se persistirán."
+                )
+            else:
+                session.close()
+                elapsed = (time.monotonic() - started) * 1000.0
+                return GameTestResult(
+                    provider=self.key,
+                    slug=game.slug,
+                    game_name=game.name,
+                    game_url=game.url,
+                    requested_spins=repetitions,
+                    successful_spins=0,
+                    failed_spins=repetitions,
+                    status="SIN_DEMO",
+                    symbol=game.symbol,
+                    started_at=started_iso,
+                    finished_at=utc_now_iso(),
+                    elapsed_ms=elapsed,
+                    error="BGaming: juego catalogado sin Play Demo resoluble.",
+                    run_dir=str(run_dir),
+                )
+
+        game_json = self.game_dir(game) / "game.json"
+        persisted_profile = load_profile(game_json)
+        active_profile: BGamingProfile | None = None
+        runtime = None
+        init_data: dict[str, Any] = {}
+        default_bet: int | float | None = None
+        previous_total: int | float | None = None
+        expected_reels: int | None = None
+        expected_rows: int | None = None
+        variable_layout = False
+        legacy_line_bets = False
+        legacy_line_count = 0
+        rows_required = False
+        api_profile_checked = False
+        learned_wire_options: dict[str, Any] = {}
+        purchase_modes: list[dict[str, Any]] = []
+        mode_specs: list[dict[str, Any]] = [
+            {"id": "SPIN", "kind": "SPIN", "purchase": None}
+        ]
+
+        def register_mode(mode: dict[str, Any]) -> None:
+            mode_id = str(mode.get("id") or "")
+            if not mode_id or mode_id in discovered_mode_ids:
+                return
+            discovered_modes.append(mode)
+            discovered_mode_ids.add(mode_id)
+
+        try:
+            progress(
+                f"[{game.name}] BGaming: bootstrap HTML → window.__OPTIONS__ → init API v2."
+            )
+            runtime = bootstrap_game(session, execution_url, timeout_s=timeout_s)
+            game.symbol = runtime.identifier
+
+            self._write_json(
+                run_dir / "bootstrap.json",
+                {
+                    "identifier": runtime.identifier,
+                    "launch_url": sanitize_session_url(runtime.launch_url),
+                    "api_url": sanitize_session_url(runtime.api_url),
+                    "options": sanitize_options(runtime.options),
+                    "round_series_id": runtime.round_series_id,
+                },
+            )
+
+            bootstrap_classification = classify_runtime(runtime)
+            if bootstrap_classification.family == HYPERHIVE:
+                active_profile = discover_profile(
+                    runtime,
+                    {},
+                    timeout_s=timeout_s,
+                    persisted=persisted_profile,
+                )
+                save_profile(game_json, active_profile)
+                progress(
+                    f"[{game.name}] runtime={active_profile.family} "
+                    f"confidence={active_profile.confidence:.2f}; "
+                    "cambiando a executor JSON-RPC."
+                )
+                try:
+                    result = run_hyperhive_test(
+                        game=game,
+                        runtime=runtime,
+                        spins=repetitions,
+                        timeout_s=timeout_s,
+                        stop_event=stop_event,
+                        progress=progress,
+                        run_dir=run_dir,
+                        started_iso=started_iso,
+                        started_monotonic=started,
+                    )
+                    if result.status == "OK":
+                        active_profile.validated = True
+                        save_profile(game_json, active_profile)
+                    return result
+                finally:
+                    session.close()
+
+            _init_response, init_request, init_data = post_command(
+                runtime,
+                "init",
+                timeout_s=timeout_s,
+            )
+            self._write_json(run_dir / "init-request.json", init_request)
+            self._write_json(run_dir / "init-response.json", init_data)
+
+            active_profile = discover_profile(
+                runtime,
+                init_data,
+                timeout_s=timeout_s,
+                persisted=persisted_profile,
+            )
+            save_profile(game_json, active_profile)
+            progress(
+                f"[{game.name}] perfil BGaming: family={active_profile.family}, "
+                f"confidence={active_profile.confidence:.2f}, "
+                f"source={active_profile.source or '—'}, "
+                f"fingerprint={profile_fingerprint(active_profile)}."
+            )
+
+            if active_profile.family == SWITCHABLE:
+                progress(
+                    f"[{game.name}] contenedor switchable confirmado por múltiples "
+                    "señales; cambiando a executor de variantes."
+                )
+                try:
+                    result = run_switchable_container_test(
+                        game=game,
+                        runtime=runtime,
+                        initial_data=init_data,
+                        spins=repetitions,
+                        timeout_s=timeout_s,
+                        stop_event=stop_event,
+                        progress=progress,
+                        run_dir=run_dir,
+                        started_iso=started_iso,
+                        started_monotonic=started,
+                    )
+                    if result.status == "OK":
+                        active_profile.validated = True
+                        save_profile(game_json, active_profile)
+                    return result
+                finally:
+                    session.close()
+
+            if active_profile.family == UNKNOWN:
+                raise ValueError(
+                    "BGaming: runtime no clasificado con evidencia suficiente; "
+                    "RAW preservado sin ejecutar comandos de juego."
+                )
+
+            init_warnings = validate_init(init_data)
+            global_warnings.extend(init_warnings)
+            options = init_data.get("options")
+            bet_source = ""
+            if isinstance(options, dict):
+                default_bet, bet_source = resolve_base_bet(init_data)
+                layout = options.get("layout")
+                if isinstance(layout, dict):
+                    try:
+                        expected_reels = int(layout.get("reels"))
+                    except (TypeError, ValueError):
+                        expected_reels = None
+                    try:
+                        expected_rows = int(layout.get("rows"))
+                    except (TypeError, ValueError):
+                        expected_rows = None
+
+            variable_layout = bool(
+                active_profile.variable_layout if active_profile is not None else False
+            )
+
+            if not isinstance(default_bet, (int, float)):
+                raise ValueError("BGaming init no entregó una apuesta utilizable.")
+
+            legacy_line_bets = (
+                active_profile is not None and active_profile.family == LEGACY_LINES
+            )
+            legacy_line_count = (
+                active_profile.line_count
+                if active_profile is not None and active_profile.line_count
+                else line_bet_count(init_data)
+            )
+            if active_profile is not None and active_profile.family == API_V2:
+                learned_wire_options.update(active_profile.spin_options)
+                rows_required = active_profile.rows_required
+            if legacy_line_bets:
+                bet_source = f"line_bets:{legacy_line_count} líneas"
+                variable_layout = False
+
+            previous_total = balance_total(init_data)
+            register_mode(
+                {
+                    "id": "SPIN",
+                    "kind": "SPIN",
+                    "observed": True,
+                    "wire_command": "spin",
+                }
+            )
+
+            purchase_modes = (
+                []
+                if legacy_line_bets
+                else discover_purchase_modes(init_data)
+            )
+            for purchase in purchase_modes:
+                name = str(purchase["name"])
+                mode_id = f"PURCHASE_{name.upper()}"
+                mode_spec = {
+                    "id": mode_id,
+                    "kind": "PURCHASE",
+                    "purchase": purchase,
+                }
+                mode_specs.append(mode_spec)
+                register_mode(
+                    {
+                        "id": mode_id,
+                        "kind": "PURCHASE",
+                        "observed": True,
+                        "wire_command": "spin",
+                        "purchased_feature": name,
+                        "feature_multiplier": purchase["feature_multiplier"],
+                        "base_multiplier": purchase["base_multiplier"],
+                        "cost_multiplier": purchase["cost_multiplier"],
+                        "source": "options.feature_options.feature_multipliers",
+                    }
+                )
+
+            pending_actions.update(pending_flow_actions(init_data))
+            progress(
+                f"[{game.name}] INIT OK: identifier={runtime.identifier}, "
+                f"bet={default_bet} ({bet_source or 'unknown'}), "
+                f"layout={expected_reels or '?'}x{expected_rows or '?'}, "
+                f"balance_total={previous_total if previous_total is not None else '—'}, "
+                f"perfil={active_profile.family if active_profile is not None else 'unknown'}, "
+                f"compras={len(purchase_modes)}"
+                + (
+                    f", warnings={len(init_warnings)}"
+                    if init_warnings
+                    else ""
+                )
+            )
+            for purchase in purchase_modes:
+                progress(
+                    f"[{game.name}] COMPRA detectada: {purchase['name']} "
+                    f"x{purchase['cost_multiplier']:g} de la apuesta base "
+                    "(HAR feature_multipliers)."
+                )
+        except Exception as exc:
+            message = sanitize_error_text(f"{type(exc).__name__}: {exc}")
+            errors.append(message)
+            progress(f"[{game.name}] BGaming bootstrap/init ERROR: {message}")
+
+        def send_api_command(
+            command: str,
+            *,
+            options_payload: dict[str, Any] | None = None,
+            extra_data_payload: dict[str, Any] | None = None,
+        ):
+            nonlocal rows_required, api_profile_checked
+            merged_options = (
+                dict(options_payload)
+                if isinstance(options_payload, dict)
+                else None
+            )
+            if learned_wire_options and not legacy_line_bets:
+                if merged_options is None:
+                    merged_options = {}
+                for key, value in learned_wire_options.items():
+                    merged_options.setdefault(key, value)
+            if (
+                rows_required
+                and not legacy_line_bets
+                and isinstance(expected_rows, int)
+                and expected_rows > 0
+            ):
+                if merged_options is None:
+                    merged_options = {}
+                merged_options.setdefault("rows", expected_rows)
+
+            try:
+                return post_command(
+                    runtime,
+                    command,
+                    timeout_s=timeout_s,
+                    options=merged_options,
+                    extra_data=extra_data_payload,
+                )
+            except requests.HTTPError as exc:
+                status = (
+                    int(exc.response.status_code)
+                    if exc.response is not None
+                    else 0
+                )
+                if status != 422 or legacy_line_bets:
+                    raise
+
+                if active_profile is not None:
+                    active_profile.validated = False
+                    save_profile(game_json, active_profile)
+
+                if not api_profile_checked:
+                    api_profile_checked = True
+                    refreshed = discover_profile(
+                        runtime,
+                        init_data,
+                        timeout_s=timeout_s,
+                        persisted=None,
+                    )
+                    profile_options = refreshed.spin_options
+                    if profile_options:
+                        missing = {
+                            key: value
+                            for key, value in profile_options.items()
+                            if (
+                                merged_options is None
+                                or key not in merged_options
+                            )
+                        }
+                        if missing:
+                            retry_options = (
+                                dict(merged_options)
+                                if isinstance(merged_options, dict)
+                                else {}
+                            )
+                            retry_options.update(missing)
+                            progress(
+                                f"[{game.name}] HTTP 422: perfil wire redescubierto "
+                                f"→ {missing!r}; reintentando {command} una vez."
+                            )
+                            try:
+                                result = post_command(
+                                    runtime,
+                                    command,
+                                    timeout_s=timeout_s,
+                                    options=retry_options,
+                                    extra_data=extra_data_payload,
+                                )
+                            except requests.HTTPError as profile_exc:
+                                if (
+                                    profile_exc.response is None
+                                    or int(profile_exc.response.status_code) != 422
+                                ):
+                                    raise
+                            else:
+                                learned_wire_options.update(missing)
+                                if active_profile is not None:
+                                    active_profile.spin_options.update(missing)
+                                    active_profile.source = refreshed.source
+                                    active_profile.bundle_sha256 = refreshed.bundle_sha256
+                                    save_profile(game_json, active_profile)
+                                progress(
+                                    f"[{game.name}] Perfil API actualizado: "
+                                    f"{learned_wire_options!r}."
+                                )
+                                return result
+
+                can_retry_rows = (
+                    isinstance(expected_rows, int)
+                    and expected_rows > 0
+                    and (
+                        merged_options is None
+                        or "rows" not in merged_options
+                    )
+                )
+                if not can_retry_rows:
+                    raise
+
+                retry_options = (
+                    dict(merged_options)
+                    if isinstance(merged_options, dict)
+                    else {}
+                )
+                retry_options["rows"] = expected_rows
+                progress(
+                    f"[{game.name}] HTTP 422: reintentando {command} "
+                    f"con rows={expected_rows} según layout del init."
+                )
+                result = post_command(
+                    runtime,
+                    command,
+                    timeout_s=timeout_s,
+                    options=retry_options,
+                    extra_data=extra_data_payload,
+                )
+                rows_required = True
+                if active_profile is not None:
+                    active_profile.rows_required = True
+                    save_profile(game_json, active_profile)
+                progress(
+                    f"[{game.name}] Perfil API aprendido: "
+                    f"rows={expected_rows} requerido en comandos de juego."
+                )
+                return result
+
+        requested_total = repetitions * len(mode_specs)
+
+        if runtime is not None and isinstance(default_bet, (int, float)):
+            for mode_spec in mode_specs:
+                mode_id = str(mode_spec["id"])
+                mode_kind = str(mode_spec["kind"])
+                purchase = mode_spec.get("purchase")
+                purchase_name = (
+                    str(purchase.get("name") or "")
+                    if isinstance(purchase, dict)
+                    else ""
+                )
+
+                for repetition in range(1, repetitions + 1):
+                    if stop_event.is_set():
+                        break
+
+                    attempt_dir = (
+                        run_dir
+                        / mode_id
+                        / f"attempt-{repetition:03d}"
+                    )
+                    attempt_started = time.monotonic()
+                    warnings: list[str] = []
+                    wire_steps = 0
+                    terminal = False
+                    last_status_code: int | None = None
+                    final_flow_state = ""
+                    final_proof: dict[str, Any] = {}
+                    first_response_received = False
+
+                    try:
+                        if legacy_line_bets:
+                            spin_options = {
+                                "bets": build_line_bets(init_data, default_bet)
+                            }
+                            request_extra_data = {
+                                "client_seed": secrets.randbelow(100000),
+                                "round_series_id": runtime.round_series_id,
+                            }
+                            expected_debit = (
+                                float(default_bet) * float(legacy_line_count)
+                            )
+                        else:
+                            spin_options = {"bet": default_bet}
+                            if purchase_name:
+                                spin_options["purchased_feature"] = purchase_name
+                            request_extra_data = None
+                            expected_debit = purchase_expected_debit(
+                                default_bet,
+                                purchase if isinstance(purchase, dict) else None,
+                            )
+
+                        response, request_payload, data = send_api_command(
+                            "spin",
+                            options_payload=spin_options,
+                            extra_data_payload=request_extra_data,
+                        )
+                        first_response_received = True
+                        responded_attempts += 1
+                        wire_steps += 1
+                        last_status_code = int(response.status_code)
+
+                        self._write_json(attempt_dir / "request.json", request_payload)
+                        self._write_json(attempt_dir / "response.json", data)
+                        self._write_json(
+                            attempt_dir / f"step-{wire_steps:03d}-request.json",
+                            request_payload,
+                        )
+                        self._write_json(
+                            attempt_dir / f"step-{wire_steps:03d}-response.json",
+                            data,
+                        )
+
+                        if legacy_line_bets:
+                            line_warnings, inferred_win = validate_line_spin(
+                                data,
+                                requested_line_bet=default_bet,
+                                line_count=legacy_line_count,
+                                previous_balance_total=previous_total,
+                            )
+                            warnings.extend(line_warnings)
+                            current_total = balance_total(data)
+                            if current_total is not None:
+                                previous_total = current_total
+                            game_state = data.get("game")
+                            if not isinstance(game_state, dict):
+                                game_state = {}
+                            commands = data.get("available_commands")
+                            command_names = (
+                                {str(item) for item in commands}
+                                if isinstance(commands, list)
+                                else set()
+                            )
+                            terminal = (
+                                str(game_state.get("state") or "") == "closed"
+                                and str(game_state.get("action") or "") == "spin"
+                                and "spin" in command_names
+                            )
+                            proof = {
+                                "runtime": "legacy-line-bets",
+                                "mode_id": mode_id,
+                                "step": wire_steps,
+                                "line_bet": default_bet,
+                                "line_count": legacy_line_count,
+                                "total_debit": expected_debit,
+                                "inferred_win": inferred_win,
+                                "balance_total": current_total,
+                                "game_state": game_state.get("state"),
+                                "game_action": game_state.get("action"),
+                                "response_sha256": spin_remote_proof(data).get(
+                                    "response_sha256"
+                                ),
+                            }
+                            self._write_json(
+                                attempt_dir / "remote-proof.json",
+                                proof,
+                            )
+                            validated = terminal and not warnings
+                            if (
+                                validated
+                                and mode_id == "SPIN"
+                                and active_profile is not None
+                                and not active_profile.validated
+                            ):
+                                active_profile.validated = True
+                                save_profile(game_json, active_profile)
+                            successes += int(validated)
+                            global_warnings.extend(warnings)
+                            elapsed_ms = (
+                                time.monotonic() - attempt_started
+                            ) * 1000.0
+                            attempts.append(
+                                SpinAttempt(
+                                    number=repetition,
+                                    ok=validated,
+                                    mode_id=mode_id,
+                                    mode_kind=mode_kind,
+                                    status_code=last_status_code,
+                                    elapsed_ms=elapsed_ms,
+                                    symbol=runtime.identifier,
+                                    endpoint=sanitize_session_url(runtime.api_url),
+                                    na=str(game_state.get("state") or ""),
+                                    terminal=terminal,
+                                    wire_steps=wire_steps,
+                                    warning="; ".join(warnings),
+                                    artifact_dir=str(attempt_dir),
+                                )
+                            )
+                            progress(
+                                f"[{game.name}] {mode_id} {repetition}/{repetitions}: "
+                                f"{'OK' if validated else 'PARCIAL'} "
+                                f"{elapsed_ms:.0f} ms, perfil=line-bets, "
+                                f"líneas={legacy_line_count}, line_bet={default_bet}, "
+                                f"debit={expected_debit:g}, "
+                                f"win_inferido={inferred_win if inferred_win is not None else '—'}, "
+                                f"balance={current_total if current_total is not None else '—'}"
+                                + (
+                                    f", diagnóstico={' | '.join(warnings[:3])}"
+                                    if warnings
+                                    else ""
+                                )
+                            )
+                            continue
+
+                        warnings.extend(
+                            validate_spin(
+                                data,
+                                requested_bet=default_bet,
+                                previous_balance_total=previous_total,
+                                expected_reels=expected_reels,
+                                expected_rows=expected_rows,
+                                command="spin",
+                                expected_debit=expected_debit,
+                                variable_layout=variable_layout,
+                            )
+                        )
+
+                        flow = data.get("flow")
+                        if not isinstance(flow, dict):
+                            flow = {}
+                        purchased = flow.get("purchased_feature")
+                        actual_purchase = (
+                            str(purchased.get("name") or "")
+                            if isinstance(purchased, dict)
+                            else ""
+                        )
+                        if (
+                            purchase_name
+                            and not purchase_names_equivalent(
+                                purchase_name,
+                                actual_purchase,
+                            )
+                        ):
+                            warnings.append(
+                                f"purchased_feature devuelta={actual_purchase!r}, "
+                                f"solicitada={purchase_name!r}"
+                            )
+                        if not purchase_name and actual_purchase:
+                            warnings.append(
+                                f"spin base devolvió purchased_feature inesperada: "
+                                f"{actual_purchase!r}"
+                            )
+
+                        for action_name in pending_flow_actions(data):
+                            pending_actions.add(action_name)
+                            register_mode(
+                                {
+                                    "id": action_name.upper(),
+                                    "kind": "FEATURE",
+                                    "observed": False,
+                                    "wire_command": action_name,
+                                }
+                            )
+
+                        proof = spin_remote_proof(data)
+                        proof["mode_id"] = mode_id
+                        proof["step"] = wire_steps
+                        proof["expected_debit"] = expected_debit
+                        self._write_json(
+                            attempt_dir / f"step-{wire_steps:03d}-proof.json",
+                            proof,
+                        )
+                        final_proof = proof
+
+                        remote_identity = (
+                            proof.get("round_id"),
+                            proof.get("last_action_id"),
+                            str(proof.get("response_sha256") or ""),
+                        )
+                        if (
+                            previous_remote_identity is not None
+                            and remote_identity == previous_remote_identity
+                        ):
+                            warnings.append(
+                                "respuesta remota idéntica a la anterior "
+                                "(round_id/action_id/hash sin cambios)"
+                            )
+                        previous_remote_identity = remote_identity
+
+                        current_total = balance_total(data)
+                        if current_total is not None:
+                            previous_total = current_total
+
+                        trigger_round_id = flow.get("round_id")
+                        continuation_guard = 256
+                        while not stop_event.is_set():
+                            state = str(flow.get("state") or "")
+                            actions = flow.get("available_actions")
+                            action_names = (
+                                {str(action) for action in actions}
+                                if isinstance(actions, list)
+                                else set()
+                            )
+                            continuation_command = flow_continuation_command(
+                                {"flow": flow}
+                            )
+                            if not continuation_command:
+                                break
+                            if continuation_command not in action_names:
+                                warnings.append(
+                                    f"estado {state} sin available_actions="
+                                    f"{continuation_command}"
+                                )
+                                break
+                            if wire_steps >= continuation_guard:
+                                warnings.append(
+                                    f"guard de continuaciones alcanzado ({continuation_guard})"
+                                )
+                                break
+
+                            register_mode(
+                                {
+                                    "id": continuation_command.upper(),
+                                    "kind": "CONTINUATION",
+                                    "observed": True,
+                                    "wire_command": continuation_command,
+                                }
+                            )
+
+                            before_total = previous_total
+                            cont_response, cont_request, cont_data = send_api_command(
+                                continuation_command,
+                            )
+                            wire_steps += 1
+                            last_status_code = int(cont_response.status_code)
+                            self._write_json(
+                                attempt_dir / f"step-{wire_steps:03d}-request.json",
+                                cont_request,
+                            )
+                            self._write_json(
+                                attempt_dir / f"step-{wire_steps:03d}-response.json",
+                                cont_data,
+                            )
+
+                            cont_warnings = validate_spin(
+                                cont_data,
+                                requested_bet=default_bet,
+                                previous_balance_total=before_total,
+                                expected_reels=expected_reels,
+                                expected_rows=expected_rows,
+                                command=continuation_command,
+                                expected_debit=0,
+                                variable_layout=variable_layout,
+                            )
+                            warnings.extend(cont_warnings)
+
+                            cont_flow = cont_data.get("flow")
+                            if not isinstance(cont_flow, dict):
+                                cont_flow = {}
+                            if (
+                                trigger_round_id is not None
+                                and cont_flow.get("round_id") != trigger_round_id
+                            ):
+                                warnings.append(
+                                    "round_id cambió dentro de la continuación: "
+                                    f"{trigger_round_id!r}→{cont_flow.get('round_id')!r}"
+                                )
+
+                            for action_name in pending_flow_actions(cont_data):
+                                pending_actions.add(action_name)
+                                register_mode(
+                                    {
+                                        "id": action_name.upper(),
+                                        "kind": "FEATURE",
+                                        "observed": False,
+                                        "wire_command": action_name,
+                                    }
+                                )
+
+                            cont_proof = spin_remote_proof(cont_data)
+                            cont_proof["mode_id"] = mode_id
+                            cont_proof["step"] = wire_steps
+                            cont_proof["expected_debit"] = 0
+                            if continuation_command == "preselection_game":
+                                cont_proof["bonus_multiplier"] = (
+                                    preselection_multiplier(cont_data)
+                                )
+                            self._write_json(
+                                attempt_dir / f"step-{wire_steps:03d}-proof.json",
+                                cont_proof,
+                            )
+                            final_proof = cont_proof
+
+                            remote_identity = (
+                                cont_proof.get("round_id"),
+                                cont_proof.get("last_action_id"),
+                                str(cont_proof.get("response_sha256") or ""),
+                            )
+                            if (
+                                previous_remote_identity is not None
+                                and remote_identity == previous_remote_identity
+                            ):
+                                warnings.append(
+                                    f"respuesta remota {continuation_command} "
+                                    "idéntica a la anterior"
+                                )
+                            previous_remote_identity = remote_identity
+
+                            current_total = balance_total(cont_data)
+                            if current_total is not None:
+                                previous_total = current_total
+
+                            if continuation_command == "freespin":
+                                features = cont_data.get("features")
+                                freespins_left = (
+                                    features.get("freespins_left")
+                                    if isinstance(features, dict)
+                                    else None
+                                )
+                                progress(
+                                    f"[{game.name}] {mode_id} FREESPIN "
+                                    f"step={wire_steps}, "
+                                    f"round={cont_proof.get('round_id') or '—'}, "
+                                    f"action={cont_proof.get('last_action_id') or '—'}, "
+                                    f"left={freespins_left if freespins_left is not None else '—'}, "
+                                    f"win={cont_proof.get('win') if cont_proof.get('win') is not None else '—'}, "
+                                    f"balance={current_total if current_total is not None else '—'}"
+                                )
+                            elif continuation_command == "preselection_game":
+                                multiplier = preselection_multiplier(cont_data)
+                                progress(
+                                    f"[{game.name}] {mode_id} PRESELECTION "
+                                    f"step={wire_steps}, "
+                                    f"round={cont_proof.get('round_id') or '—'}, "
+                                    f"action={cont_proof.get('last_action_id') or '—'}, "
+                                    f"multiplier={multiplier if multiplier is not None else '—'}, "
+                                    f"win={cont_proof.get('win') if cont_proof.get('win') is not None else '—'}, "
+                                    f"balance={current_total if current_total is not None else '—'}"
+                                )
+                            else:
+                                progress(
+                                    f"[{game.name}] {mode_id} "
+                                    f"{continuation_command.upper()} "
+                                    f"step={wire_steps}, "
+                                    f"round={cont_proof.get('round_id') or '—'}, "
+                                    f"action={cont_proof.get('last_action_id') or '—'}, "
+                                    f"state={cont_proof.get('flow_state') or '—'}, "
+                                    f"win={cont_proof.get('win') if cont_proof.get('win') is not None else '—'}, "
+                                    f"balance={current_total if current_total is not None else '—'}"
+                                )
+
+                            data = cont_data
+                            flow = cont_flow
+
+                        final_flow_state = str(flow.get("state") or "")
+                        final_actions = flow.get("available_actions")
+                        final_action_names = (
+                            {str(action) for action in final_actions}
+                            if isinstance(final_actions, list)
+                            else set()
+                        )
+                        terminal = (
+                            final_flow_state == "closed"
+                            and "spin" in final_action_names
+                        )
+                        if not terminal and not stop_event.is_set():
+                            warnings.append(
+                                f"estado final BGaming no terminal: "
+                                f"state={final_flow_state!r}, actions={sorted(final_action_names)!r}"
+                            )
+
+                        validated = terminal and not warnings
+                        if (
+                            validated
+                            and mode_id == "SPIN"
+                            and active_profile is not None
+                            and not active_profile.validated
+                        ):
+                            active_profile.validated = True
+                            save_profile(game_json, active_profile)
+                        successes += int(validated)
+                        global_warnings.extend(warnings)
+
+                        self._write_json(
+                            attempt_dir / "remote-proof.json",
+                            final_proof,
+                        )
+                        elapsed_ms = (time.monotonic() - attempt_started) * 1000.0
+                        attempts.append(
+                            SpinAttempt(
+                                number=repetition,
+                                ok=validated,
+                                mode_id=mode_id,
+                                mode_kind=mode_kind,
+                                status_code=last_status_code,
+                                elapsed_ms=elapsed_ms,
+                                symbol=runtime.identifier,
+                                endpoint=sanitize_session_url(runtime.api_url),
+                                na=final_flow_state,
+                                terminal=terminal,
+                                wire_steps=wire_steps,
+                                warning="; ".join(warnings),
+                                artifact_dir=str(attempt_dir),
+                            )
+                        )
+
+                        progress(
+                            f"[{game.name}] {mode_id} {repetition}/{repetitions}: "
+                            f"{'OK' if validated else 'PARCIAL'} {elapsed_ms:.0f} ms, "
+                            f"steps={wire_steps}, "
+                            f"HTTP={last_status_code or '—'}, "
+                            f"round={final_proof.get('round_id') or '—'}, "
+                            f"action={final_proof.get('last_action_id') or '—'}, "
+                            f"bet={default_bet}, "
+                            f"debit={expected_debit:g}, "
+                            f"win={final_proof.get('win') if final_proof.get('win') is not None else '—'}, "
+                            f"balance={previous_total if previous_total is not None else '—'}, "
+                            f"seed={final_proof.get('storage_seed') if final_proof.get('storage_seed') is not None else '—'}, "
+                            f"resp={final_proof.get('response_sha256') or '—'}"
+                            + (
+                                f", warnings={len(warnings)}, "
+                                f"diagnóstico={' | '.join(warnings[:3])}"
+                                if warnings
+                                else ""
+                            )
+                        )
+                    except Exception as exc:
+                        elapsed_ms = (time.monotonic() - attempt_started) * 1000.0
+                        message = sanitize_error_text(f"{type(exc).__name__}: {exc}")
+                        errors.append(message)
+                        attempts.append(
+                            SpinAttempt(
+                                number=repetition,
+                                ok=False,
+                                mode_id=mode_id,
+                                mode_kind=mode_kind,
+                                elapsed_ms=elapsed_ms,
+                                symbol=game.symbol,
+                                endpoint=(
+                                    sanitize_session_url(runtime.api_url)
+                                    if runtime is not None
+                                    else ""
+                                ),
+                                terminal=False,
+                                wire_steps=wire_steps,
+                                error=message,
+                                artifact_dir=str(attempt_dir),
+                            )
+                        )
+                        progress(
+                            f"[{game.name}] {mode_id} {repetition}/{repetitions}: "
+                            f"ERROR {message}"
+                        )
+
+                if stop_event.is_set():
+                    break
+        else:
+            for repetition in range(1, repetitions + 1):
+                message = errors[0] if errors else "BGaming bootstrap/init no disponible."
+                attempts.append(
+                    SpinAttempt(
+                        number=repetition,
+                        ok=False,
+                        mode_id="SPIN",
+                        mode_kind="SPIN",
+                        symbol=game.symbol,
+                        terminal=False,
+                        error=message,
+                        artifact_dir=str(run_dir / "SPIN" / f"attempt-{repetition:03d}"),
+                    )
+                )
+
+        elapsed_total = (time.monotonic() - started) * 1000.0
+        attempted = len(attempts)
+
+        if (
+            attempted
+            and successes == requested_total
+            and not pending_actions
+            and not errors
+        ):
+            # Attempt validation already incorporates fatal protocol warnings.
+            # Init-level diagnostics must not downgrade a run that completed
+            # every requested mode successfully.
+            status = "OK"
+            error = ""
+        elif responded_attempts:
+            status = "PARCIAL"
+            detail: list[str] = [
+                f"BGaming respondió {responded_attempts}/{requested_total} intentos; "
+                f"modos terminales validados={successes}/{requested_total}."
+            ]
+            if purchase_modes:
+                detail.append(
+                    "Compras probadas: "
+                    + ", ".join(
+                        f"{mode['name']} x{mode['cost_multiplier']:g}"
+                        for mode in purchase_modes
+                    )
+                    + "."
+                )
+            if pending_actions:
+                detail.append(
+                    "Acciones aún no clasificadas: "
+                    + ", ".join(sorted(pending_actions))
+                    + "."
+                )
+            if global_warnings:
+                unique = list(dict.fromkeys(global_warnings))
+                detail.append("Diagnóstico: " + " | ".join(unique[:6]))
+            error = " ".join(detail)
+        else:
+            status = "ERROR"
+            error = errors[0] if errors else "No se completó ninguna tirada BGaming."
+
+        result = GameTestResult(
+            provider=self.key,
+            slug=game.slug,
+            game_name=game.name,
+            game_url=game.url,
+            requested_spins=requested_total,
+            successful_spins=successes,
+            failed_spins=max(0, requested_total - successes),
+            status=status,
+            symbol=game.symbol,
+            discovered_modes=discovered_modes,
+            started_at=started_iso,
+            finished_at=utc_now_iso(),
+            elapsed_ms=elapsed_total,
+            error=error,
+            run_dir=str(run_dir),
+            attempts=attempts,
+        )
+        session.close()
+        return result
+
