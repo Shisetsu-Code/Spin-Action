@@ -792,7 +792,7 @@ class BGamingRuntimeTests(unittest.TestCase):
         self.assertNotIn("currency", inferred)
 
     def test_resolves_ephemeral_demo_from_public_page_without_persisting_it(self) -> None:
-        class Response:
+        class PublicResponse:
             url = "https://bgaming.com/games/example"
             text = (
                 '<a href="https://demo.bgaming-network.com/games/Example/FUN'
@@ -802,8 +802,31 @@ class BGamingRuntimeTests(unittest.TestCase):
             def raise_for_status(self) -> None:
                 return None
 
+        class DemoResponse:
+            url = (
+                "https://demo.bgaming-network.com/games/Example/FUN"
+                "?play_token=ephemeral-secret"
+            )
+            text = """
+            <script>
+            window.__OPTIONS__ = {
+              "identifier":"Example",
+              "api":"https://demo.bgaming-network.com/api/Example/1/session",
+              "csrfTokenHeaderName":"X-CSRF",
+              "csrfTokenHeaderValue":"secret"
+            };
+            </script>
+            """
+
+            def raise_for_status(self) -> None:
+                return None
+
         session = requests.Session()
-        with patch.object(session, "get", return_value=Response()):
+        with patch.object(
+            session,
+            "get",
+            side_effect=[PublicResponse(), DemoResponse()],
+        ):
             resolved = resolve_fresh_demo_url(
                 session,
                 "https://bgaming.com/games/example",
