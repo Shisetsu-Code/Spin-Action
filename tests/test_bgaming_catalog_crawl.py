@@ -146,6 +146,35 @@ class BGamingCatalogCrawlTests(unittest.TestCase):
             self.assertFalse(provider.catalog_crawl_authoritative)
             self.assertIn("total REST cambió", provider.catalog_crawl_reason)
 
+    def test_final_total_mismatch_is_non_authoritative(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            provider = self.provider(temp)
+            provider.http.get = unittest.mock.Mock(
+                side_effect=[
+                    Response(text=card("one", "One", "One")),
+                    Response(
+                        payload={
+                            "page": 2,
+                            "total": 3,
+                            "hasMore": False,
+                            "html": card("two", "Two", "Two"),
+                        }
+                    ),
+                ]
+            )
+            with patch.object(provider, "_download_thumbnail"):
+                games = provider.crawl_catalog(
+                    stop_event=threading.Event(),
+                    progress=lambda _message: None,
+                    max_pages=10,
+                )
+            self.assertEqual([game.slug for game in games], ["one", "two"])
+            self.assertFalse(provider.catalog_crawl_authoritative)
+            self.assertIn(
+                "total REST no coincide",
+                provider.catalog_crawl_reason,
+            )
+
     def test_manual_page_limit_is_never_authoritative(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             provider = self.provider(temp)
