@@ -317,6 +317,18 @@ def discover_modes_from_bundle(
         )
         else ""
     )
+    has_req_bet_contract = bool(
+        re.search(
+            r"(?:\breq\s*:\s*\{[^{}]{0,500}\bbet\s*:|\.req\.bet\s*=|\[\s*[\"']bet[\"']\s*\]\s*=)",
+            combined,
+        )
+    )
+    base_contract_observed = bool(
+        custom_req_profile
+        or bet_type
+        or "spin" in action_vocabulary
+        or has_req_bet_contract
+    )
 
     modes: list[dict[str, Any]] = [
         {
@@ -325,8 +337,10 @@ def discover_modes_from_bundle(
             "request": spin_request,
             "expected_multiplier": 1.0,
             "custom_req_profile": custom_req_profile,
-            "executable": True,
-            "discovery_state": "BASE_CONTRACT",
+            "executable": base_contract_observed,
+            "discovery_state": (
+                "BASE_CONTRACT" if base_contract_observed else "CONTRACT_UNRESOLVED"
+            ),
             "source": (
                 "game_bundle_source+engine_contract"
                 if custom_req_profile
@@ -603,6 +617,31 @@ def run_hyperhive_test(
     responded = 0
     repetitions = max(1, int(spins))
     requested_total = repetitions * len(modes_to_run)
+
+    if not modes_to_run:
+        elapsed_total = (time.monotonic() - started_monotonic) * 1000.0
+        return GameTestResult(
+            provider="bgaming",
+            slug=game.slug,
+            game_name=game.name,
+            game_url=game.url,
+            requested_spins=repetitions,
+            successful_spins=0,
+            failed_spins=repetitions,
+            status="PARCIAL",
+            symbol=game.symbol,
+            discovered_modes=discovered_modes,
+            started_at=started_iso,
+            finished_at=utc_now_iso(),
+            elapsed_ms=elapsed_total,
+            error=(
+                "BGaming HyperHive CONTRACT_UNRESOLVED: init válido, pero los "
+                "scripts cargados no demostraron el wire-shape de play; no se "
+                "envió un request adivinado."
+            ),
+            run_dir=str(run_dir),
+            attempts=[],
+        )
 
     for mode in modes_to_run:
         mode_id = str(mode["id"])
