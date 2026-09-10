@@ -4,6 +4,8 @@ import threading
 from typing import Any
 from urllib.parse import quote, urlparse
 
+from tester_spin.providers.bgaming.runtime import extract_script_urls
+
 
 _install_lock = threading.Lock()
 _installed = False
@@ -11,12 +13,13 @@ _hydrated_runtime_ids: set[int] = set()
 
 
 def hyperhive_client_url(runtime: Any) -> str:
-    """Return the actual inner HyperHive client URL demonstrated by browser HARs.
+    """Return the real inner HyperHive client URL for the current live session.
 
-    BGaming's outer /hyperhive launch page is a container.  It exposes play_token
-    in window.__OPTIONS__ and loads the actual game in an iframe at /?token=....
-    JSON-RPC requests originate from that iframe, so its URL is the correct
-    Referer for /api rather than the outer launch_token URL.
+    The outer /hyperhive launch page is only a container. It exposes the fresh
+    play_token in window.__OPTIONS__ and loads the actual game client in an
+    iframe at /?token=.... Contract discovery must inspect that inner document,
+    because that is where the game-specific scripts that build JSON-RPC play
+    requests are referenced.
     """
     launch_url = str(getattr(runtime, "launch_url", "") or "")
     parsed = urlparse(launch_url)
@@ -36,36 +39,65 @@ def hyperhive_client_url(runtime: Any) -> str:
     return origin + "/?token=" + quote(play_token, safe="")
 
 
-def _hydrate_inner_client(runtime: Any, client_url: str, timeout_s: float) -> None:
-    """Best-effort reproduction of the iframe GET seen before JSON-RPC init."""
-    runtime_id = id(runtime)
-    if runtime_id in _hydrated_runtime_ids:
-        return
+def prepare_hyperhive_client(
+    runtime: Any,
+    *,
+    timeout_s: float,
+    force: bool = False,
+) -> str:
+    """Load the live inner client and merge its referenced scripts into runtime.
 
+    This is deliberately runtime-only discovery. No HAR data is consulted.
+    A runtime is marked hydrated only after the iframe GET succeeds, so a
+    transient failure can be retried later.
+    """
+    client_url = hyperhive_client_url(runtime)
     outer_url = str(getattr(runtime, "launch_url", "") or "")
-    if not client_url or client_url == outer_url:
-        return
+    runtime_id = id(runtime)
 
+    if not client_url or client_url == outer_url:
+        return client_url
+    if runtime_id in _hydrated_runtime_ids and not force:
+        return client_url
+
+    response = runtime.session.get(
+        client_url,
+        headers={
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Referer": outer_url,
+        },
+        timeout=timeout_s,
+    )
+    response.raise_for_status()
+
+    discovered = extract_script_urls(response.text, response.url or client_url)
+    existing = list(getattr(runtime, "script_urls", None) or [])
+    seen = set(existing)
+    for url in discovered:
+        if url in seen:
+            continue
+        existing.append(url)
+        seen.add(url)
+    runtime.script_urls = existing
+
+    _hydrated_runtime_ids.add(runtime_id)
+    return response.url or client_url
+
+
+def _hydrate_inner_client(runtime: Any, client_url: str, timeout_s: float) -> None:
+    """Best-effort iframe hydration for callers that reached RPC directly."""
+    if not client_url:
+        return
     try:
-        response = runtime.session.get(
-            client_url,
-            headers={
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Referer": outer_url,
-            },
-            timeout=timeout_s,
-        )
-        response.raise_for_status()
+        prepare_hyperhive_client(runtime, timeout_s=timeout_s)
     except Exception:
-        # The GET is context hydration, not protocol authority.  RPC still runs
-        # with the HAR-proven Referer even if a transient demo GET fails.
-        pass
-    finally:
-        _hydrated_runtime_ids.add(runtime_id)
+        # RPC may still be useful for diagnostics; importantly, a failed GET is
+        # not cached as hydrated, so a later attempt can retry it.
+        return
 
 
 def install_hyperhive_transport_adapter() -> None:
-    """Wrap the already-installed HyperHive RPC adapter with browser context."""
+    """Wrap the HyperHive RPC path with the live inner-frame request context."""
     global _installed
     with _install_lock:
         if _installed:
@@ -98,8 +130,8 @@ def install_hyperhive_transport_adapter() -> None:
                 _hydrate_inner_client(runtime, client_url, timeout_s)
 
             # hyperhive._rpc derives both Origin and Referer from launch_url.
-            # The origin is unchanged; temporarily exposing the inner iframe URL
-            # makes the generated Referer match the observed browser request.
+            # Temporarily exposing the live inner iframe URL reproduces the
+            # browser request context while keeping the canonical outer launch.
             runtime.launch_url = client_url
             try:
                 return original_rpc(
@@ -118,5 +150,6 @@ def install_hyperhive_transport_adapter() -> None:
 
 __all__ = [
     "hyperhive_client_url",
+    "prepare_hyperhive_client",
     "install_hyperhive_transport_adapter",
 ]
