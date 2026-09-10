@@ -15,11 +15,12 @@ class _LimitedProvider(ProviderAdapter):
     catalog_url = "https://example.test"
     max_test_concurrency = 1
 
-    def __init__(self) -> None:
+    def __init__(self, *, fail_prepare: bool = False) -> None:
         self._lock = threading.Lock()
         self.active = 0
         self.max_active = 0
         self.prepared: list[str] = []
+        self.fail_prepare = fail_prepare
 
     def crawl_catalog(self, **_kwargs):
         return []
@@ -34,6 +35,8 @@ class _LimitedProvider(ProviderAdapter):
     ) -> None:
         self.prepared.append(game.slug)
         progress(f"prepared:{game.slug}")
+        if self.fail_prepare:
+            raise RuntimeError("artifact capture failed")
 
     def test_game(
         self,
@@ -110,6 +113,36 @@ class SchedulerConcurrencyTests(unittest.TestCase):
         self.assertEqual(
             sum("prepared:" in line for line in logs),
             3,
+        )
+
+    def test_artifact_preparation_failure_does_not_block_game_test(self) -> None:
+        provider = _LimitedProvider(fail_prepare=True)
+        game = Game(
+            provider=provider.key,
+            slug="game",
+            name="Game",
+            url="https://example.test/game",
+        )
+        results: list[GameTestResult] = []
+        logs: list[str] = []
+
+        run_game_tests(
+            provider,
+            [game],
+            concurrency=1,
+            spins_per_game=1,
+            delay_between_starts_s=0.0,
+            timeout_s=5.0,
+            stop_event=threading.Event(),
+            progress=logs.append,
+            on_result=results.append,
+        )
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].status, "OK")
+        self.assertTrue(
+            any("preparación de artefactos ERROR" in line for line in logs),
+            logs,
         )
 
 
