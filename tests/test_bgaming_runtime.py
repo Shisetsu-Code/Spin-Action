@@ -9,9 +9,12 @@ from tester_spin.providers.bgaming.runtime import (
     BGamingRuntime,
     balance_total,
     build_line_bets,
+    discover_additional_spin_option_choices,
     discover_api_v2_wire_profile,
     discover_client_extra_data_defaults,
+    discover_effective_bet_multipliers,
     discover_purchase_modes,
+    effective_bet_for_options,
     extract_options,
     extract_script_urls,
     flow_continuation_command,
@@ -84,6 +87,108 @@ class BGamingRuntimeTests(unittest.TestCase):
                 "https://cdn.example/game-b2.js",
             ],
         )
+
+    def test_discovers_literal_dynamic_spin_choices(self) -> None:
+        bundle = (
+            'setCurrentVolatility(t){'
+            'this.additionalSpinOptions.volatility='
+            '1==this.getCurrentVolatility()?"low":"medium"}'
+        )
+        self.assertEqual(
+            discover_additional_spin_option_choices(bundle),
+            {"volatility": ["low", "medium"]},
+        )
+
+    def test_discovers_numeric_choices_from_dynamic_setter_calls(self) -> None:
+        bundle = (
+            'class X{setLevel(t,e){'
+            'this.additionalSpinOptions.gold_symbols_count=""+t}}'
+            'currentScene.setLevel`1;'
+            'currentScene.setLevel`2;'
+            'currentScene.setLevel`5;'
+        )
+        self.assertEqual(
+            discover_additional_spin_option_choices(bundle),
+            {"gold_symbols_count": ["1", "2", "5"]},
+        )
+
+    def test_discovers_unambiguous_effective_bet_level_table(self) -> None:
+        bundle = (
+            'var A={1:8,2:18,3:38,4:68,5:88};'
+            'class X{BET_BY_SPECIAL_LVL=A;}'
+        )
+        self.assertEqual(
+            discover_effective_bet_multipliers(bundle),
+            {
+                "1": 8.0,
+                "2": 18.0,
+                "3": 38.0,
+                "4": 68.0,
+                "5": 88.0,
+            },
+        )
+        self.assertEqual(
+            effective_bet_for_options(
+                1,
+                selector_field="gold_symbols_count",
+                multipliers={"1": 8.0, "5": 88.0},
+                options={"gold_symbols_count": "5"},
+            ),
+            88.0,
+        )
+
+    def test_discovers_tiered_purchase_modes(self) -> None:
+        modes = discover_purchase_modes(
+            {
+                "options": {
+                    "feature_options": {
+                        "feature_multipliers": {
+                            "base_bet": 10,
+                            "freespin_buy": {
+                                "1": 750,
+                                "2": 1500,
+                            },
+                        },
+                        "disabled_features": [],
+                    }
+                }
+            }
+        )
+        self.assertEqual(
+            [
+                (mode["name"], mode["level"], mode["cost_multiplier"])
+                for mode in modes
+            ],
+            [
+                ("freespin_buy", "1", 75.0),
+                ("freespin_buy", "2", 150.0),
+            ],
+        )
+
+    def test_expected_effective_bet_can_explain_server_bet_translation(self) -> None:
+        warnings = validate_spin(
+            {
+                "api_version": "2",
+                "outcome": {
+                    "screen": [["1"]] * 5,
+                    "bet": 88,
+                    "win": 0,
+                },
+                "balance": {"wallet": 99912, "game": 0},
+                "flow": {
+                    "command": "spin",
+                    "state": "closed",
+                    "available_actions": ["init", "spin"],
+                },
+            },
+            requested_bet=1,
+            expected_outcome_bet=88,
+            previous_balance_total=100000,
+            expected_reels=5,
+            expected_rows=3,
+            expected_debit=88,
+        )
+        self.assertEqual(warnings, [])
 
     def test_client_extra_data_defaults_are_extracted_without_eval(self) -> None:
         bundle = (
