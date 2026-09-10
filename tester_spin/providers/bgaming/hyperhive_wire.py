@@ -153,7 +153,8 @@ def install_observed_wire_adapter() -> None:
 
         from tester_spin.providers.bgaming import hyperhive
         from tester_spin.providers.bgaming.adapter import BGamingProvider as BaseBGamingProvider
-        from tester_spin.providers.bgaming.har_capture import find_existing_har
+        from tester_spin.providers.bgaming.har_capture import append_har_debug
+        from tester_spin.providers.bgaming.har_select import inspect_har, select_best_har
 
         original_download_engine_contract = hyperhive._download_engine_contract
         original_discover_modes = hyperhive.discover_modes_from_bundle
@@ -164,7 +165,36 @@ def install_observed_wire_adapter() -> None:
         original_provider_test_game = BaseBGamingProvider.test_game
 
         def har_context_test_game(self, game, **kwargs):
-            har_path = find_existing_har(self.game_dir(game))
+            game_dir = self.game_dir(game)
+            har_path = select_best_har(game_dir)
+            quality = inspect_har(har_path)
+            progress = kwargs.get("progress")
+            if har_path is not None:
+                try:
+                    relative = har_path.relative_to(game_dir)
+                except ValueError:
+                    relative = har_path
+                append_har_debug(
+                    game_dir,
+                    "runner_har_selected",
+                    path=str(relative),
+                    quality=(quality.grade if quality is not None else "UNKNOWN"),
+                    operations=(quality.operations if quality is not None else 0),
+                    plays=(quality.plays if quality is not None else 0),
+                    spins=(quality.spins if quality is not None else 0),
+                    purchases=(quality.purchases if quality is not None else 0),
+                )
+                if callable(progress) and quality is not None:
+                    progress(
+                        f"[{game.name}] HAR usado por runner: {relative}; "
+                        f"calidad={quality.grade}, plays={quality.plays}, "
+                        f"spins={quality.spins}, compras={quality.purchases}."
+                    )
+            else:
+                append_har_debug(game_dir, "runner_har_missing")
+                if callable(progress):
+                    progress(f"[{game.name}] HAR usado por runner: ninguno.")
+
             set_thread_har_path(har_path)
             try:
                 return original_provider_test_game(self, game, **kwargs)
