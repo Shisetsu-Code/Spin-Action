@@ -331,18 +331,3 @@ class BGamingProvider(BGamingExecutionMixin, ProviderAdapter):
         )
         return games
 
-    @staticmethod
-    def _looks_like_demo_url(url: str) -> bool:
-        parsed = urlparse(url)
-        return (
-            "bgaming-network.com" in parsed.netloc.casefold()
-            and ("/play/" in parsed.path or "/games/" in parsed.path)
-        )
-
-    @staticmethod
-    def _write_json(path: Path, payload: Any) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
