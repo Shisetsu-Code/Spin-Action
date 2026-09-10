@@ -334,16 +334,21 @@ def install_observed_wire_adapter() -> None:
             bundle_text: str | None = None,
             engine_contract: str = "",
         ):
+            resolved_bundle = (
+                hyperhive._download_bundle(runtime, timeout_s)
+                if bundle_text is None
+                else bundle_text
+            )
             modes = original_discover_modes(
                 runtime,
                 timeout_s=timeout_s,
-                bundle_text=bundle_text,
+                bundle_text=resolved_bundle,
                 engine_contract=engine_contract,
             )
             profile = analyze_engine_wire(engine_contract)
             _profiles[id(runtime)] = profile
             har = current_thread_har_evidence()
-            combined = (bundle_text or "") + "\n" + (engine_contract or "")
+            combined = resolved_bundle + "\n" + (engine_contract or "")
             req_bet_observed = _has_req_bet_evidence(combined)
             req_bet_type_observed = _has_req_bet_type_evidence(combined)
 
