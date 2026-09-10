@@ -16,7 +16,9 @@ from tester_spin.models import Game, GameTestResult, SpinAttempt, utc_now_iso
 from tester_spin.providers.base import Progress
 from tester_spin.providers.bgaming.runtime import (
     BGamingRuntime,
+    _collect_provider_script_contracts,
     _provider_script_url,
+    _runtime_bundle_candidates,
     response_fingerprint,
     sanitize_error_text,
     sanitize_session_url,
@@ -126,72 +128,30 @@ def _rpc(
 
 
 def _download_bundle(runtime: BGamingRuntime, timeout_s: float) -> str:
+    """Collect HyperHive protocol-bearing provider scripts, including children."""
     origin = _origin(runtime.launch_url)
-    candidates: list[str] = []
+    diagnostics: list[dict[str, Any]] = []
+    seeds = _runtime_bundle_candidates(
+        runtime,
+        timeout_s=timeout_s,
+        diagnostics=diagnostics,
+    )
+    for candidate in (origin + "/loader.js", origin + "/main.js"):
+        if candidate not in seeds:
+            seeds.append(candidate)
 
-    configured = str(runtime.options.get("game_bundle_source") or "").strip()
-    if configured:
-        candidates.append(configured)
+    contracts = _collect_provider_script_contracts(
+        runtime,
+        timeout_s=timeout_s,
+        seeds=seeds,
+        diagnostics=diagnostics,
+        max_depth=2,
+        max_scripts=32,
+        max_total_bytes=12 * 1024 * 1024,
+    )
+    contracts.sort(key=lambda item: item[0], reverse=True)
+    return "\n".join(text for _score, _url, text in contracts)
 
-    # HyperHive loaders rewrite game_bundle_source at runtime.  Big Bucks
-    # Saloon, for example, loads /loader.js first; its "res" value selects the
-    # actual versioned /<res>/bundle.js.
-    loader_candidates = [
-        origin + "/loader.js",
-        str(runtime.options.get("games_loader_source") or "").strip(),
-    ]
-    for loader_url in loader_candidates:
-        if not loader_url:
-            continue
-        try:
-            loader_response = runtime.session.get(loader_url, timeout=timeout_s)
-            loader_response.raise_for_status()
-            loader_text = loader_response.text
-        except Exception:
-            continue
-        match = re.search(
-            r"res(?::|=)[^\"']*[\"']([^\"']+?)[\"']",
-            loader_text,
-        )
-        if match:
-            version = match.group(1).strip()
-            if version:
-                candidates.append(f"{origin}/{version}/bundle.js")
-                resources_path = str(
-                    runtime.options.get("resources_path") or ""
-                ).rstrip("/")
-                if resources_path:
-                    candidates.append(
-                        f"{resources_path}/{version}/bundle.js"
-                    )
-
-    for script_url in runtime.script_urls:
-        if script_url and _provider_script_url(runtime, script_url):
-            candidates.append(script_url)
-
-    candidates.append(origin + "/main.js")
-
-    fallback = ""
-    seen: set[str] = set()
-    for url in candidates:
-        if not url or url in seen:
-            continue
-        seen.add(url)
-        try:
-            response = runtime.session.get(url, timeout=timeout_s)
-            response.raise_for_status()
-            text = response.text
-        except Exception:
-            continue
-        if text and not fallback:
-            fallback = text
-        if (
-            "jsonrpc" in text
-            or 'bet_type:"betting"' in text
-            or 'purchased_feature:"' in text
-        ):
-            return text
-    return fallback
 
 
 def _download_engine_contract(
@@ -372,10 +332,16 @@ def discover_modes_from_bundle(
         else ""
     )
     has_req_bet_contract = _has_request_bet_contract(combined)
-    base_contract_observed = bool(
+    explicit_base_contract = bool(
         custom_req_profile
         or has_req_bet_contract
     )
+
+    # HyperHive itself has a provider-level minimal play contract:
+    # method=play, params.token, params.req.bet and optional state_lock.
+    # A successful HyperHive init is stronger evidence than arbitrary loose JS
+    # literals. Extra req fields are still added only when the client proves them.
+    base_contract_observed = True
 
     modes: list[dict[str, Any]] = [
         {
@@ -386,7 +352,9 @@ def discover_modes_from_bundle(
             "custom_req_profile": custom_req_profile,
             "executable": base_contract_observed,
             "discovery_state": (
-                "BASE_CONTRACT" if base_contract_observed else "CONTRACT_UNRESOLVED"
+                "BASE_CONTRACT"
+                if explicit_base_contract
+                else "MINIMAL_PROVIDER_CONTRACT"
             ),
             "source": (
                 "game_bundle_source+engine_contract"
