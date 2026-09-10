@@ -653,7 +653,7 @@ class BGamingRuntimeTests(unittest.TestCase):
             2400.0,
         )
 
-    def test_base_spin_can_use_server_reported_effective_bet(self) -> None:
+    def test_base_spin_rejects_unexplained_effective_bet_change(self) -> None:
         response = {
             "api_version": "2",
             "outcome": {
@@ -668,19 +668,17 @@ class BGamingRuntimeTests(unittest.TestCase):
                 "available_actions": ["init", "spin"],
             },
         }
-        self.assertEqual(
-            validate_spin(
-                response,
-                requested_bet=100,
-                previous_balance_total=100000,
-                expected_reels=5,
-                expected_rows=5,
-                command="spin",
-                expected_debit=100,
-                trust_returned_bet=True,
-            ),
-            [],
+        warnings = validate_spin(
+            response,
+            requested_bet=100,
+            previous_balance_total=100000,
+            expected_reels=5,
+            expected_rows=5,
+            command="spin",
+            expected_debit=100,
         )
+        self.assertTrue(any("bet devuelta=400" in warning for warning in warnings))
+        self.assertTrue(any("balance inconsistente" in warning for warning in warnings))
 
     def test_burning_chilli_bundle_discovers_mode_60(self) -> None:
         runtime = BGamingRuntime(
