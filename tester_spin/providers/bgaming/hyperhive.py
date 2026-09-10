@@ -213,6 +213,18 @@ def _pz_custom_req(
     return payload
 
 
+def discover_action_vocabulary(bundle_text: str, engine_contract: str = "") -> set[str]:
+    """Discover action values actually encoded by the loaded HyperHive client."""
+    combined = (bundle_text or "") + "\n" + (engine_contract or "")
+    actions = set(
+        re.findall(
+            r'action\s*:\s*["\']([A-Za-z0-9_\-]+)["\']',
+            combined,
+        )
+    )
+    return {str(action).strip().casefold() for action in actions if str(action).strip()}
+
+
 def discover_modes_from_bundle(
     runtime: BGamingRuntime,
     *,
@@ -498,6 +510,7 @@ def run_hyperhive_test(
         bundle_text=bundle_text,
         engine_contract=engine_contract,
     )
+    action_vocabulary = discover_action_vocabulary(bundle_text, engine_contract)
     state_lock = init_result.get("state_lock")
     modes_to_run = [mode for mode in modes if bool(mode.get("executable"))]
     discovered_modes = [
@@ -607,6 +620,13 @@ def run_hyperhive_test(
                     next_action = str(
                         final_summary.get("next_action") or ""
                     ).strip().casefold()
+                    if next_action and next_action not in action_vocabulary:
+                        warnings.append(
+                            "HyperHive nextAction no presente en el contrato cliente: "
+                            f"{next_action!r}; continuación detenida sin adivinar payload"
+                        )
+                        break
+
                     continuation_req: dict[str, Any] = {"bet": default_bet}
                     for key, value in base_request.items():
                         if key not in {
