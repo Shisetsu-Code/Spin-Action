@@ -136,7 +136,7 @@ class BGamingExecutionMixin:
         def persist_profile_snapshot() -> None:
             if active_profile is None:
                 return
-            persist_profile_snapshot()
+            save_profile(game_json, active_profile)
             _write_json(run_dir / "profile.json", active_profile.to_dict())
 
         runtime = None
