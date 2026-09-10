@@ -146,7 +146,7 @@ class BGamingCatalogCrawlTests(unittest.TestCase):
             self.assertFalse(provider.catalog_crawl_authoritative)
             self.assertIn("total REST cambió", provider.catalog_crawl_reason)
 
-    def test_final_total_mismatch_is_non_authoritative(self) -> None:
+    def test_terminal_page_must_match_reported_total_pages(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             provider = self.provider(temp)
             provider.http.get = unittest.mock.Mock(
@@ -171,7 +171,7 @@ class BGamingCatalogCrawlTests(unittest.TestCase):
             self.assertEqual([game.slug for game in games], ["one", "two"])
             self.assertFalse(provider.catalog_crawl_authoritative)
             self.assertIn(
-                "total REST no coincide",
+                "página terminal no coincide",
                 provider.catalog_crawl_reason,
             )
 
