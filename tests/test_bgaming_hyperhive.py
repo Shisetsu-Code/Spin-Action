@@ -140,6 +140,29 @@ class BGamingHyperHiveTests(unittest.TestCase):
 
         self.assertIn('bet_type="bet"', contract)
 
+    def test_unresolved_hyperhive_contract_is_discovery_only(self) -> None:
+        runtime = BGamingRuntime(
+            session=requests.Session(),
+            launch_url="https://demo.example/hyperhive",
+            api_url="https://unused.example/api/session",
+            identifier="Generic",
+            csrf_header_name="X-CSRF",
+            csrf_header_value="secret",
+            options={},
+            round_series_id=1,
+        )
+        modes = discover_modes_from_bundle(
+            runtime,
+            timeout_s=1,
+            bundle_text="var unrelated=1;",
+            engine_contract="",
+        )
+        self.assertFalse(modes[0]["executable"])
+        self.assertEqual(
+            modes[0]["discovery_state"],
+            "CONTRACT_UNRESOLVED",
+        )
+
     def test_big_bucks_bundle_uses_bet_only_and_buy_bonus_x120(self) -> None:
         runtime = BGamingRuntime(
             session=requests.Session(),
