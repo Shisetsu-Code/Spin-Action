@@ -5,6 +5,7 @@ import unittest
 from tester_spin.providers.bgaming.runtime import (
     balance_total,
     build_line_bets,
+    discover_api_v2_wire_profile,
     discover_purchase_modes,
     extract_options,
     flow_continuation_command,
@@ -676,6 +677,39 @@ class BGamingRuntimeTests(unittest.TestCase):
             ),
             [],
         )
+
+    def test_burning_chilli_bundle_discovers_mode_60(self) -> None:
+        runtime = BGamingRuntime(
+            session=requests.Session(),
+            launch_url="https://demo.bgaming-network.com/games/BurningChilliX/FUN",
+            api_url="https://demo.bgaming-network.com/api/BurningChilliX/1/session",
+            identifier="BurningChilliX",
+            csrf_header_name="X-CSRF-Token",
+            csrf_header_value="secret",
+            options={
+                "game_bundle_source": "https://example.test/bundle.js",
+                "resources_path": "https://example.test",
+            },
+            round_series_id=1,
+        )
+        bundle = (
+            'this.linesCount=this.linesCount||"60";'
+            'this.additionalSpinOptions.mode=this.linesCount;'
+        )
+
+        class Response:
+            text = bundle
+            def raise_for_status(self) -> None:
+                return None
+
+        with patch(
+            "tester_spin.providers.bgaming.runtime._runtime_bundle_candidates",
+            return_value=["https://example.test/bundle.js"],
+        ), patch.object(runtime.session, "get", return_value=Response()):
+            profile = discover_api_v2_wire_profile(runtime, timeout_s=1)
+
+        self.assertEqual(profile["spin_options"], {"mode": "60"})
+        self.assertEqual(profile["kind"], "selectable-lines-mode")
 
     def test_remote_proof_changes_with_server_round_identity(self) -> None:
         first = {
