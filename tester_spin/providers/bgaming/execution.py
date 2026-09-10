@@ -41,6 +41,7 @@ from tester_spin.providers.bgaming.runtime import (
     resolve_base_bet,
     infer_observed_debit,
     is_demo_url,
+    legacy_safe_terminal_command,
     resolve_fresh_demo_url,
     sanitize_error_text,
     sanitize_options,
@@ -642,25 +643,74 @@ class BGamingExecutionMixin:
                                 requested_line_bet=default_bet,
                                 line_count=legacy_line_count,
                                 previous_balance_total=previous_total,
+                                allow_safe_finish=True,
                             )
                             warnings.extend(line_warnings)
                             current_total = balance_total(data)
+                            safe_terminal = legacy_safe_terminal_command(data)
+
+                            if safe_terminal:
+                                finish_response, finish_request, finish_data = send_api_command(
+                                    safe_terminal,
+                                    extra_data_payload={
+                                        "round_series_id": runtime.round_series_id,
+                                    },
+                                )
+                                wire_steps += 1
+                                last_status_code = int(finish_response.status_code)
+                                _write_json(
+                                    attempt_dir / f"step-{wire_steps:03d}-request.json",
+                                    finish_request,
+                                )
+                                _write_json(
+                                    attempt_dir / f"step-{wire_steps:03d}-response.json",
+                                    finish_data,
+                                )
+                                finish_state = finish_data.get("game")
+                                if not isinstance(finish_state, dict):
+                                    finish_state = {}
+                                finish_commands = finish_data.get("available_commands")
+                                finish_names = (
+                                    {str(item) for item in finish_commands}
+                                    if isinstance(finish_commands, list)
+                                    else set()
+                                )
+                                terminal = (
+                                    str(finish_state.get("state") or "") == "closed"
+                                    and "spin" in finish_names
+                                )
+                                if not terminal:
+                                    warnings.append(
+                                        "legacy finish no dejó la ronda en estado cerrado "
+                                        f"con spin disponible: state={finish_state.get('state')!r}, "
+                                        f"commands={sorted(finish_names)!r}"
+                                    )
+                                data = finish_data
+                                game_state = finish_state
+                                command_names = finish_names
+                                current_total = balance_total(finish_data)
+                                progress(
+                                    f"[{game.name}] {mode_id} FINISH step={wire_steps}, "
+                                    f"state={game_state.get('state')!r}, "
+                                    f"balance={current_total if current_total is not None else '—'}."
+                                )
+                            else:
+                                game_state = data.get("game")
+                                if not isinstance(game_state, dict):
+                                    game_state = {}
+                                commands = data.get("available_commands")
+                                command_names = (
+                                    {str(item) for item in commands}
+                                    if isinstance(commands, list)
+                                    else set()
+                                )
+                                terminal = (
+                                    str(game_state.get("state") or "") == "closed"
+                                    and "spin" in command_names
+                                )
+
                             if current_total is not None:
                                 previous_total = current_total
-                            game_state = data.get("game")
-                            if not isinstance(game_state, dict):
-                                game_state = {}
-                            commands = data.get("available_commands")
-                            command_names = (
-                                {str(item) for item in commands}
-                                if isinstance(commands, list)
-                                else set()
-                            )
-                            terminal = (
-                                str(game_state.get("state") or "") == "closed"
-                                and str(game_state.get("action") or "") == "spin"
-                                and "spin" in command_names
-                            )
                             proof = {
                                 "runtime": "legacy-line-bets",
                                 "mode_id": mode_id,
