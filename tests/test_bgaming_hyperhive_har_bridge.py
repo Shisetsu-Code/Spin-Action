@@ -122,7 +122,7 @@ class BGamingHyperHiveHARBridgeTests(unittest.TestCase):
         self.assertEqual(
             adapted["req"],
             {
-                "bet": 250,
+                "bet": 100,
                 "bet_type": "bet",
                 "custom_req": {
                     "isNormalBuy": False,

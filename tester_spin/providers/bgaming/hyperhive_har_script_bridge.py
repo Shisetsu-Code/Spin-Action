@@ -139,7 +139,65 @@ def current_har_script_contract() -> str:
     return _extract_cached(str(path.resolve()), stat.st_size, stat.st_mtime_ns)
 
 
-def _apply_profile(params: dict[str, Any], profile: Any) -> dict[str, Any]:
+def _compact(text: str) -> str:
+    return re.sub(r"\s+", "", text or "")
+
+
+def _script_play_contract(contract_text: str) -> bool:
+    compact = _compact(contract_text)
+    return bool(
+        re.search(r'(?:method|["\']method["\'])\s*:\s*["\']play["\']', compact)
+        and re.search(
+            r'(?:\breq\s*:\s*\{[^{}]{0,1600}\bbet\s*:|\.req\.bet\s*=|\.req\[["\']bet["\']\]\s*=)',
+            compact,
+        )
+    )
+
+
+def _script_state_lock_present(contract_text: str) -> bool:
+    """Detect state_lock as a member of a serialized JSON-RPC play envelope."""
+    compact = _compact(contract_text)
+    if not re.search(r'(?:method|["\']method["\'])\s*:\s*["\']play["\']', compact):
+        return False
+    if re.search(r'(?:\.params\.state_lock\s*=|\.params\[["\']state_lock["\']\]\s*=)', compact):
+        return True
+    for match in re.finditer(r'(?:method|["\']method["\'])\s*:\s*["\']play["\']', compact):
+        start = max(0, match.start() - 1600)
+        end = min(len(compact), match.end() + 2600)
+        segment = compact[start:end]
+        if re.search(r'(?:\bstate_lock\b|["\']state_lock["\'])\s*:', segment):
+            return True
+    return False
+
+
+def _script_req_bet_type(contract_text: str) -> str:
+    compact = _compact(contract_text)
+    patterns = (
+        r'\breq\s*:\s*\{[^{}]{0,1600}\bbet_type\s*:\s*["\']([^"\']{1,80})["\']',
+        r'\.req\.bet_type\s*=\s*["\']([^"\']{1,80})["\']',
+        r'\.req\[["\']bet_type["\']\]\s*=\s*["\']([^"\']{1,80})["\']',
+    )
+    values: set[str] = set()
+    for pattern in patterns:
+        values.update(value for value in re.findall(pattern, compact) if value)
+    return next(iter(values)) if len(values) == 1 else ""
+
+
+def _script_rpc_id_zero(contract_text: str) -> bool:
+    compact = _compact(contract_text)
+    return bool(
+        re.search(
+            r'(?:\bid\s*:\s*0\s*,\s*jsonrpc|["\']id["\']\s*:\s*0|\.id\s*=\s*0)',
+            compact,
+        )
+    )
+
+
+def _apply_profile(
+    params: dict[str, Any],
+    profile: Any,
+    contract_text: str = "",
+) -> dict[str, Any]:
     """Apply HAR-script wire facts after the normal live-client adapter.
 
     This path is used only when the selected HAR has no play request. It never
@@ -153,8 +211,19 @@ def _apply_profile(params: dict[str, Any], profile: Any) -> dict[str, Any]:
         return out
     req = dict(raw_req)
 
-    if str(getattr(profile, "bet_type", "") or ""):
-        req["bet_type"] = profile.bet_type
+    bet_type = str(getattr(profile, "bet_type", "") or "")
+    if not bet_type:
+        bet_type = _script_req_bet_type(contract_text)
+    if bet_type:
+        req["bet_type"] = bet_type
+
+    # The Godfather-family serializer (and other HyperHive clients) explicitly
+    # serializes state_lock:"" on the first play. Omitting a falsey lock changes
+    # the JSON-RPC schema and can yield provider error 51100. Preserve the field
+    # presence proved by the captured serializer while keeping only the live lock.
+    if _script_state_lock_present(contract_text):
+        current_lock = out.get("state_lock", "")
+        out["state_lock"] = "" if current_lock is None else current_lock
 
     if not bool(getattr(profile, "custom_req", False)):
         out["req"] = req
@@ -180,6 +249,7 @@ def _apply_profile(params: dict[str, Any], profile: Any) -> dict[str, Any]:
         bool(getattr(profile, "custom_stake_on_spin", False))
         and action.casefold() == "spin"
         and isinstance(req.get("bet"), (int, float))
+        and not isinstance(req.get("bet"), bool)
     ):
         custom["stake"] = req["bet"]
 
@@ -187,6 +257,37 @@ def _apply_profile(params: dict[str, Any], profile: Any) -> dict[str, Any]:
         req["custom_req"] = custom
     out["req"] = req
     return out
+
+
+def _authorize_base_from_script(
+    modes: list[dict[str, Any]],
+    profile: Any,
+    contract_text: str,
+) -> None:
+    """Let a bootstrap HAR's exact serializer prove the base play contract."""
+    if not modes or not _script_play_contract(contract_text):
+        return
+    base = next((mode for mode in modes if str(mode.get("id") or "") == "SPIN"), None)
+    if not isinstance(base, dict):
+        return
+
+    request = base.get("request")
+    request = request if isinstance(request, dict) else {}
+    bet_type = _script_req_bet_type(contract_text)
+    if bet_type:
+        request["bet_type"] = bet_type
+    base["request"] = request
+    base["executable"] = True
+    base["discovery_state"] = "HAR_SCRIPT_OBSERVED"
+    base["source"] = "selected-har-script-contract"
+
+    if bool(getattr(profile, "custom_req", False)):
+        base["custom_req_profile"] = str(
+            getattr(profile, "custom_profile", "") or "observed-formatted"
+        )
+        base["custom_req_literal_keys"] = sorted(
+            dict(getattr(profile, "custom_literals", {}) or {})
+        )
 
 
 def _merge_script_modes(
@@ -197,6 +298,8 @@ def _merge_script_modes(
     purchase_feature_names,
     variant_suffix,
 ) -> list[dict[str, Any]]:
+    _authorize_base_from_script(modes, profile, contract_text)
+
     variants = list(getattr(profile, "purchase_custom_variants", []) or [])
     if not variants:
         return modes
@@ -267,6 +370,7 @@ def install_har_script_bridge() -> None:
         original_apply = hyperhive_wire.apply_observed_play_wire
         original_modes = hyperhive.discover_modes_from_bundle
         original_actions = hyperhive.discover_action_vocabulary
+        original_rpc_id = hyperhive._hyperhive_rpc_id
 
         def bridged_apply(params, profile):
             adapted = original_apply(params, profile)
@@ -277,7 +381,7 @@ def install_har_script_bridge() -> None:
             if not contract:
                 return adapted
             har_profile = hyperhive_wire.analyze_engine_wire(contract)
-            return _apply_profile(adapted, har_profile)
+            return _apply_profile(adapted, har_profile, contract)
 
         def bridged_modes(*args, **kwargs):
             modes = original_modes(*args, **kwargs)
@@ -306,9 +410,19 @@ def install_har_script_bridge() -> None:
                 actions.update(hyperhive_wire._client_action_enum_values(contract))
             return actions
 
+        def bridged_rpc_id(contract_text: str):
+            exact = hyperhive_har.current_thread_har_evidence()
+            if exact.usable:
+                return original_rpc_id(contract_text)
+            contract = current_har_script_contract()
+            if contract and _script_rpc_id_zero(contract):
+                return 0
+            return original_rpc_id(contract_text)
+
         hyperhive_wire.apply_observed_play_wire = bridged_apply
         hyperhive.discover_modes_from_bundle = bridged_modes
         hyperhive.discover_action_vocabulary = bridged_actions
+        hyperhive._hyperhive_rpc_id = bridged_rpc_id
         _installed = True
 
 
