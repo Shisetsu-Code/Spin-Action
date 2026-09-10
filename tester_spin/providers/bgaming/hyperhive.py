@@ -139,7 +139,7 @@ def _download_bundle(runtime: BGamingRuntime, timeout_s: float) -> str:
                     )
 
     for script_url in runtime.script_urls:
-        if urlparse(script_url).path.casefold().endswith(".js"):
+        if script_url:
             candidates.append(script_url)
 
     candidates.append(origin + "/main.js")
@@ -193,8 +193,6 @@ def _download_engine_contract(
         if not url or url in seen:
             continue
         seen.add(url)
-        if not urlparse(url).path.casefold().endswith(".js"):
-            continue
         try:
             response = runtime.session.get(url, timeout=timeout_s)
             response.raise_for_status()
