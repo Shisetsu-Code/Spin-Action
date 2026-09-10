@@ -141,10 +141,13 @@ def sanitize_session_url(url: str) -> str:
 
 def is_demo_url(url: str) -> bool:
     parsed = urlparse(str(url or ""))
-    return (
-        "bgaming-network.com" in parsed.netloc.casefold()
-        and ("/play/" in parsed.path or "/games/" in parsed.path)
-    )
+    host = (parsed.hostname or "").casefold()
+    if not (host == "bgaming-network.com" or host.endswith(".bgaming-network.com")):
+        return False
+    parts = [part for part in parsed.path.split("/") if part]
+    if len(parts) < 3:
+        return False
+    return parts[0].casefold() in {"play", "games"}
 
 
 def resolve_fresh_demo_url(
@@ -153,7 +156,7 @@ def resolve_fresh_demo_url(
     *,
     timeout_s: float,
 ) -> str:
-    """Resolve a current demo launch URL without persisting ephemeral credentials."""
+    """Resolve and validate a current demo launch URL in memory."""
     source = str(public_or_demo_url or "").strip()
     if is_demo_url(source):
         return source
@@ -163,7 +166,12 @@ def resolve_fresh_demo_url(
     response = session.get(source, timeout=timeout_s, allow_redirects=True)
     response.raise_for_status()
     if is_demo_url(response.url):
-        return response.url
+        try:
+            extract_options(response.text)
+        except ValueError:
+            pass
+        else:
+            return response.url
 
     soup = BeautifulSoup(response.text or "", "html.parser")
     candidates: list[str] = []
@@ -175,31 +183,39 @@ def resolve_fresh_demo_url(
         if is_demo_url(candidate):
             candidates.append(candidate)
 
-    # Some pages expose the launch URL inside inline JSON/JavaScript rather than
-    # a clickable node. Only accept URLs on the provider demo domain.
+    normalized_html = (response.text or "").replace("\\/", "/")
+    normalized_html = normalized_html.replace("\\u002F", "/").replace("\\u002f", "/")
     for match in re.findall(
-        r'https?://[^"\'<>\\s]+bgaming-network\.com[^"\'<>\\s]+',
-        response.text or "",
+        r"https?://(?:[A-Za-z0-9.-]+\\.)?bgaming-network\\.com/[^\"'<>\\s]+",
+        normalized_html,
         flags=re.IGNORECASE,
     ):
-        candidate = match.replace("\\/", "/")
+        candidate = match.rstrip("),.;]")
         if is_demo_url(candidate):
             candidates.append(candidate)
 
-    if not candidates:
-        return ""
-
-    # Stable /play/ launches are preferred; token-bearing /games/ launches remain
-    # valid for the current in-memory session and are never persisted by callers.
     candidates = list(dict.fromkeys(candidates))
     candidates.sort(
         key=lambda value: (
-            0 if "/play/" in urlparse(value).path else 1,
-            len(value),
+            0 if urlparse(value).path.startswith("/play/") else 1,
+            -len(urlparse(value).path),
         )
     )
-    return candidates[0]
 
+    # Never trust presence in page source alone. A stale/truncated candidate
+    # must not be returned as a demo merely because it looks like one.
+    for candidate in candidates:
+        try:
+            probe = session.get(candidate, timeout=timeout_s, allow_redirects=True)
+            probe.raise_for_status()
+            if not is_demo_url(probe.url):
+                continue
+            extract_options(probe.text)
+        except Exception:
+            continue
+        return probe.url
+
+    return ""
 
 def bootstrap_game(
     session: requests.Session,
