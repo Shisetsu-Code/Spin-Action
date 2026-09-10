@@ -567,7 +567,7 @@ class BGamingExecutionMixin:
             # Global options are learned from the client bundle (for example a
             # selectable line mode). Command-specific options are learned only
             # from explicit client/server evidence and never from a title/slug.
-            if learned_wire_options and not legacy_line_bets:
+            if learned_wire_options and not legacy_line_bets and command == "spin":
                 if merged_options is None:
                     merged_options = {}
                 for key, value in learned_wire_options.items():
