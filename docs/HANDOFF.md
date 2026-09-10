@@ -802,6 +802,8 @@ family
 confidence
 evidence
 spin_options
+command_options
+purchase_features
 rows_required
 line_count
 variable_layout
@@ -838,7 +840,11 @@ La validación distingue la intención local del resultado remoto. Un `outcome.b
 
 ### Compras
 
-Sólo se crean compras anunciadas por metadata del proveedor.
+Las compras anunciadas por metadata del proveedor se registran como cobertura.
+Cuando el cliente cargado expone vocabulario `purchased_feature`, se distingue
+`ADVERTISED_ONLY` de `CLIENT_OBSERVED`: una compra que el init anuncia pero
+cuyo wire-shape no aparece en un contrato cliente disponible no se ejecuta a
+ciegas y queda pendiente de cobertura.
 
 Si `feature_multipliers` publica un denominador/base, se calcula el costo con esa evidencia.
 
@@ -868,6 +874,13 @@ Esto no es hardcode por juego: es una allowlist de contratos observados del prov
 ### HyperHive
 
 HyperHive se clasifica por firma fuerte del transporte (launch final `/hyperhive`).
+
+El bootstrap conserva los `<script src>` realmente cargados. HyperHive y API v2
+usan esas URLs —incluidas URLs CDN sin sufijo `.js`— para reconstruir el
+wire-shape antes de ejecutar. Los nombres fijos de bundles son sólo fallback.
+
+Si no se demuestra el contrato base de `play`, HyperHive devuelve
+`PARCIAL / CONTRACT_UNRESOLVED` sin enviar un request adivinado.
 
 Los modos distinguen:
 
@@ -901,6 +914,19 @@ Por tanto:
 - respondió pero contrato/wire/state no valida → `PARCIAL`;
 - no pudo ejecutar/obtener respuesta válida → `ERROR`;
 - no existe demo resoluble → `SIN_DEMO`.
+
+Para estabilidad del demo público, BGaming aplica actualmente
+`max_test_concurrency=1`. El límite es exclusivo del provider y no modifica
+Pragmatic, Belatra ni 1spin4win. Los HTTP 502 de comandos con estado no se
+reintentan ciegamente porque una respuesta de gateway no prueba que el backend
+no haya procesado la operación.
+
+Los launches demo persistidos que devuelven 404/410 se invalidan en memoria y
+se vuelven a resolver desde `public_url` antes de declararlos `SIN_DEMO`.
+
+En legacy line-bets, un estado opcional de card/gamble con `finish` anunciado
+se cierra por `finish`; Tester-Spin nunca entra automáticamente en la apuesta
+`check_card`.
 
 ### Tests de regresión relevantes
 
