@@ -1239,12 +1239,11 @@ class BGamingExecutionMixin:
         if (
             attempted
             and successes == requested_total
-            and not pending_actions
             and not errors
         ):
             # Attempt validation already incorporates fatal protocol warnings.
-            # Init-level diagnostics must not downgrade a run that completed
-            # every requested mode successfully.
+            # Optional/unclassified actions are coverage metadata, not failures
+            # of modes that were actually scheduled and validated.
             status = "OK"
             error = ""
         elif responded_attempts:
