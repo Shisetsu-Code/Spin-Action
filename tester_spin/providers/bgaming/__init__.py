@@ -12,6 +12,11 @@ from tester_spin.providers.bgaming.har_capture import (
     ensure_analysis_har,
 )
 from tester_spin.providers.bgaming.har_select import inspect_har, select_best_har
+from tester_spin.providers.bgaming.hyperhive_har import (
+    clear_thread_har_path,
+    set_thread_har_path,
+)
+from tester_spin.providers.bgaming.hyperhive_har_bridge import install_har_bridge
 from tester_spin.providers.bgaming.hyperhive_wire import install_observed_wire_adapter
 from tester_spin.providers.bgaming.hyperhive_transport import install_hyperhive_transport_adapter
 from tester_spin.providers.bgaming.runner_diagnostics import diagnose_progress_event
@@ -22,13 +27,13 @@ from tester_spin.providers.bgaming.runtime import (
 )
 
 
-# HyperHive clients do not all serialize the same play payload. Install the
-# provider-local wire adapter first, then wrap it with the inner-frame transport
-# context. This order makes every production RPC both adapt the request from the
-# live client contract and use the same /?token=<play_token> Referer as the
-# browser. No game-name allowlist is involved.
+# HyperHive clients do not all serialize the same play payload. Keep transport
+# context and live-client discovery provider-local, then let an explicitly
+# selected HAR override only wire shapes that it actually observed. No title,
+# slug or identifier allowlist participates in this routing.
 install_observed_wire_adapter()
 install_hyperhive_transport_adapter()
+install_har_bridge()
 
 
 class BGamingProvider(_BGamingProvider):
@@ -64,6 +69,22 @@ class BGamingProvider(_BGamingProvider):
             symbol=game.symbol,
         )
 
+        # Bind the best per-game HAR to this worker thread for the duration of
+        # the run. HyperHive uses it only when it contains actual JSON-RPC play
+        # evidence; API-v2 and bootstrap-only HARs remain unaffected.
+        selected_har = select_best_har(game_dir)
+        set_thread_har_path(selected_har)
+        if selected_har is not None:
+            quality = inspect_har(selected_har)
+            append_har_debug(
+                game_dir,
+                "runner_har_context",
+                path=str(selected_har),
+                quality=(quality.grade if quality is not None else "UNKNOWN"),
+                plays=(quality.plays if quality is not None else 0),
+                purchases=(quality.purchases if quality is not None else 0),
+            )
+
         def logged_progress(message: str) -> None:
             append_har_debug(
                 game_dir,
@@ -89,20 +110,23 @@ class BGamingProvider(_BGamingProvider):
                 progress(f"[{game.name}] DIAGNÓSTICO: {diagnostic_message}")
 
         try:
-            result = super().test_game(
-                game,
-                spins=spins,
-                timeout_s=timeout_s,
-                stop_event=stop_event,
-                progress=logged_progress,
-            )
-        except Exception as exc:
-            append_har_debug(
-                game_dir,
-                "runner_exception",
-                error=f"{type(exc).__name__}: {exc}",
-            )
-            raise
+            try:
+                result = super().test_game(
+                    game,
+                    spins=spins,
+                    timeout_s=timeout_s,
+                    stop_event=stop_event,
+                    progress=logged_progress,
+                )
+            except Exception as exc:
+                append_har_debug(
+                    game_dir,
+                    "runner_exception",
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+                raise
+        finally:
+            clear_thread_har_path()
 
         append_har_debug(
             game_dir,
