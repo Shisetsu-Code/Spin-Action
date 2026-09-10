@@ -40,12 +40,32 @@ def run_game_tests(
     timeout_s = max(1.0, float(timeout_s))
 
     def worker(game: Game) -> GameTestResult:
+        game_progress = lambda msg: progress(f"[{game.name}] {msg}")
+        provider.prepare_test_artifacts(
+            game,
+            timeout_s=timeout_s,
+            stop_event=stop_event,
+            progress=game_progress,
+        )
+        if stop_event.is_set():
+            return GameTestResult(
+                provider=game.provider,
+                slug=game.slug,
+                game_name=game.name,
+                game_url=game.url,
+                requested_spins=spins_per_game,
+                successful_spins=0,
+                failed_spins=spins_per_game,
+                status="CANCELADO",
+                symbol=game.symbol,
+                error="Detención solicitada durante preparación de artefactos.",
+            )
         return provider.test_game(
             game,
             spins=spins_per_game,
             timeout_s=timeout_s,
             stop_event=stop_event,
-            progress=lambda msg: progress(f"[{game.name}] {msg}"),
+            progress=game_progress,
         )
 
     in_flight: dict[Future[GameTestResult], Game] = {}
