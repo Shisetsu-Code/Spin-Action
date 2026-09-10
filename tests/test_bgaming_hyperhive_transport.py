@@ -5,16 +5,22 @@ from unittest.mock import Mock
 
 import requests
 
-# Importing the provider installs the wire adapter first and the transport
-# adapter second, matching the production application wiring.
+# Importing the provider installs the production HyperHive adapters.
 from tester_spin.providers.bgaming import BGamingProvider  # noqa: F401
 from tester_spin.providers.bgaming import hyperhive
-from tester_spin.providers.bgaming.hyperhive_transport import hyperhive_client_url
+from tester_spin.providers.bgaming.hyperhive_transport import (
+    hyperhive_client_url,
+    prepare_hyperhive_client,
+)
 from tester_spin.providers.bgaming.runtime import BGamingRuntime
 
 
 class _Response:
     status_code = 200
+
+    def __init__(self, *, text: str = "", url: str = "") -> None:
+        self.text = text
+        self.url = url
 
     def raise_for_status(self) -> None:
         return None
@@ -42,7 +48,7 @@ class BGamingHyperHiveTransportTests(unittest.TestCase):
             round_series_id=1,
         )
 
-    def test_client_url_matches_har_observed_iframe(self) -> None:
+    def test_client_url_matches_live_iframe_shape(self) -> None:
         runtime = self._runtime()
         self.assertEqual(
             hyperhive_client_url(runtime),
@@ -50,10 +56,54 @@ class BGamingHyperHiveTransportTests(unittest.TestCase):
             "?token=play-token-value",
         )
 
+    def test_prepare_inner_client_collects_game_script_urls(self) -> None:
+        runtime = self._runtime()
+        client = hyperhive_client_url(runtime)
+        runtime.session.get.return_value = _Response(
+            text=(
+                '<html><head>'
+                '<script src="/assets/runtime.123.js"></script>'
+                '<script src="https://cdn.bgaming-network.com/game/client.456.js"></script>'
+                '</head></html>'
+            ),
+            url=client,
+        )
+
+        result = prepare_hyperhive_client(runtime, timeout_s=1, force=True)
+
+        self.assertEqual(result, client)
+        self.assertIn(
+            "https://the-godfather3-pillars-of-power.demo.bgaming-network.com/assets/runtime.123.js",
+            runtime.script_urls,
+        )
+        self.assertIn(
+            "https://cdn.bgaming-network.com/game/client.456.js",
+            runtime.script_urls,
+        )
+
+    def test_failed_inner_get_is_not_cached_as_hydrated(self) -> None:
+        runtime = self._runtime()
+        client = hyperhive_client_url(runtime)
+        runtime.session.get.side_effect = [
+            requests.ConnectionError("temporary"),
+            _Response(text='<script src="/client.js"></script>', url=client),
+        ]
+
+        with self.assertRaises(requests.ConnectionError):
+            prepare_hyperhive_client(runtime, timeout_s=1, force=True)
+        prepare_hyperhive_client(runtime, timeout_s=1)
+
+        self.assertEqual(runtime.session.get.call_count, 2)
+        self.assertIn(
+            "https://the-godfather3-pillars-of-power.demo.bgaming-network.com/client.js",
+            runtime.script_urls,
+        )
+
     def test_rpc_hydrates_inner_iframe_and_uses_it_as_referer(self) -> None:
         runtime = self._runtime()
         outer = runtime.launch_url
         client = hyperhive_client_url(runtime)
+        runtime.session.get.return_value = _Response(text="", url=client)
 
         _response, _payload, data = hyperhive._rpc(
             runtime,
