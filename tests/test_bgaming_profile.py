@@ -107,6 +107,32 @@ class BGamingProfileTests(unittest.TestCase):
             self.assertIsNotNone(loaded)
             self.assertEqual(loaded.spin_options, {"mode": "60"})
 
+    def test_client_required_rows_are_resolved_from_init_layout(self) -> None:
+        runtime = self.runtime()
+        init = {
+            "api_version": "2",
+            "options": {
+                "default_bet": 100,
+                "layout": {"reels": 5, "rows": 5},
+            },
+            "flow": {"command": "init", "state": "ready"},
+        }
+        with patch(
+            "tester_spin.providers.bgaming.profile.discover_api_v2_wire_profile",
+            return_value={
+                "spin_options": {},
+                "required_option_fields": ["rows"],
+                "purchase_features": [],
+                "source": "https://cdn.bgaming-network.com/game/bundle.js",
+                "bundle_sha256": "rows-contract",
+                "diagnostics": [],
+            },
+        ):
+            profile = discover_profile(runtime, init, timeout_s=1)
+
+        self.assertEqual(profile.spin_options, {"rows": 5})
+        self.assertIn("client.additionalSpinOptions.rows", profile.evidence)
+
     def test_profile_persists_command_options_and_client_purchase_features(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             game_json = Path(temp) / "game.json"
