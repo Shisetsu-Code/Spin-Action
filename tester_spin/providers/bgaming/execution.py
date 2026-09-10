@@ -132,6 +132,13 @@ class BGamingExecutionMixin:
         game_json = self.game_dir(game) / "game.json"
         persisted_profile = load_profile(game_json)
         active_profile: BGamingProfile | None = None
+
+        def persist_profile_snapshot() -> None:
+            if active_profile is None:
+                return
+            persist_profile_snapshot()
+            _write_json(run_dir / "profile.json", active_profile.to_dict())
+
         runtime = None
         init_data: dict[str, Any] = {}
         default_bet: int | float | None = None
@@ -182,7 +189,7 @@ class BGamingExecutionMixin:
                     timeout_s=timeout_s,
                     persisted=persisted_profile,
                 )
-                save_profile(game_json, active_profile)
+                persist_profile_snapshot()
                 progress(
                     f"[{game.name}] runtime={active_profile.family} "
                     f"confidence={active_profile.confidence:.2f}; "
@@ -202,7 +209,7 @@ class BGamingExecutionMixin:
                     )
                     if result.status == "OK":
                         active_profile.validated = True
-                        save_profile(game_json, active_profile)
+                        persist_profile_snapshot()
                     return result
                 finally:
                     session.close()
@@ -221,7 +228,7 @@ class BGamingExecutionMixin:
                 timeout_s=timeout_s,
                 persisted=persisted_profile,
             )
-            save_profile(game_json, active_profile)
+            persist_profile_snapshot()
             progress(
                 f"[{game.name}] perfil BGaming: family={active_profile.family}, "
                 f"confidence={active_profile.confidence:.2f}, "
@@ -249,7 +256,7 @@ class BGamingExecutionMixin:
                     )
                     if result.status == "OK":
                         active_profile.validated = True
-                        save_profile(game_json, active_profile)
+                        persist_profile_snapshot()
                     return result
                 finally:
                     session.close()
@@ -408,7 +415,7 @@ class BGamingExecutionMixin:
 
                 if active_profile is not None:
                     active_profile.validated = False
-                    save_profile(game_json, active_profile)
+                    persist_profile_snapshot()
 
                 if not api_profile_checked:
                     api_profile_checked = True
@@ -459,7 +466,10 @@ class BGamingExecutionMixin:
                                     active_profile.spin_options.update(missing)
                                     active_profile.source = refreshed.source
                                     active_profile.bundle_sha256 = refreshed.bundle_sha256
-                                    save_profile(game_json, active_profile)
+                                    active_profile.discovery_diagnostics = list(
+                                        refreshed.discovery_diagnostics
+                                    )
+                                    persist_profile_snapshot()
                                 progress(
                                     f"[{game.name}] Perfil API actualizado: "
                                     f"{learned_wire_options!r}."
@@ -497,7 +507,7 @@ class BGamingExecutionMixin:
                 rows_required = True
                 if active_profile is not None:
                     active_profile.rows_required = True
-                    save_profile(game_json, active_profile)
+                    persist_profile_snapshot()
                 progress(
                     f"[{game.name}] Perfil API aprendido: "
                     f"rows={expected_rows} requerido en comandos de juego."
@@ -629,7 +639,7 @@ class BGamingExecutionMixin:
                                 and active_profile.validated != validated
                             ):
                                 active_profile.validated = validated
-                                save_profile(game_json, active_profile)
+                                persist_profile_snapshot()
                             successes += int(validated)
                             global_warnings.extend(warnings)
                             elapsed_ms = (
@@ -932,7 +942,7 @@ class BGamingExecutionMixin:
                             and active_profile.validated != validated
                         ):
                             active_profile.validated = validated
-                            save_profile(game_json, active_profile)
+                            persist_profile_snapshot()
                         successes += int(validated)
                         global_warnings.extend(warnings)
 
