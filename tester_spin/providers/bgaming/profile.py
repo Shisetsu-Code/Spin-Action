@@ -46,6 +46,7 @@ class BGamingProfile:
     evidence: list[str] = field(default_factory=list)
     spin_options: dict[str, Any] = field(default_factory=dict)
     command_options: dict[str, dict[str, Any]] = field(default_factory=dict)
+    purchase_features: list[str] = field(default_factory=list)
     rows_required: bool = False
     line_count: int = 0
     variable_layout: bool = False
@@ -67,6 +68,7 @@ class BGamingProfile:
                 for command, options in self.command_options.items()
                 if isinstance(options, dict)
             },
+            "purchase_features": list(self.purchase_features),
             "rows_required": self.rows_required,
             "line_count": self.line_count,
             "variable_layout": self.variable_layout,
@@ -86,6 +88,7 @@ class BGamingProfile:
         family = str(value.get("family") or UNKNOWN)
         options = value.get("spin_options")
         command_options = value.get("command_options")
+        purchase_features = value.get("purchase_features")
         continuations = value.get("allowed_continuations")
         evidence = value.get("evidence")
         diagnostics = value.get("discovery_diagnostics")
@@ -99,6 +102,9 @@ class BGamingProfile:
                 for command, command_value in command_options.items()
                 if isinstance(command_value, dict)
             } if isinstance(command_options, dict) else {},
+            purchase_features=[
+                str(item) for item in purchase_features if str(item)
+            ] if isinstance(purchase_features, list) else [],
             rows_required=bool(value.get("rows_required")),
             line_count=max(0, int(value.get("line_count") or 0)),
             variable_layout=bool(value.get("variable_layout")),
@@ -244,6 +250,7 @@ def discover_profile(
             command: dict(options)
             for command, options in persisted.command_options.items()
         }
+        profile.purchase_features = list(persisted.purchase_features)
         profile.rows_required = persisted.rows_required
         profile.allowed_continuations = [
             item for item in persisted.allowed_continuations
@@ -260,6 +267,11 @@ def discover_profile(
     options = wire.get("spin_options")
     if isinstance(options, dict):
         profile.spin_options.update(options)
+    purchase_features = wire.get("purchase_features")
+    if isinstance(purchase_features, list):
+        profile.purchase_features = sorted(
+            {str(item) for item in purchase_features if str(item)}
+        )
     profile.source = str(wire.get("source") or "init")
     profile.bundle_sha256 = str(wire.get("bundle_sha256") or "")
     diagnostics = wire.get("diagnostics")
