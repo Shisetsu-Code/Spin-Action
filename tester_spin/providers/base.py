@@ -47,6 +47,22 @@ class ProviderAdapter(ABC):
             return value
         return min(value, max(1, int(cap)))
 
+    def prepare_test_artifacts(
+        self,
+        game: Game,
+        *,
+        timeout_s: float,
+        stop_event: threading.Event,
+        progress: Progress,
+    ) -> None:
+        """Best-effort pre-test artifact preparation.
+
+        Providers may override this to capture reusable diagnostics such as HARs.
+        The default is intentionally a no-op so provider implementations remain
+        autonomous.
+        """
+        return None
+
     @abstractmethod
     def crawl_catalog(
         self,
