@@ -12,11 +12,18 @@ from tester_spin.providers.bgaming.har_capture import (
     ensure_analysis_har,
     find_existing_har,
 )
+from tester_spin.providers.bgaming.hyperhive_wire import install_observed_wire_adapter
 from tester_spin.providers.bgaming.runtime import (
     is_demo_url,
     resolve_fresh_demo_url,
     sanitize_error_text,
 )
+
+
+# HyperHive clients do not all serialize the same play payload. Install the
+# provider-local adapter once so execution follows the contract demonstrated by
+# the scripts loaded by each runtime instead of a game-name allowlist.
+install_observed_wire_adapter()
 
 
 class BGamingProvider(_BGamingProvider):
