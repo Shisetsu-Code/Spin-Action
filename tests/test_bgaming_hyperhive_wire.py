@@ -233,6 +233,25 @@ class BGamingHyperHiveWireTests(unittest.TestCase):
             },
         )
 
+        continuation = apply_observed_play_wire(
+            {
+                "token": "fresh-token",
+                "state_lock": "next-lock",
+                "req": {
+                    "bet": 100,
+                    "bet_type": "bet",
+                    "action": "jackpot_respin",
+                },
+            },
+            profile,
+        )
+        self.assertEqual(
+            continuation["req"]["custom_req"],
+            {"action": "jackpot_respin", "exponent": 2},
+        )
+        self.assertNotIn("isNormalBuy", continuation["req"]["custom_req"])
+        self.assertNotIn("isSuperBuy", continuation["req"]["custom_req"])
+
     def test_purchase_variant_preserves_selector_and_refreshes_dynamic_exponent(self) -> None:
         profile = ObservedHyperHiveWire(
             custom_req=True,
