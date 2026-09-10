@@ -10,6 +10,8 @@ from unittest.mock import patch
 from tester_spin.models import Game
 from tester_spin.providers.bgaming import BGamingProvider
 from tester_spin.providers.bgaming.har_capture import (
+    _is_bgaming_state_post,
+    _request_payload_shape,
     append_har_debug,
     ensure_analysis_har,
     find_existing_har,
@@ -112,6 +114,40 @@ class BGamingHARCaptureTests(unittest.TestCase):
             text = path.read_text(encoding="utf-8")
             self.assertIn("network", text)
             self.assertNotIn("ephemeral-secret", text)
+
+    def test_hyperhive_post_counts_as_provider_state_request(self) -> None:
+        class Request:
+            method = "POST"
+            url = "https://classic.demo.bgaming-network.com/hyperhive"
+
+        self.assertTrue(_is_bgaming_state_post(Request()))
+
+    def test_request_payload_shape_never_logs_payload_values(self) -> None:
+        class Request:
+            post_data_json = {
+                "jsonrpc": "2.0",
+                "method": "play",
+                "params": {
+                    "token": "SUPER-SECRET-TOKEN",
+                    "req": {
+                        "bet": 987654321,
+                        "bet_type": "bet",
+                        "purchased_feature": "bonus_buy",
+                    },
+                },
+            }
+
+        shape = _request_payload_shape(Request())
+        serialized = json.dumps(shape, sort_keys=True)
+        self.assertEqual(shape["method"], "play")
+        self.assertEqual(
+            shape["req_keys"],
+            ["bet", "bet_type", "purchased_feature"],
+        )
+        self.assertIn("token", shape["params_keys"])
+        self.assertNotIn("SUPER-SECRET-TOKEN", serialized)
+        self.assertNotIn("987654321", serialized)
+        self.assertNotIn("bonus_buy", serialized)
 
     def test_new_capture_is_promoted_and_metadata_is_written(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
