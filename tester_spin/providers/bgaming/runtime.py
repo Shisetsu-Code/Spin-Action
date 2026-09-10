@@ -975,6 +975,12 @@ def flow_continuation_command(data: dict[str, Any]) -> str:
         if isinstance(actions, list)
         else set()
     )
+    # Prefer a provider-advertised direct state command when it is in
+    # the safe vocabulary. This covers preselection_game while preserving
+    # play_preselection_game as an observed alias on runtimes that advertise it.
+    if state in SAFE_CONTINUATION_COMMANDS and state in action_names:
+        return state
+
     command = CONTINUATION_BY_STATE.get(state, "")
     if command and command in SAFE_CONTINUATION_COMMANDS and command in action_names:
         return command
