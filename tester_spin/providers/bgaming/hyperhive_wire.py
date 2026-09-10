@@ -2,16 +2,8 @@ from __future__ import annotations
 
 import re
 import threading
-import uuid
 from dataclasses import dataclass, field
 from typing import Any
-
-from tester_spin.providers.bgaming.hyperhive_har import (
-    apply_har_play_wire,
-    clear_thread_har_path,
-    current_thread_har_evidence,
-    set_thread_har_path,
-)
 
 
 _SAFE_LITERAL_KEY = re.compile(r"^[A-Za-z_$][A-Za-z0-9_$]*$")
@@ -28,6 +20,8 @@ _SENSITIVE_LITERAL_PARTS = (
 
 @dataclass(slots=True)
 class ObservedHyperHiveWire:
+    """Wire facts discovered from the currently loaded HyperHive client code."""
+
     bet_type: str = ""
     custom_req: bool = False
     custom_action: bool = False
@@ -77,13 +71,7 @@ def _parse_js_scalar(raw: str) -> Any:
 
 
 def _formatted_request_literals(compact: str) -> dict[str, Any]:
-    """Extract only scalar literals proven inside formattedRequest.params.
-
-    HyperHive clients can construct custom_req through a formatted request object.
-    Previous discovery only noticed action/exponent/stake and silently dropped
-    literal protocol flags such as isNormalBuy=false / isSuperBuy=false. Those
-    flags are part of the wire contract and omitting them can produce RPC 51100.
-    """
+    """Extract scalar defaults proven by the live client's formatted request."""
     found: dict[str, Any] = {}
     scalar = r'(?:true|false|null|-?\d+(?:\.\d+)?|"[^"\\]{0,200}"|\'[^\'\\]{0,200}\')'
 
@@ -99,11 +87,10 @@ def _formatted_request_literals(compact: str) -> dict[str, Any]:
         except ValueError:
             continue
 
-    object_patterns = (
+    for pattern in (
         r"formattedRequest\.params=\{([^{}]{1,1600})\}",
         r"formattedRequest=\{params:\{([^{}]{1,1600})\}",
-    )
-    for pattern in object_patterns:
+    ):
         for object_match in re.finditer(pattern, compact):
             body = object_match.group(1)
             for pair in re.finditer(
@@ -124,9 +111,8 @@ def _formatted_request_literals(compact: str) -> dict[str, Any]:
 
 
 def analyze_engine_wire(engine_contract: str) -> ObservedHyperHiveWire:
-    """Extract only wire facts directly demonstrated by the loaded client JS."""
-    text = engine_contract or ""
-    compact = re.sub(r"\s+", "", text)
+    """Extract wire facts only from scripts loaded by the current live runtime."""
+    compact = re.sub(r"\s+", "", engine_contract or "")
 
     model_maps_bet_type = bool(
         re.search(r"bet_type:(?:this\.)?betType\b", compact)
@@ -154,11 +140,6 @@ def analyze_engine_wire(engine_contract: str) -> ObservedHyperHiveWire:
         custom_req
         and re.search(r"formattedRequest\.params\.stake", compact)
     )
-    custom_literals = (
-        _formatted_request_literals(compact)
-        if custom_req
-        else {}
-    )
 
     return ObservedHyperHiveWire(
         bet_type="default" if default_bet_type else "",
@@ -166,7 +147,11 @@ def analyze_engine_wire(engine_contract: str) -> ObservedHyperHiveWire:
         custom_action=custom_action,
         custom_exponent=custom_exponent,
         custom_stake_on_spin=custom_stake_on_spin,
-        custom_literals=custom_literals,
+        custom_literals=(
+            _formatted_request_literals(compact)
+            if custom_req
+            else {}
+        ),
     )
 
 
@@ -174,7 +159,7 @@ def apply_observed_play_wire(
     params: dict[str, Any],
     profile: ObservedHyperHiveWire,
 ) -> dict[str, Any]:
-    """Return a play params copy adapted only with observed client JS evidence."""
+    """Adapt one live request using only facts discovered from the live client."""
     out = dict(params)
     raw_req = out.get("req")
     if not isinstance(raw_req, dict):
@@ -205,23 +190,21 @@ def apply_observed_play_wire(
 
 
 def _has_req_bet_evidence(text: str) -> bool:
-    """Require direct evidence that bet is part of JSON-RPC params.req."""
-    value = text or ""
+    """Require direct live-client evidence that bet belongs to JSON-RPC req."""
     return bool(
         re.search(
             r'(?:\breq\s*:\s*\{[^{}]{0,1600}\bbet\s*:|\.req\.bet\s*=|\.req\[["\']bet["\']\]\s*=)',
-            value,
+            text or "",
         )
     )
 
 
 def _has_req_bet_type_evidence(text: str) -> bool:
-    """Distinguish a req-scoped bet_type from unrelated loose literals."""
-    value = text or ""
+    """Require req-scoped bet_type evidence rather than a loose string literal."""
     return bool(
         re.search(
             r'(?:\breq\s*:\s*\{[^{}]{0,1600}\bbet_type\s*:|\.req\.bet_type\s*=|\.req\[["\']bet_type["\']\]\s*=)',
-            value,
+            text or "",
         )
     )
 
@@ -231,8 +214,11 @@ _installed = False
 _profiles: dict[int, ObservedHyperHiveWire] = {}
 
 
-def _har_result_summary(data: dict[str, Any], summary: dict[str, Any]) -> dict[str, Any]:
-    """Fill response facts proven by observed HyperHive engine envelopes."""
+def _engine_result_summary(
+    data: dict[str, Any],
+    summary: dict[str, Any],
+) -> dict[str, Any]:
+    """Read the nested HyperHive engine response shape from the live response."""
     result = data.get("result")
     resp = result.get("resp") if isinstance(result, dict) else None
     engine = resp.get("engine") if isinstance(resp, dict) else None
@@ -261,62 +247,24 @@ def _har_result_summary(data: dict[str, Any], summary: dict[str, Any]) -> dict[s
     return summary
 
 
+# Backward-compatible test helper name. This function parses a live response;
+# it does not read, require, or apply any HAR at runtime.
+_har_result_summary = _engine_result_summary
+
+
 def install_observed_wire_adapter() -> None:
-    """Install provider-local adapters for JS and HAR-observed HyperHive wire."""
+    """Install live-client HyperHive discovery/adaptation. HAR is not consulted."""
     global _installed
     with _install_lock:
         if _installed:
             return
 
         from tester_spin.providers.bgaming import hyperhive
-        from tester_spin.providers.bgaming.adapter import BGamingProvider as BaseBGamingProvider
-        from tester_spin.providers.bgaming.har_capture import append_har_debug
-        from tester_spin.providers.bgaming.har_select import inspect_har, select_best_har
 
         original_download_engine_contract = hyperhive._download_engine_contract
         original_discover_modes = hyperhive.discover_modes_from_bundle
-        original_discover_actions = hyperhive.discover_action_vocabulary
         original_rpc = hyperhive._rpc
-        original_rpc_id = hyperhive._hyperhive_rpc_id
         original_result_summary = hyperhive._result_summary
-        original_provider_test_game = BaseBGamingProvider.test_game
-
-        def har_context_test_game(self, game, **kwargs):
-            game_dir = self.game_dir(game)
-            har_path = select_best_har(game_dir)
-            quality = inspect_har(har_path)
-            progress = kwargs.get("progress")
-            if har_path is not None:
-                try:
-                    relative = har_path.relative_to(game_dir)
-                except ValueError:
-                    relative = har_path
-                append_har_debug(
-                    game_dir,
-                    "runner_har_selected",
-                    path=str(relative),
-                    quality=(quality.grade if quality is not None else "UNKNOWN"),
-                    operations=(quality.operations if quality is not None else 0),
-                    plays=(quality.plays if quality is not None else 0),
-                    spins=(quality.spins if quality is not None else 0),
-                    purchases=(quality.purchases if quality is not None else 0),
-                )
-                if callable(progress) and quality is not None:
-                    progress(
-                        f"[{game.name}] HAR usado por runner: {relative}; "
-                        f"calidad={quality.grade}, plays={quality.plays}, "
-                        f"spins={quality.spins}, compras={quality.purchases}."
-                    )
-            else:
-                append_har_debug(game_dir, "runner_har_missing")
-                if callable(progress):
-                    progress(f"[{game.name}] HAR usado por runner: ninguno.")
-
-            set_thread_har_path(har_path)
-            try:
-                return original_provider_test_game(self, game, **kwargs)
-            finally:
-                clear_thread_har_path()
 
         def observed_download_engine_contract(
             runtime,
@@ -347,15 +295,10 @@ def install_observed_wire_adapter() -> None:
             )
             profile = analyze_engine_wire(engine_contract)
             _profiles[id(runtime)] = profile
-            har = current_thread_har_evidence()
             combined = resolved_bundle + "\n" + (engine_contract or "")
             req_bet_observed = _has_req_bet_evidence(combined)
             req_bet_type_observed = _has_req_bet_type_evidence(combined)
 
-            # The legacy discovery function historically injected bet_type="bet"
-            # and marked SPIN executable even with no req evidence. Enforce the
-            # documented fail-closed contract at the active provider boundary:
-            # without a HAR play or client proof of params.req.bet, no wager is sent.
             if modes:
                 base = modes[0]
                 request = base.get("request")
@@ -364,19 +307,21 @@ def install_observed_wire_adapter() -> None:
                         request.get("bet_type") == "bet"
                         and not req_bet_type_observed
                         and not profile.bet_type
-                        and not har.bet_type
                     ):
                         request.pop("bet_type", None)
-                if not har.usable and not req_bet_observed:
+
+                # Fail closed from live evidence only. Historical HARs are useful
+                # to design/test this parser, never to authorize a live wager.
+                if not req_bet_observed:
                     base["executable"] = False
                     base["discovery_state"] = "CONTRACT_UNRESOLVED"
-                    base["source"] = "client-evidence-incomplete"
+                    base["source"] = "live-client-evidence-incomplete"
                     for mode in modes[1:]:
                         if mode.get("kind") == "PURCHASE" and mode.get("executable"):
                             mode["executable"] = False
                             mode["discovery_state"] = "BASE_CONTRACT_UNRESOLVED"
 
-            if profile.bet_type and not har.bet_type:
+            if profile.bet_type:
                 for mode in modes:
                     request = mode.get("request")
                     if isinstance(request, dict):
@@ -389,69 +334,12 @@ def install_observed_wire_adapter() -> None:
                     base["custom_req_literal_keys"] = sorted(profile.custom_literals)
                     if bool(base.get("executable")):
                         base["discovery_state"] = "OBSERVED_ENGINE_CONTRACT"
-                        base["source"] = "game_bundle_source+engine_contract"
+                        base["source"] = "live-game-bundle+engine-contract"
 
-            if har.usable and modes:
-                base = modes[0]
-                if har.bet_type:
-                    for mode in modes:
-                        request = mode.get("request")
-                        if isinstance(request, dict):
-                            request["bet_type"] = har.bet_type
-                base["executable"] = True
-                base["discovery_state"] = "HAR_OBSERVED_WIRE"
-                base["source"] = "observed-har-play"
-                if har.spin is not None and har.spin.custom_req:
-                    base["custom_req_profile"] = "har-observed"
-                    base["custom_req_literal_keys"] = sorted(har.spin.custom_req)
-
-                for feature in sorted(har.purchase_features):
-                    existing = None
-                    for mode in modes:
-                        request = mode.get("request")
-                        if (
-                            isinstance(request, dict)
-                            and str(request.get("purchased_feature") or "") == feature
-                        ):
-                            existing = mode
-                            break
-                    if existing is None:
-                        request = {"purchased_feature": feature}
-                        if har.bet_type:
-                            request["bet_type"] = har.bet_type
-                        existing = {
-                            "id": f"PURCHASE_{feature.upper()}",
-                            "kind": "PURCHASE",
-                            "request": request,
-                            "expected_multiplier": None,
-                            "source": "observed-har-play",
-                            "executable": True,
-                            "discovery_state": "HAR_OBSERVED_WIRE",
-                        }
-                        modes.append(existing)
-                    else:
-                        existing["source"] = "observed-har-play"
-                        existing["executable"] = True
-                        existing["discovery_state"] = "HAR_OBSERVED_WIRE"
             return modes
 
-        def observed_discover_actions(bundle_text: str, engine_contract: str = ""):
-            actions = set(original_discover_actions(bundle_text, engine_contract))
-            har = current_thread_har_evidence()
-            actions.update(har.actions)
-            return actions
-
-        def observed_rpc_id(engine_contract: str):
-            har = current_thread_har_evidence()
-            if har.rpc_id_profile == "zero":
-                return 0
-            if har.rpc_id_profile == "uuid":
-                return str(uuid.uuid4())
-            return original_rpc_id(engine_contract)
-
         def observed_result_summary(data: dict[str, Any]):
-            summary = original_result_summary(data)
-            return _har_result_summary(data, summary)
+            return _engine_result_summary(data, original_result_summary(data))
 
         def observed_rpc(
             runtime,
@@ -461,14 +349,10 @@ def install_observed_wire_adapter() -> None:
             params: dict[str, Any],
             rpc_id: int | str | None = None,
         ):
-            profile = _profiles.get(id(runtime))
             adapted_params = params
+            profile = _profiles.get(id(runtime))
             if method == "play" and profile is not None:
                 adapted_params = apply_observed_play_wire(adapted_params, profile)
-            if method == "play":
-                har = current_thread_har_evidence()
-                if har.usable:
-                    adapted_params = apply_har_play_wire(adapted_params, har)
 
             result = original_rpc(
                 runtime,
@@ -479,13 +363,10 @@ def install_observed_wire_adapter() -> None:
             )
 
             if method == "init":
-                profile = _profiles.setdefault(
-                    id(runtime),
-                    ObservedHyperHiveWire(),
-                )
+                profile = _profiles.setdefault(id(runtime), ObservedHyperHiveWire())
                 try:
-                    data = result[2]
-                    init_result = data.get("result")
+                    response_data = result[2]
+                    init_result = response_data.get("result")
                     attrs = (
                         init_result.get("currency_attributes")
                         if isinstance(init_result, dict)
@@ -498,11 +379,8 @@ def install_observed_wire_adapter() -> None:
                     pass
             return result
 
-        BaseBGamingProvider.test_game = har_context_test_game
         hyperhive._download_engine_contract = observed_download_engine_contract
         hyperhive.discover_modes_from_bundle = observed_discover_modes
-        hyperhive.discover_action_vocabulary = observed_discover_actions
-        hyperhive._hyperhive_rpc_id = observed_rpc_id
         hyperhive._result_summary = observed_result_summary
         hyperhive._rpc = observed_rpc
         _installed = True
