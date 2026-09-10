@@ -1105,21 +1105,33 @@ def discover_purchase_modes(data: dict[str, Any]) -> list[dict[str, Any]]:
         feature_name = str(name)
         if feature_name == "base_bet" or feature_name in disabled:
             continue
-        if not isinstance(raw_multiplier, (int, float)) or raw_multiplier <= 0:
-            continue
-        modes.append(
-            {
-                "name": feature_name,
-                "feature_multiplier": raw_multiplier,
-                "base_multiplier": base,
-                "base_source": base_source,
-                "cost_multiplier": (
-                    float(raw_multiplier) / float(base)
-                    if isinstance(base, (int, float)) and base > 0
-                    else None
-                ),
-            }
-        )
+
+        level_values: list[tuple[str | None, int | float]] = []
+        if isinstance(raw_multiplier, (int, float)) and raw_multiplier > 0:
+            level_values.append((None, raw_multiplier))
+        elif isinstance(raw_multiplier, dict):
+            for raw_level, level_multiplier in raw_multiplier.items():
+                if (
+                    isinstance(level_multiplier, (int, float))
+                    and level_multiplier > 0
+                ):
+                    level_values.append((str(raw_level), level_multiplier))
+
+        for level, level_multiplier in level_values:
+            modes.append(
+                {
+                    "name": feature_name,
+                    "level": level,
+                    "feature_multiplier": level_multiplier,
+                    "base_multiplier": base,
+                    "base_source": base_source,
+                    "cost_multiplier": (
+                        float(level_multiplier) / float(base)
+                        if isinstance(base, (int, float)) and base > 0
+                        else None
+                    ),
+                }
+            )
     return modes
 
 
@@ -1342,6 +1354,7 @@ def validate_spin(
     expected_rows: int | None,
     command: str = "spin",
     expected_debit: int | float | None = None,
+    expected_outcome_bet: int | float | None = None,
     variable_layout: bool = False,
     allow_observed_debit: bool = False,
 ) -> list[str]:
@@ -1359,8 +1372,20 @@ def validate_spin(
     win = outcome.get("win")
     # BGaming is not consistent about outcome.bet inside zero-debit continuations.
     # For freespins/preselection, the balance delta is authoritative.
-    if command == "spin" and actual_bet != requested_bet:
-        warnings.append(f"bet devuelta={actual_bet!r}, solicitada={requested_bet!r}")
+    if command == "spin":
+        expected_bet = (
+            expected_outcome_bet
+            if isinstance(expected_outcome_bet, (int, float))
+            else requested_bet
+        )
+        if (
+            not isinstance(actual_bet, (int, float))
+            or abs(float(actual_bet) - float(expected_bet)) > 1e-9
+        ):
+            warnings.append(
+                f"bet devuelta={actual_bet!r}, esperada={expected_bet!r}, "
+                f"solicitada={requested_bet!r}"
+            )
     if not isinstance(win, (int, float)):
         warnings.append(f"{command} sin win numérico")
 
