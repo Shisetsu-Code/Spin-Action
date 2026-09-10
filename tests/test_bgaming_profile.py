@@ -133,6 +133,23 @@ class BGamingProfileTests(unittest.TestCase):
         self.assertEqual(profile.spin_options, {"rows": 5})
         self.assertIn("client.additionalSpinOptions.rows", profile.evidence)
 
+    def test_profile_persists_request_extra_data_defaults(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            game_json = Path(temp) / "game.json"
+            profile = BGamingProfile(
+                family=API_V2,
+                confidence=1.0,
+                request_extra_data={"api_version": 2},
+                validated=True,
+            )
+            save_profile(game_json, profile)
+            loaded = load_profile(game_json)
+            self.assertIsNotNone(loaded)
+            self.assertEqual(
+                loaded.request_extra_data,
+                {"api_version": 2},
+            )
+
     def test_profile_persists_command_options_and_client_purchase_features(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             game_json = Path(temp) / "game.json"
