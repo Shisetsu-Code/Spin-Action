@@ -639,6 +639,7 @@ def pending_flow_actions(data: dict[str, Any]) -> list[str]:
     continuation = flow_continuation_command(data)
     handled = {"init", "spin"}
     handled.update(SAFE_CONTINUATION_COMMANDS)
+    handled.update(CONTINUATION_BY_STATE)
     if continuation:
         handled.add(continuation)
     return sorted(actions - handled)
