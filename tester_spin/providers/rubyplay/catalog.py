@@ -24,6 +24,7 @@ class BricksCatalogState:
     max_pages: int
     start: int
     end: int
+    candidate_count: int = 1
 
     @property
     def load_query_url(self) -> str:
@@ -54,9 +55,99 @@ def _js_string(block: str, key: str) -> str:
     return str(match.group(2)).strip() if match else ""
 
 
+def _int_value(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def query_loop_html(html: str, query_element_id: str) -> str:
+    """Return only the rendered Bricks loop for one dynamic element ID.
+
+    Bricks emits brx-loop-start/end comments for AJAX/query features. When an
+    optimiser strips comments, repeated loop roots still normally carry the
+    Bricks element ID as a ``brxe-<id>`` class, so that is used as a fallback.
+    """
+    query_id = str(query_element_id or "").strip()
+    if not query_id:
+        return ""
+
+    marker = re.search(
+        rf"<!--\s*brx-loop-start-{re.escape(query_id)}\s*-->(.*?)"
+        rf"<!--\s*brx-loop-end-{re.escape(query_id)}\s*-->",
+        html or "",
+        re.S | re.I,
+    )
+    if marker:
+        return marker.group(1)
+
+    soup = BeautifulSoup(html or "", "html.parser")
+    wanted_class = f"brxe-{query_id}"
+    pieces: list[str] = []
+    for node in soup.find_all(True):
+        classes = node.get("class") or []
+        if wanted_class in {str(value) for value in classes}:
+            pieces.append(str(node))
+    return "\n".join(pieces)
+
+
+def _unique_game_link_count(fragment: str, page_url: str) -> int:
+    if not fragment:
+        return 0
+    soup = BeautifulSoup(fragment, "html.parser")
+    slugs: set[str] = set()
+    for anchor in soup.find_all("a", href=True):
+        absolute = urljoin(page_url, str(anchor.get("href") or ""))
+        path = urlparse(absolute).path or ""
+        match = re.fullmatch(r"/games/([^/]+)/?", path)
+        if match and match.group(1).strip():
+            slugs.add(match.group(1).strip().lower())
+    return len(slugs)
+
+
+def _query_candidate_score(
+    html: str,
+    page_url: str,
+    node,
+    query_vars: dict[str, Any],
+) -> tuple[int, int, int, int, int]:
+    query_id = str(
+        node.get("data-query-element-id")
+        or node.get("data-element-id")
+        or ""
+    ).strip()
+    page = max(1, _int_value(node.get("data-page"), 1))
+    max_pages = max(1, _int_value(node.get("data-max-pages"), 1))
+    start = max(1, _int_value(node.get("data-start"), 1))
+    end = max(0, _int_value(node.get("data-end"), 0))
+    span = max(0, end - start + 1) if end >= start else 0
+    per_page = max(0, _int_value(query_vars.get("posts_per_page"), 0))
+    rendered_count = _unique_game_link_count(
+        query_loop_html(html, query_id),
+        page_url,
+    )
+
+    # The archive query is expected to describe the largest coherent game set,
+    # not merely be the first post_type=games loop. No generated Bricks ID or
+    # RubyPlay title is involved in this ranking.
+    page_width = max(rendered_count, span, per_page, 1)
+    estimated_capacity = max(end, page_width * max_pages)
+    current_page_matches = int(
+        _int_value(query_vars.get("paged"), page) in {0, page}
+    )
+    return (
+        estimated_capacity,
+        max_pages,
+        rendered_count,
+        page_width,
+        current_page_matches,
+    )
+
+
 def parse_bricks_catalog_state(html: str, page_url: str) -> BricksCatalogState:
     soup = BeautifulSoup(html or "", "html.parser")
-    trails = []
+    trails: list[tuple[Any, dict[str, Any]]] = []
     for node in soup.find_all(attrs={"data-query-vars": True}):
         raw = str(node.get("data-query-vars") or "").strip()
         try:
@@ -74,11 +165,34 @@ def parse_bricks_catalog_state(html: str, page_url: str) -> BricksCatalogState:
             continue
         trails.append((node, query_vars))
 
-    if len(trails) != 1:
-        raise ValueError(
-            f"RubyPlay catálogo: query Bricks post_type=games no unívoca ({len(trails)})."
+    if not trails:
+        raise ValueError("RubyPlay catálogo: no se encontró query Bricks post_type=games.")
+
+    ranked = [
+        (
+            _query_candidate_score(html, page_url, node, query_vars),
+            node,
+            query_vars,
         )
-    node, query_vars = trails[0]
+        for node, query_vars in trails
+    ]
+    best_score = max(score for score, _node, _vars in ranked)
+    winners = [
+        (node, query_vars)
+        for score, node, query_vars in ranked
+        if score == best_score
+    ]
+    if len(winners) != 1:
+        summary = ", ".join(
+            f"{str(node.get('data-query-element-id') or node.get('data-element-id') or '?')}:{score}"
+            for score, node, _query_vars in sorted(ranked, key=lambda item: item[0], reverse=True)[:8]
+        )
+        raise ValueError(
+            "RubyPlay catálogo: varios query Bricks post_type=games siguen "
+            f"indistinguibles ({len(winners)}/{len(trails)}); candidatos={summary}."
+        )
+
+    node, query_vars = winners[0]
     query_element_id = str(
         node.get("data-query-element-id")
         or node.get("data-element-id")
@@ -99,10 +213,7 @@ def parse_bricks_catalog_state(html: str, page_url: str) -> BricksCatalogState:
         rest_api_url = urljoin(page_url, rest_api_url)
 
     def int_attr(name: str, default: int) -> int:
-        try:
-            return int(node.get(name) or default)
-        except (TypeError, ValueError):
-            return default
+        return _int_value(node.get(name), default)
 
     return BricksCatalogState(
         rest_api_url=rest_api_url,
@@ -116,6 +227,7 @@ def parse_bricks_catalog_state(html: str, page_url: str) -> BricksCatalogState:
         max_pages=max(1, int_attr("data-max-pages", 1)),
         start=max(1, int_attr("data-start", 1)),
         end=max(0, int_attr("data-end", 0)),
+        candidate_count=len(trails),
     )
 
 
