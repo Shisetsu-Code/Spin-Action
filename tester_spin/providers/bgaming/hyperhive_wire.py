@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import threading
+import weakref
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -213,7 +214,23 @@ def _has_req_bet_type_evidence(text: str) -> bool:
 
 _install_lock = threading.Lock()
 _installed = False
-_profiles: dict[int, ObservedHyperHiveWire] = {}
+# A Session is the lifecycle boundary for fresh BGaming credentials. Weak keys
+# avoid both id(runtime) reuse bugs and unbounded retention after a run ends.
+_profiles: weakref.WeakKeyDictionary[Any, ObservedHyperHiveWire] = weakref.WeakKeyDictionary()
+
+
+def _get_profile(runtime: Any) -> ObservedHyperHiveWire | None:
+    try:
+        return _profiles.get(runtime.session)
+    except TypeError:
+        return None
+
+
+def _set_profile(runtime: Any, profile: ObservedHyperHiveWire) -> None:
+    try:
+        _profiles[runtime.session] = profile
+    except TypeError:
+        pass
 
 
 def _engine_result_summary(
@@ -283,7 +300,7 @@ def install_observed_wire_adapter() -> None:
                 # merely because the inner document could not be loaded.
                 pass
             text = original_download_engine_contract(runtime, timeout_s=timeout_s)
-            _profiles[id(runtime)] = analyze_engine_wire(text)
+            _set_profile(runtime, analyze_engine_wire(text))
             return text
 
         def observed_discover_modes(
@@ -311,7 +328,7 @@ def install_observed_wire_adapter() -> None:
                 engine_contract=engine_contract,
             )
             profile = analyze_engine_wire(engine_contract)
-            _profiles[id(runtime)] = profile
+            _set_profile(runtime, profile)
             combined = resolved_bundle + "\n" + (engine_contract or "")
             req_bet_observed = _has_req_bet_evidence(combined)
             req_bet_type_observed = _has_req_bet_type_evidence(combined)
@@ -367,7 +384,7 @@ def install_observed_wire_adapter() -> None:
             rpc_id: int | str | None = None,
         ):
             adapted_params = params
-            profile = _profiles.get(id(runtime))
+            profile = _get_profile(runtime)
             if method == "play" and profile is not None:
                 adapted_params = apply_observed_play_wire(adapted_params, profile)
 
@@ -380,7 +397,10 @@ def install_observed_wire_adapter() -> None:
             )
 
             if method == "init":
-                profile = _profiles.setdefault(id(runtime), ObservedHyperHiveWire())
+                profile = _get_profile(runtime)
+                if profile is None:
+                    profile = ObservedHyperHiveWire()
+                    _set_profile(runtime, profile)
                 try:
                     response_data = result[2]
                     init_result = response_data.get("result")
