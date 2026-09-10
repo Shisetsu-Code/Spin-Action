@@ -157,8 +157,25 @@ Nunca afirmar que una rama está validada hasta que el workflow CI correspondien
 - `tester_spin/providers/one_spin4win.py`
 - `tester_spin/providers/belatra.py`
 - `tester_spin/providers/bgaming/adapter.py`
+  - adapter público;
+  - catálogo y metadata del provider;
+  - no contiene protocolo de otros proveedores.
+- `tester_spin/providers/bgaming/execution.py`
+  - orquestación exclusiva de ejecución BGaming.
+- `tester_spin/providers/bgaming/profile.py`
+  - clasificación dinámica del runtime;
+  - wire profile persistente y revalidable.
+- `tester_spin/providers/bgaming/contracts.py`
+  - vocabulario de transiciones BGaming con wire-shape conocido;
+  - contratos por familia, nunca por título/slug.
 - `tester_spin/providers/bgaming/catalog.py`
+  - parser del catálogo público.
 - `tester_spin/providers/bgaming/runtime.py`
+  - transporte/helpers/validación API v2 y legacy line-bets.
+- `tester_spin/providers/bgaming/hyperhive.py`
+  - familia HyperHive JSON-RPC.
+- `tester_spin/providers/bgaming/switchable.py`
+  - contenedores con variantes seleccionables.
 
 ## 5. Semántica de la GUI
 
@@ -708,7 +725,36 @@ No inventar continuaciones no observadas: preservar request/response descifrados
 
 ## 9.5 BGaming — estado actual
 
-BGaming está integrado como provider aislado (`key=bgaming`).
+BGaming está integrado como provider autónomo (`key=bgaming`). Un test de arquitectura analiza por AST todos los módulos de `tester_spin/providers/bgaming/` y falla si alguno importa internals de Pragmatic, Belatra o 1spin4win.
+
+### Arquitectura interna
+
+```text
+BGamingProvider
+    │
+    ├── catálogo / metadata ── adapter.py + catalog.py
+    │
+    └── ejecución ─────────── execution.py
+                                │
+                                ├── profile.py
+                                ├── runtime.py
+                                ├── hyperhive.py
+                                └── switchable.py
+```
+
+La clasificación nunca utiliza nombre humano, slug ni identifier para decidir protocolo. Esos campos pueden aparecer en artefactos/logs, pero no gobiernan ramas de ejecución.
+
+Familias actuales:
+
+```text
+api-v2
+legacy-lines
+hyperhive-jsonrpc
+switchable-container
+unknown
+```
+
+`unknown` es fail-closed: no se inventan comandos; el intento conserva evidencia y queda no validado.
 
 ### Catálogo
 
@@ -724,61 +770,156 @@ Paginación observada:
 GET https://bgaming.com/wp-json/bg/v1/games/search?page=N
 ```
 
-La respuesta expone `page`, `total`, `hasMore` y HTML de 25 tarjetas. Sólo `hasMore=false` autoriza considerar el crawl completo. Una interrupción, límite manual o error REST marca el crawl como no autoritativo.
+La respuesta expone `page`, `total`, `hasMore` y HTML. El crawler:
 
-Cada tarjeta puede aportar:
+- filtra exclusivamente `Slots`;
+- exige coherencia de `page`;
+- exige que `total`, cuando está presente en varias páginas, permanezca estable;
+- sólo conserva autoridad al terminar normalmente con `hasMore=false`;
+- límite manual, stop, HTTP error, JSON inválido, página inconsistente o `total` cambiante degradan el crawl a no autoritativo;
+- un crawl no autoritativo nunca debe autorizar reconciliación destructiva.
 
-- nombre;
-- slug;
-- URL pública;
-- URL demo;
-- identifier;
-- thumbnail;
-- RTP;
-- volatility;
-- game type.
+No se asume si `total` representa items o páginas: sólo se usa como señal de consistencia hasta contar con un contrato remoto inequívoco.
 
-Links que ya contienen `play_token`/`launch_token` se clasifican `EPHEMERAL_DEMO` y no se persisten como URL de ejecución.
+### Demo y credenciales efímeras
 
-### Runtime
+Links de catálogo con `play_token`/`launch_token` no se persisten. Si sólo existe una URL pública, al ejecutar se resuelve una sesión demo fresca y cualquier token resultante vive únicamente en memoria.
 
-Flujo confirmado por el HAR suministrado:
+Se sanitizan:
 
-```text
-GET demo
-→ redirect a /games/<Identifier>/FUN
-→ extraer window.__OPTIONS__
-→ POST command=init
-→ POST command=spin
-```
+- tokens;
+- valores CSRF;
+- URLs de sesión;
+- `state_lock`;
+- campos sensibles contenidos en opciones/artefactos.
 
-`window.__OPTIONS__` aporta en runtime la URL API y el header CSRF. Tokens de sesión y CSRF se mantienen sólo en memoria; `bootstrap.json` usa opciones sanitizadas y las URLs de sesión se redactan.
+### Runtime profile
 
-Contrato base observado:
+Después de bootstrap/init se construye un `BGamingProfile` usando evidencia del protocolo. El perfil puede guardar:
 
 ```text
-init:
-  api_version=2
-  flow.state=ready
-  flow.command=init
-  available_actions=[init, spin]
-
-spin:
-  flow.state=closed
-  flow.command=spin
-  available_actions=[init, spin]
+family
+confidence
+evidence
+spin_options
+rows_required
+line_count
+variable_layout
+allowed_continuations
+source
+bundle_sha256
+discovery_diagnostics
+validated
 ```
 
-Validaciones implementadas:
+Un perfil validado se conserva bajo `provider_protocol` en `game.json` y se reutiliza. También se genera `profile.json` dentro de la ejecución para diagnóstico.
 
-- `outcome.bet` coincide con la apuesta solicitada;
-- `outcome.win` numérico;
-- dimensiones `screen` contra `options.layout`;
-- estado/command de `flow`;
-- acciones desconocidas generan warning;
-- conservación contable `wallet + game = balance_previo - bet + win`.
+Si un request devuelve 422 o un SPIN base deja de validar:
 
-Features adicionales mencionadas por assets pero no ejecutadas en el HAR no tienen handler todavía. Cualquier estado nuevo queda `PARCIAL` y conserva request/response.
+1. se invalida el perfil;
+2. se redescubre desde el runtime actual;
+3. se permite un recovery controlado;
+4. el nuevo perfil sólo vuelve a ser `validated=true` después de una ejecución base correcta.
+
+### API v2
+
+La secuencia preferida es:
+
+```text
+bootstrap
+→ init
+→ discover_profile
+→ primer spin ya con wire options descubiertas
+```
+
+No se usa el 422 como flujo normal de aprendizaje. El 422 es únicamente recovery para cambios de contrato.
+
+La validación distingue la intención local del resultado remoto. Un `outcome.bet` distinto de la apuesta solicitada no queda `OK` sólo porque el balance cierre. Una traducción de apuesta debe ser explicada por el perfil wire correspondiente.
+
+### Compras
+
+Sólo se crean compras anunciadas por metadata del proveedor.
+
+Si `feature_multipliers` publica un denominador/base, se calcula el costo con esa evidencia.
+
+Si no publica denominador:
+
+```text
+cost_multiplier = unknown
+```
+
+No se asume base 100 ni ninguna escala histórica. La primera ejecución válida aprende:
+
+```text
+observed_debit = previous_balance + win - final_balance
+cost_multiplier = observed_debit / requested_bet
+```
+
+El valor aprendido se usa para validar repeticiones siguientes.
+
+### Continuaciones
+
+No existe el fallback genérico `state == available_action → ejecutar state`.
+
+Sólo se automatizan transiciones cuyo wire-shape está modelado a nivel del protocolo BGaming. Las acciones desconocidas quedan como cobertura pendiente y no se ejecutan.
+
+Esto no es hardcode por juego: es una allowlist de contratos observados del proveedor.
+
+### HyperHive
+
+HyperHive se clasifica por firma fuerte del transporte (launch final `/hyperhive`).
+
+Los modos distinguen:
+
+```text
+DISCOVERED
+EXECUTABLE
+VALIDATED
+```
+
+Encontrar un literal `purchased_feature:"..."` en JavaScript no basta para ejecutarlo. Un literal no clasificado se registra como `DISCOVERED_LITERAL_ONLY`.
+
+Si una respuesta no terminal entrega `nextAction`, sólo se reenvía cuando esa acción también existe en el vocabulario `action:"..."` extraído del bundle/engine contract realmente cargado. En caso contrario se detiene la continuación y se conserva diagnóstico.
+
+### Switchable
+
+Una respuesta balance-only no basta para clasificar un contenedor. La clasificación exige además evidencia de `lobby_launch_url`. La enumeración de variantes se hace desde el cliente cargado y el cambio de runtime se valida contra el identifier devuelto por el servidor.
+
+### Semántica de resultados
+
+Para BGaming:
+
+```text
+SpinAttempt.ok = validación completa
+```
+
+No significa simplemente “hubo HTTP response”.
+
+Por tanto:
+
+- respuesta válida + terminal + invariantes correctos → `OK`;
+- respondió pero contrato/wire/state no valida → `PARCIAL`;
+- no pudo ejecutar/obtener respuesta válida → `ERROR`;
+- no existe demo resoluble → `SIN_DEMO`.
+
+### Tests de regresión relevantes
+
+Existen tests para:
+
+- parser y seguridad de catálogo;
+- paginación real simulada y autoridad;
+- aislamiento entre providers;
+- clasificación de familias;
+- persistencia/reutilización/invalidation del profile;
+- wire options presentes en el primer spin;
+- rechazo de traducciones de apuesta inexplicadas;
+- aprendizaje de costo de compras desde balance;
+- continuaciones desconocidas fail-closed;
+- HyperHive discovery vs ejecución;
+- vocabulario dinámico de `nextAction`;
+- switchable;
+- sanitización de tokens y URLs.
+
 
 ## 10. Evidencia HAR y reglas de trabajo
 
