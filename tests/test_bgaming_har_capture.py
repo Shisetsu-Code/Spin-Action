@@ -112,7 +112,7 @@ class BGamingHARCaptureTests(unittest.TestCase):
             self.assertTrue(target.is_file())
             self.assertFalse((game_dir / "analysis" / "browser.partial.har").exists())
             metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-            self.assertEqual(metadata["post_requests"], 2)
+            self.assertEqual(metadata["provider_post_requests"], 2)
             self.assertNotIn("ephemeral-secret", metadata["launch_url"])
             self.assertTrue(any("HAR guardado" in line for line in logs))
 
