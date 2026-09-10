@@ -32,6 +32,10 @@ class BGamingProvider(BGamingExecutionMixin, ProviderAdapter):
     display_name = "BGaming"
     catalog_url = "https://bgaming.com/game-type/slots"
     min_catalog_reconcile_ratio = 0.70
+    # BGaming's public demo origin showed repeated HTTP 502 responses under
+    # parallel stateful sessions. Keep provider execution serial until the
+    # transport has been validated under a higher concurrency level.
+    max_test_concurrency = 1
 
     def __init__(self, data_root: Path) -> None:
         self.data_root = data_root
