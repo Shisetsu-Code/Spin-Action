@@ -44,6 +44,7 @@ from tester_spin.providers.bgaming.runtime import (
     is_demo_url,
     legacy_safe_terminal_command,
     resolve_fresh_demo_url,
+    runtime_shape_summary,
     sanitize_error_text,
     sanitize_options,
     sanitize_session_url,
@@ -312,9 +313,16 @@ class BGamingExecutionMixin:
                     session.close()
 
             if active_profile.family == UNKNOWN:
+                shape = runtime_shape_summary(init_data)
+                _write_json(run_dir / "unknown-runtime-shape.json", shape)
+                progress(
+                    f"[{game.name}] runtime BGaming desconocido: "
+                    f"keys={shape.get('top_level_keys', [])}; "
+                    "evidencia estructural guardada sin ejecutar comandos."
+                )
                 raise ValueError(
                     "BGaming: runtime no clasificado con evidencia suficiente; "
-                    "RAW preservado sin ejecutar comandos de juego."
+                    "RAW y mapa estructural preservados sin ejecutar comandos de juego."
                 )
 
             init_warnings = validate_init(init_data)
