@@ -5,6 +5,16 @@ import re
 from pathlib import Path
 from typing import Any
 
+from tester_spin.providers.bgaming.hyperhive_transport import (
+    install_hyperhive_transport_adapter,
+)
+
+
+# hyperhive_wire is installed first by bgaming.__init__.  Wrap that final RPC
+# path so all subsequent init/play calls use the inner iframe transport context
+# demonstrated by the browser HAR corpus.
+install_hyperhive_transport_adapter()
+
 
 _HTTP_ERROR = re.compile(
     r"\]\s+(?P<mode>[A-Z0-9_]+)\s+\d+/\d+:\s+ERROR\s+HTTPError:\s+"
