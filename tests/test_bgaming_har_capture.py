@@ -7,6 +7,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from tester_spin.models import Game
+from tester_spin.providers.bgaming import BGamingProvider
 from tester_spin.providers.bgaming.har_capture import (
     ensure_analysis_har,
     find_existing_har,
@@ -38,6 +40,31 @@ class BGamingHARCaptureTests(unittest.TestCase):
             self.assertTrue(result.skipped)
             self.assertFalse(result.captured)
             self.assertEqual(result.path, manual)
+            self.assertTrue(any("captura omitida" in line for line in logs))
+
+    def test_provider_suite_hook_skips_existing_har_before_network(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            provider = BGamingProvider(Path(temp))
+            game = Game(
+                provider="bgaming",
+                slug="game",
+                name="Game",
+                url="https://bgaming.com/games/game",
+            )
+            game_dir = provider.game_dir(game)
+            manual = game_dir / "manual.har"
+            manual.write_text('{"log":{"entries":[]}}', encoding="utf-8")
+            logs: list[str] = []
+
+            with patch.object(provider, "_new_session") as new_session:
+                provider.prepare_test_artifacts(
+                    game,
+                    timeout_s=10,
+                    stop_event=threading.Event(),
+                    progress=logs.append,
+                )
+
+            new_session.assert_not_called()
             self.assertTrue(any("captura omitida" in line for line in logs))
 
     def test_empty_or_partial_hars_are_not_reused(self) -> None:
