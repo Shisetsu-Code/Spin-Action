@@ -13,6 +13,7 @@ from tester_spin.providers.bgaming.har_capture import (
 )
 from tester_spin.providers.bgaming.har_select import inspect_har, select_best_har
 from tester_spin.providers.bgaming.hyperhive_wire import install_observed_wire_adapter
+from tester_spin.providers.bgaming.runner_diagnostics import diagnose_progress_event
 from tester_spin.providers.bgaming.runtime import (
     is_demo_url,
     resolve_fresh_demo_url,
@@ -66,6 +67,22 @@ class BGamingProvider(_BGamingProvider):
                 message=str(message),
             )
             progress(message)
+
+            diagnostic = diagnose_progress_event(game_dir, message)
+            if diagnostic is None:
+                return
+            diagnostic_message = str(diagnostic.get("message") or "").strip()
+            append_har_debug(
+                game_dir,
+                "runner_error_context",
+                **{
+                    key: value
+                    for key, value in diagnostic.items()
+                    if key != "message"
+                },
+            )
+            if diagnostic_message:
+                progress(f"[{game.name}] DIAGNÓSTICO: {diagnostic_message}")
 
         try:
             result = super().test_game(
