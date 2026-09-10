@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
+
+import requests
 
 from tester_spin.providers.bgaming.runtime import (
+    BGamingRuntime,
     balance_total,
     build_line_bets,
     discover_api_v2_wire_profile,
