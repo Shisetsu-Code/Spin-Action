@@ -45,6 +45,7 @@ class BGamingProfile:
     confidence: float = 0.0
     evidence: list[str] = field(default_factory=list)
     spin_options: dict[str, Any] = field(default_factory=dict)
+    command_options: dict[str, dict[str, Any]] = field(default_factory=dict)
     rows_required: bool = False
     line_count: int = 0
     variable_layout: bool = False
@@ -61,6 +62,11 @@ class BGamingProfile:
             "confidence": self.confidence,
             "evidence": list(self.evidence),
             "spin_options": dict(self.spin_options),
+            "command_options": {
+                str(command): dict(options)
+                for command, options in self.command_options.items()
+                if isinstance(options, dict)
+            },
             "rows_required": self.rows_required,
             "line_count": self.line_count,
             "variable_layout": self.variable_layout,
@@ -79,6 +85,7 @@ class BGamingProfile:
             return None
         family = str(value.get("family") or UNKNOWN)
         options = value.get("spin_options")
+        command_options = value.get("command_options")
         continuations = value.get("allowed_continuations")
         evidence = value.get("evidence")
         diagnostics = value.get("discovery_diagnostics")
@@ -87,6 +94,11 @@ class BGamingProfile:
             confidence=float(value.get("confidence") or 0.0),
             evidence=[str(x) for x in evidence] if isinstance(evidence, list) else [],
             spin_options=dict(options) if isinstance(options, dict) else {},
+            command_options={
+                str(command): dict(command_value)
+                for command, command_value in command_options.items()
+                if isinstance(command_value, dict)
+            } if isinstance(command_options, dict) else {},
             rows_required=bool(value.get("rows_required")),
             line_count=max(0, int(value.get("line_count") or 0)),
             variable_layout=bool(value.get("variable_layout")),
@@ -228,6 +240,10 @@ def discover_profile(
         and persisted.validated
     ):
         profile.spin_options.update(persisted.spin_options)
+        profile.command_options = {
+            command: dict(options)
+            for command, options in persisted.command_options.items()
+        }
         profile.rows_required = persisted.rows_required
         profile.allowed_continuations = [
             item for item in persisted.allowed_continuations
