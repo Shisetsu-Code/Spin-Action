@@ -119,6 +119,30 @@ class BGamingHyperHiveTests(unittest.TestCase):
             120.0,
         )
 
+    def test_unknown_purchase_literal_is_discovered_but_not_executable(self) -> None:
+        runtime = BGamingRuntime(
+            session=requests.Session(),
+            launch_url="https://demo.example/hyperhive",
+            api_url="https://unused.example/api/session",
+            identifier="GenericGame",
+            csrf_header_name="X-CSRF-Token",
+            csrf_header_value="secret",
+            options={},
+            round_series_id=1,
+        )
+        modes = discover_modes_from_bundle(
+            runtime,
+            timeout_s=1,
+            bundle_text='purchased_feature:"future_feature"',
+        )
+        by_id = {mode["id"]: mode for mode in modes}
+        candidate = by_id["PURCHASE_FUTURE_FEATURE"]
+        self.assertFalse(candidate["executable"])
+        self.assertEqual(
+            candidate["discovery_state"],
+            "DISCOVERED_LITERAL_ONLY",
+        )
+
     def test_big_bucks_round_win_is_used_as_cumulative_total(self) -> None:
         data = {
             "id": 0,
