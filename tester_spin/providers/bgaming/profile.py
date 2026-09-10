@@ -51,6 +51,7 @@ class BGamingProfile:
     allowed_continuations: list[str] = field(default_factory=list)
     source: str = ""
     bundle_sha256: str = ""
+    discovery_diagnostics: list[dict[str, Any]] = field(default_factory=list)
     validated: bool = False
 
     def to_dict(self) -> dict[str, Any]:
@@ -66,6 +67,7 @@ class BGamingProfile:
             "allowed_continuations": list(self.allowed_continuations),
             "source": self.source,
             "bundle_sha256": self.bundle_sha256,
+            "discovery_diagnostics": list(self.discovery_diagnostics),
             "validated": self.validated,
         }
 
@@ -79,6 +81,7 @@ class BGamingProfile:
         options = value.get("spin_options")
         continuations = value.get("allowed_continuations")
         evidence = value.get("evidence")
+        diagnostics = value.get("discovery_diagnostics")
         return cls(
             family=family,
             confidence=float(value.get("confidence") or 0.0),
@@ -93,6 +96,9 @@ class BGamingProfile:
             ] if isinstance(continuations, list) else [],
             source=str(value.get("source") or ""),
             bundle_sha256=str(value.get("bundle_sha256") or ""),
+            discovery_diagnostics=[
+                dict(item) for item in diagnostics if isinstance(item, dict)
+            ] if isinstance(diagnostics, list) else [],
             validated=bool(value.get("validated")),
         )
 
@@ -229,6 +235,7 @@ def discover_profile(
         ]
         profile.source = "persisted-validated-profile"
         profile.bundle_sha256 = persisted.bundle_sha256
+        profile.discovery_diagnostics = list(persisted.discovery_diagnostics)
         profile.validated = True
         profile.evidence.append("persisted.validated")
         return profile
@@ -239,6 +246,10 @@ def discover_profile(
         profile.spin_options.update(options)
     profile.source = str(wire.get("source") or "init")
     profile.bundle_sha256 = str(wire.get("bundle_sha256") or "")
+    diagnostics = wire.get("diagnostics")
+    profile.discovery_diagnostics = [
+        dict(item) for item in diagnostics if isinstance(item, dict)
+    ] if isinstance(diagnostics, list) else []
     profile.allowed_continuations = sorted(SAFE_CONTINUATION_COMMANDS)
     return profile
 
