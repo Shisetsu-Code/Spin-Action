@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import secrets
 import threading
 import time
@@ -38,6 +39,7 @@ from tester_spin.providers.bgaming.runtime import (
     purchase_expected_debit,
     purchase_names_equivalent,
     resolve_base_bet,
+    is_demo_url,
     resolve_fresh_demo_url,
     sanitize_error_text,
     sanitize_options,
@@ -48,6 +50,16 @@ from tester_spin.providers.bgaming.runtime import (
     validate_spin,
 )
 from tester_spin.providers.bgaming.switchable import run_switchable_container_test
+
+
+def _write_json(path: Path, payload: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    tmp.replace(path)
 
 
 class BGamingExecutionMixin:
@@ -78,7 +90,7 @@ class BGamingExecutionMixin:
 
         session = self._new_session()
         execution_url = game.url
-        if not self._looks_like_demo_url(execution_url):
+        if not is_demo_url(execution_url):
             try:
                 fresh_demo_url = resolve_fresh_demo_url(
                     session,
@@ -151,7 +163,7 @@ class BGamingExecutionMixin:
             runtime = bootstrap_game(session, execution_url, timeout_s=timeout_s)
             game.symbol = runtime.identifier
 
-            self._write_json(
+            _write_json(
                 run_dir / "bootstrap.json",
                 {
                     "identifier": runtime.identifier,
@@ -200,8 +212,8 @@ class BGamingExecutionMixin:
                 "init",
                 timeout_s=timeout_s,
             )
-            self._write_json(run_dir / "init-request.json", init_request)
-            self._write_json(run_dir / "init-response.json", init_data)
+            _write_json(run_dir / "init-request.json", init_request)
+            _write_json(run_dir / "init-response.json", init_data)
 
             active_profile = discover_profile(
                 runtime,
@@ -555,13 +567,13 @@ class BGamingExecutionMixin:
                         wire_steps += 1
                         last_status_code = int(response.status_code)
 
-                        self._write_json(attempt_dir / "request.json", request_payload)
-                        self._write_json(attempt_dir / "response.json", data)
-                        self._write_json(
+                        _write_json(attempt_dir / "request.json", request_payload)
+                        _write_json(attempt_dir / "response.json", data)
+                        _write_json(
                             attempt_dir / f"step-{wire_steps:03d}-request.json",
                             request_payload,
                         )
-                        self._write_json(
+                        _write_json(
                             attempt_dir / f"step-{wire_steps:03d}-response.json",
                             data,
                         )
@@ -606,7 +618,7 @@ class BGamingExecutionMixin:
                                     "response_sha256"
                                 ),
                             }
-                            self._write_json(
+                            _write_json(
                                 attempt_dir / "remote-proof.json",
                                 proof,
                             )
@@ -710,7 +722,7 @@ class BGamingExecutionMixin:
                         proof["mode_id"] = mode_id
                         proof["step"] = wire_steps
                         proof["expected_debit"] = expected_debit
-                        self._write_json(
+                        _write_json(
                             attempt_dir / f"step-{wire_steps:03d}-proof.json",
                             proof,
                         )
@@ -777,11 +789,11 @@ class BGamingExecutionMixin:
                             )
                             wire_steps += 1
                             last_status_code = int(cont_response.status_code)
-                            self._write_json(
+                            _write_json(
                                 attempt_dir / f"step-{wire_steps:03d}-request.json",
                                 cont_request,
                             )
-                            self._write_json(
+                            _write_json(
                                 attempt_dir / f"step-{wire_steps:03d}-response.json",
                                 cont_data,
                             )
@@ -829,7 +841,7 @@ class BGamingExecutionMixin:
                                 cont_proof["bonus_multiplier"] = (
                                     preselection_multiplier(cont_data)
                                 )
-                            self._write_json(
+                            _write_json(
                                 attempt_dir / f"step-{wire_steps:03d}-proof.json",
                                 cont_proof,
                             )
@@ -924,7 +936,7 @@ class BGamingExecutionMixin:
                         successes += int(validated)
                         global_warnings.extend(warnings)
 
-                        self._write_json(
+                        _write_json(
                             attempt_dir / "remote-proof.json",
                             final_proof,
                         )
