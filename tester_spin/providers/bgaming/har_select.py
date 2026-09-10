@@ -52,7 +52,10 @@ def _inspect_cached(path_text: str, size: int, mtime_ns: int) -> HARQuality:
 
     hyper = analyze_hyperhive_har(path)
     plays = int(hyper.play_count)
-    purchases = len(hyper.purchase_features)
+    # Count distinct observed purchase wire variants, not merely distinct
+    # purchased_feature values. HyperHive can expose normal/super buys through
+    # the same purchased_feature and discriminate them inside custom_req.
+    purchases = int(hyper.purchase_variant_count or len(hyper.purchase_features))
     spins = 0
     bootstrap_posts = 0
 

@@ -21,6 +21,16 @@ _DYNAMIC_OR_SECRET_KEYS = {
     "seed",
 }
 
+# These fields are part of the request mechanics, but they do not identify a
+# purchased-feature variant. For example, stake follows req.bet and exponent
+# follows the active currency. They must not split the same mode into one mode
+# per wager/currency.
+_NON_VARIANT_CUSTOM_KEYS = {
+    "action",
+    "exponent",
+    "stake",
+}
+
 
 def _safe_template_value(key: str, value: Any) -> Any:
     lowered = str(key or "").casefold()
@@ -85,6 +95,35 @@ def _common_mapping(values: list[dict[str, Any]]) -> dict[str, Any]:
     return common
 
 
+def _variant_identity(row: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Return only stable request fields that can discriminate buy variants.
+
+    purchased_feature alone is insufficient for some HyperHive titles: normal
+    and super buys can share the same feature while custom_req booleans select
+    the actual mode. Keep those selectors (and other stable extras), but ignore
+    action/exponent/stake because they are transport mechanics/dynamic values.
+    """
+    req_extras = dict(row.get("req_extras") or {})
+    custom_req = {
+        str(key): value
+        for key, value in dict(row.get("custom_req") or {}).items()
+        if str(key).casefold() not in _NON_VARIANT_CUSTOM_KEYS
+    }
+    return {
+        "req_extras": req_extras,
+        "custom_req": custom_req,
+    }
+
+
+def _variant_signature(row: dict[str, Any]) -> str:
+    return json.dumps(
+        _variant_identity(row),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
 @dataclass(slots=True)
 class HARPlayTemplate:
     action: str = ""
@@ -92,6 +131,8 @@ class HARPlayTemplate:
     req_extras: dict[str, Any] = field(default_factory=dict)
     custom_req: dict[str, Any] = field(default_factory=dict)
     observations: int = 0
+    discriminator_req: dict[str, Any] = field(default_factory=dict)
+    discriminator_custom_req: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -103,12 +144,20 @@ class HARHyperHiveEvidence:
     actions: set[str] = field(default_factory=set)
     purchase_features: set[str] = field(default_factory=set)
     spin: HARPlayTemplate | None = None
+    # Backwards-compatible unambiguous purchase templates. A feature with more
+    # than one observed wire variant is intentionally absent from this mapping.
     purchases: dict[str, HARPlayTemplate] = field(default_factory=dict)
+    # Exact variants grouped beneath the transport-level purchased_feature.
+    purchase_variants: dict[str, list[HARPlayTemplate]] = field(default_factory=dict)
     continuations: dict[str, HARPlayTemplate] = field(default_factory=dict)
 
     @property
     def usable(self) -> bool:
         return self.play_count > 0 and self.spin is not None
+
+    @property
+    def purchase_variant_count(self) -> int:
+        return sum(len(items) for items in self.purchase_variants.values())
 
 
 def _request_json(entry: dict[str, Any]) -> dict[str, Any] | None:
@@ -152,6 +201,79 @@ def _group_template(rows: list[dict[str, Any]]) -> HARPlayTemplate | None:
         ),
         observations=len(rows),
     )
+
+
+def _purchase_templates(rows: list[dict[str, Any]]) -> list[HARPlayTemplate]:
+    """Partition one purchased_feature by its exact stable wire discriminators."""
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    identities: dict[str, dict[str, dict[str, Any]]] = {}
+    for row in rows:
+        signature = _variant_signature(row)
+        grouped.setdefault(signature, []).append(row)
+        identities.setdefault(signature, _variant_identity(row))
+
+    out: list[HARPlayTemplate] = []
+    for signature in sorted(grouped):
+        template = _group_template(grouped[signature])
+        if template is None:
+            continue
+        identity = identities[signature]
+        template.discriminator_req = dict(identity["req_extras"])
+        template.discriminator_custom_req = dict(identity["custom_req"])
+        out.append(template)
+    return out
+
+
+def _purchase_template_match_score(
+    req: dict[str, Any],
+    template: HARPlayTemplate,
+) -> int:
+    """Score an already-selected request against one observed buy variant.
+
+    A multi-variant feature is never guessed. At least one discriminator supplied
+    by the caller must select one unique variant and any supplied discriminator
+    that conflicts rejects that candidate.
+    """
+    score = 0
+    for key, expected in template.discriminator_req.items():
+        if key not in req:
+            continue
+        if req[key] != expected:
+            return -1
+        score += 1
+
+    custom_req = req.get("custom_req")
+    if not isinstance(custom_req, dict):
+        custom_req = {}
+    for key, expected in template.discriminator_custom_req.items():
+        if key not in custom_req:
+            continue
+        if custom_req[key] != expected:
+            return -1
+        score += 1
+    return score
+
+
+def _select_purchase_template(
+    req: dict[str, Any],
+    evidence: HARHyperHiveEvidence,
+    feature: str,
+) -> HARPlayTemplate | None:
+    variants = list(evidence.purchase_variants.get(feature) or [])
+    if not variants:
+        return evidence.purchases.get(feature)
+    if len(variants) == 1:
+        return variants[0]
+
+    scored = [
+        (_purchase_template_match_score(req, template), template)
+        for template in variants
+    ]
+    best_score = max((score for score, _template in scored), default=-1)
+    if best_score <= 0:
+        return None
+    best = [template for score, template in scored if score == best_score]
+    return best[0] if len(best) == 1 else None
 
 
 @lru_cache(maxsize=128)
@@ -252,11 +374,17 @@ def _analyze_cached(path_text: str, size: int, mtime_ns: int) -> HARHyperHiveEvi
     evidence.spin = _group_template(base_rows)
 
     for feature in sorted(evidence.purchase_features):
-        template = _group_template(
+        variants = _purchase_templates(
             [row for row in rows if row["purchased_feature"] == feature]
         )
-        if template is not None:
-            evidence.purchases[feature] = template
+        if not variants:
+            continue
+        evidence.purchase_variants[feature] = variants
+        # Preserve old mapping only when a feature has one unambiguous wire
+        # shape. Returning a merged/first template for multiple variants would
+        # recreate the bug this parser exists to prevent.
+        if len(variants) == 1:
+            evidence.purchases[feature] = variants[0]
 
     for action in sorted(evidence.actions):
         if action in {"", "spin"}:
@@ -317,7 +445,7 @@ def apply_har_play_wire(
     feature = str(req.get("purchased_feature") or "").strip()
     template: HARPlayTemplate | None = None
     if feature:
-        template = evidence.purchases.get(feature)
+        template = _select_purchase_template(req, evidence, feature)
     elif requested_action and requested_action != "spin":
         template = evidence.continuations.get(requested_action)
     else:
