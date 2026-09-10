@@ -229,12 +229,14 @@ def discover_profile(
     *,
     timeout_s: float,
     persisted: BGamingProfile | None = None,
+    wire_profile: dict[str, Any] | None = None,
 ) -> BGamingProfile:
     classification = classify_runtime(runtime, init_data)
     profile = BGamingProfile(
         family=classification.family,
         confidence=classification.confidence,
         evidence=list(classification.evidence),
+        request_extra_data=dict(runtime.request_extra_data),
         variable_layout=infer_variable_layout(init_data),
     )
 
@@ -269,7 +271,8 @@ def discover_profile(
             command: dict(options)
             for command, options in persisted.command_options.items()
         }
-        profile.request_extra_data = dict(persisted.request_extra_data)
+        if not profile.request_extra_data:
+            profile.request_extra_data = dict(persisted.request_extra_data)
         profile.purchase_features = list(persisted.purchase_features)
         profile.rows_required = persisted.rows_required
         profile.allowed_continuations = [
@@ -291,7 +294,11 @@ def discover_profile(
         if purchase_contract_missing:
             profile.evidence.append("refresh:purchase-contract-missing")
 
-    wire = discover_api_v2_wire_profile(runtime, timeout_s=timeout_s)
+    wire = (
+        dict(wire_profile)
+        if isinstance(wire_profile, dict)
+        else discover_api_v2_wire_profile(runtime, timeout_s=timeout_s)
+    )
     request_extra_data = wire.get("request_extra_data")
     if isinstance(request_extra_data, dict):
         profile.request_extra_data.update(request_extra_data)
