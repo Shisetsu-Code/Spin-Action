@@ -39,6 +39,7 @@ from tester_spin.providers.bgaming.runtime import (
     purchase_expected_debit,
     purchase_names_equivalent,
     resolve_base_bet,
+    infer_missing_wire_options,
     infer_observed_debit,
     is_demo_url,
     legacy_safe_terminal_command,
@@ -424,26 +425,40 @@ class BGamingExecutionMixin:
             options_payload: dict[str, Any] | None = None,
             extra_data_payload: dict[str, Any] | None = None,
         ):
-            nonlocal rows_required, api_profile_checked
+            nonlocal api_profile_checked
             merged_options = (
                 dict(options_payload)
                 if isinstance(options_payload, dict)
                 else None
             )
+
+            # Global options are learned from the client bundle (for example a
+            # selectable line mode). Command-specific options are learned only
+            # from explicit client/server evidence and never from a title/slug.
             if learned_wire_options and not legacy_line_bets:
                 if merged_options is None:
                     merged_options = {}
                 for key, value in learned_wire_options.items():
                     merged_options.setdefault(key, value)
-            if (
-                rows_required
-                and not legacy_line_bets
-                and isinstance(expected_rows, int)
-                and expected_rows > 0
-            ):
-                if merged_options is None:
-                    merged_options = {}
-                merged_options.setdefault("rows", expected_rows)
+
+            if active_profile is not None and not legacy_line_bets:
+                specific = active_profile.command_options.get(command)
+                if isinstance(specific, dict) and specific:
+                    if merged_options is None:
+                        merged_options = {}
+                    for key, value in specific.items():
+                        merged_options.setdefault(key, value)
+
+                # Backward compatibility for profiles learned by the older
+                # global rows_required mechanism. New evidence is per-command.
+                if (
+                    active_profile.rows_required
+                    and isinstance(expected_rows, int)
+                    and expected_rows > 0
+                ):
+                    if merged_options is None:
+                        merged_options = {}
+                    merged_options.setdefault("rows", expected_rows)
 
             try:
                 return post_command(
@@ -464,7 +479,9 @@ class BGamingExecutionMixin:
 
                 if active_profile is not None:
                     active_profile.validated = False
-                    persist_profile_snapshot()
+
+                missing: dict[str, Any] = {}
+                refreshed: BGamingProfile | None = None
 
                 if not api_profile_checked:
                     api_profile_checked = True
@@ -474,66 +491,51 @@ class BGamingExecutionMixin:
                         timeout_s=timeout_s,
                         persisted=None,
                     )
-                    profile_options = refreshed.spin_options
-                    if profile_options:
-                        missing = {
-                            key: value
-                            for key, value in profile_options.items()
-                            if (
-                                merged_options is None
-                                or key not in merged_options
-                            )
-                        }
-                        if missing:
-                            retry_options = (
-                                dict(merged_options)
-                                if isinstance(merged_options, dict)
-                                else {}
-                            )
-                            retry_options.update(missing)
-                            progress(
-                                f"[{game.name}] HTTP 422: perfil wire redescubierto "
-                                f"→ {missing!r}; reintentando {command} una vez."
-                            )
-                            try:
-                                result = post_command(
-                                    runtime,
-                                    command,
-                                    timeout_s=timeout_s,
-                                    options=retry_options,
-                                    extra_data=extra_data_payload,
-                                )
-                            except requests.HTTPError as profile_exc:
-                                if (
-                                    profile_exc.response is None
-                                    or int(profile_exc.response.status_code) != 422
-                                ):
-                                    raise
-                            else:
-                                learned_wire_options.update(missing)
-                                if active_profile is not None:
-                                    active_profile.spin_options.update(missing)
-                                    active_profile.source = refreshed.source
-                                    active_profile.bundle_sha256 = refreshed.bundle_sha256
-                                    active_profile.discovery_diagnostics = list(
-                                        refreshed.discovery_diagnostics
-                                    )
-                                    persist_profile_snapshot()
-                                progress(
-                                    f"[{game.name}] Perfil API actualizado: "
-                                    f"{learned_wire_options!r}."
-                                )
-                                return result
+                    for key, value in refreshed.spin_options.items():
+                        if merged_options is None or key not in merged_options:
+                            missing.setdefault(key, value)
 
-                can_retry_rows = (
-                    isinstance(expected_rows, int)
-                    and expected_rows > 0
-                    and (
-                        merged_options is None
-                        or "rows" not in merged_options
+                validation_missing: dict[str, Any] = {}
+                validation_evidence = ""
+                if exc.response is not None:
+                    validation_missing, validation_evidence = infer_missing_wire_options(
+                        exc.response,
+                        init_data,
                     )
-                )
-                if not can_retry_rows:
+                    for key, value in validation_missing.items():
+                        if merged_options is None or key not in merged_options:
+                            missing.setdefault(key, value)
+
+                if active_profile is not None:
+                    if refreshed is not None:
+                        active_profile.source = refreshed.source
+                        active_profile.bundle_sha256 = refreshed.bundle_sha256
+                        active_profile.discovery_diagnostics = list(
+                            refreshed.discovery_diagnostics
+                        )
+                    if validation_missing:
+                        command_profile = active_profile.command_options.setdefault(
+                            command,
+                            {},
+                        )
+                        command_profile.update(validation_missing)
+                        active_profile.discovery_diagnostics.append(
+                            {
+                                "kind": "http-validation",
+                                "status": 422,
+                                "command": command,
+                                "inferred_options": dict(validation_missing),
+                                "evidence": validation_evidence,
+                            }
+                        )
+                    persist_profile_snapshot()
+
+                if not missing:
+                    progress(
+                        f"[{game.name}] HTTP 422 en {command}: el servidor no "
+                        "identificó ninguna opción faltante utilizable; no se "
+                        "adivinan campos desde layout."
+                    )
                     raise
 
                 retry_options = (
@@ -541,27 +543,48 @@ class BGamingExecutionMixin:
                     if isinstance(merged_options, dict)
                     else {}
                 )
-                retry_options["rows"] = expected_rows
+                retry_options.update(missing)
                 progress(
-                    f"[{game.name}] HTTP 422: reintentando {command} "
-                    f"con rows={expected_rows} según layout del init."
+                    f"[{game.name}] HTTP 422: contrato faltante inferido por evidencia "
+                    f"→ {missing!r}; reintentando {command} una vez."
                 )
-                result = post_command(
-                    runtime,
-                    command,
-                    timeout_s=timeout_s,
-                    options=retry_options,
-                    extra_data=extra_data_payload,
-                )
-                rows_required = True
-                if active_profile is not None:
-                    active_profile.rows_required = True
-                    persist_profile_snapshot()
-                progress(
-                    f"[{game.name}] Perfil API aprendido: "
-                    f"rows={expected_rows} requerido en comandos de juego."
-                )
-                return result
+                try:
+                    result = post_command(
+                        runtime,
+                        command,
+                        timeout_s=timeout_s,
+                        options=retry_options,
+                        extra_data=extra_data_payload,
+                    )
+                except requests.HTTPError:
+                    # Keep explicitly inferred command options in the persisted
+                    # profile even if the demo gateway fails afterwards. The
+                    # next fresh session can start with the corrected wire shape.
+                    raise
+                else:
+                    if refreshed is not None:
+                        learned_wire_options.update(
+                            {
+                                key: value
+                                for key, value in refreshed.spin_options.items()
+                                if key in missing
+                            }
+                        )
+                        if active_profile is not None:
+                            active_profile.spin_options.update(
+                                {
+                                    key: value
+                                    for key, value in refreshed.spin_options.items()
+                                    if key in missing
+                                }
+                            )
+                    if active_profile is not None:
+                        persist_profile_snapshot()
+                    progress(
+                        f"[{game.name}] Perfil API actualizado para {command}: "
+                        f"{missing!r}."
+                    )
+                    return result
 
         requested_total = repetitions * len(mode_specs)
 
