@@ -640,6 +640,65 @@ def discover_api_v2_wire_profile(
     return profile
 
 
+def infer_missing_wire_options(
+    response: requests.Response,
+    init_data: dict[str, Any],
+) -> tuple[dict[str, Any], str]:
+    """Infer missing request options only from explicit HTTP validation evidence.
+
+    Candidate values come from the init contract; a field is returned only when
+    the 4xx response itself names that field. This prevents the executor from
+    guessing per-game options from layout alone.
+    """
+    evidence_parts: list[str] = []
+    try:
+        payload = response.json()
+    except Exception:
+        payload = None
+    if payload is not None:
+        try:
+            evidence_parts.append(
+                json.dumps(payload, ensure_ascii=False, sort_keys=True)
+            )
+        except Exception:
+            evidence_parts.append(str(payload))
+    raw_text = str(getattr(response, "text", "") or "")
+    if raw_text:
+        evidence_parts.append(raw_text)
+    evidence = "\n".join(evidence_parts)
+    lowered = evidence.casefold()
+
+    options = init_data.get("options")
+    if not isinstance(options, dict):
+        return {}, sanitize_error_text(evidence)[:1200]
+
+    candidate_sources: list[dict[str, Any]] = []
+    layout = options.get("layout")
+    if isinstance(layout, dict):
+        candidate_sources.append(layout)
+
+    # Scalar init options are eligible too, except values already handled by
+    # the normal request builder such as bet/default_bet.
+    scalar_options = {
+        str(key): value
+        for key, value in options.items()
+        if isinstance(value, (str, int, float, bool))
+        and str(key) not in {"bet", "default_bet"}
+    }
+    candidate_sources.append(scalar_options)
+
+    inferred: dict[str, Any] = {}
+    for source in candidate_sources:
+        for key, value in source.items():
+            field = str(key).strip()
+            if not field or field in inferred:
+                continue
+            if re.search(rf"(?<![A-Za-z0-9_]){re.escape(field.casefold())}(?![A-Za-z0-9_])", lowered):
+                inferred[field] = value
+
+    return inferred, sanitize_error_text(evidence)[:1200]
+
+
 def resolve_base_bet(data: dict[str, Any]) -> tuple[int | float | None, str]:
     options = data.get("options")
     if not isinstance(options, dict):
