@@ -5,6 +5,8 @@ import threading
 from dataclasses import dataclass, field
 from typing import Any
 
+from tester_spin.providers.bgaming.hyperhive_transport import prepare_hyperhive_client
+
 
 _SAFE_LITERAL_KEY = re.compile(r"^[A-Za-z_$][A-Za-z0-9_$]*$")
 _SENSITIVE_LITERAL_PARTS = (
@@ -271,6 +273,15 @@ def install_observed_wire_adapter() -> None:
             *,
             timeout_s: float,
         ) -> str:
+            # HyperHive's outer /hyperhive document is only a launcher. Load the
+            # fresh inner /?token=<play_token> client first so runtime.script_urls
+            # contains the game scripts that actually serialize method=play.
+            try:
+                prepare_hyperhive_client(runtime, timeout_s=timeout_s)
+            except Exception:
+                # Discovery remains fail-closed below. Do not authorize a wager
+                # merely because the inner document could not be loaded.
+                pass
             text = original_download_engine_contract(runtime, timeout_s=timeout_s)
             _profiles[id(runtime)] = analyze_engine_wire(text)
             return text
@@ -282,11 +293,17 @@ def install_observed_wire_adapter() -> None:
             bundle_text: str | None = None,
             engine_contract: str = "",
         ):
-            resolved_bundle = (
-                hyperhive._download_bundle(runtime, timeout_s)
-                if bundle_text is None
-                else bundle_text
-            )
+            # run_hyperhive_test downloads one bundle before engine discovery.
+            # Engine discovery loads the inner iframe, so refresh the bundle here
+            # to include scripts discovered from that live inner document.
+            try:
+                prepare_hyperhive_client(runtime, timeout_s=timeout_s)
+            except Exception:
+                pass
+            resolved_bundle = hyperhive._download_bundle(runtime, timeout_s)
+            if not resolved_bundle and bundle_text is not None:
+                resolved_bundle = bundle_text
+
             modes = original_discover_modes(
                 runtime,
                 timeout_s=timeout_s,
@@ -334,7 +351,7 @@ def install_observed_wire_adapter() -> None:
                     base["custom_req_literal_keys"] = sorted(profile.custom_literals)
                     if bool(base.get("executable")):
                         base["discovery_state"] = "OBSERVED_ENGINE_CONTRACT"
-                        base["source"] = "live-game-bundle+engine-contract"
+                        base["source"] = "live-inner-client+engine-contract"
 
             return modes
 
