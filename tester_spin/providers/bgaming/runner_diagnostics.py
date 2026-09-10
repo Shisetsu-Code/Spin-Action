@@ -8,11 +8,16 @@ from typing import Any
 from tester_spin.providers.bgaming.hyperhive_transport import (
     install_hyperhive_transport_adapter,
 )
+from tester_spin.providers.bgaming.money_display import install_money_display_adapter
 
 
-# hyperhive_wire is installed first by bgaming.__init__.  Wrap that final RPC
-# path so all subsequent init/play calls use the inner iframe transport context
-# demonstrated by the browser HAR corpus.
+# Install provider-boundary display normalization before the later wire adapter
+# captures BaseBGamingProvider.test_game. Protocol artifacts and calculations
+# remain in exact backend minor units.
+install_money_display_adapter()
+
+# hyperhive_wire is installed later by bgaming.__init__; this transport wrapper
+# is therefore retained inside that final RPC chain.
 install_hyperhive_transport_adapter()
 
 
