@@ -25,6 +25,7 @@ from tester_spin.providers.bgaming.runtime import (
     purchase_names_equivalent,
     resolve_base_bet,
     resolve_fresh_demo_url,
+    runtime_shape_summary,
     sanitize_error_text,
     sanitize_options,
     sanitize_session_url,
@@ -50,6 +51,22 @@ class BGamingRuntimeTests(unittest.TestCase):
         options = extract_options(html)
         self.assertEqual(options["identifier"], "TreasureOfAnubis")
         self.assertEqual(options["csrfTokenHeaderName"], "X-CSRF-Token")
+
+    def test_unknown_runtime_shape_summary_contains_no_values(self) -> None:
+        summary = runtime_shape_summary(
+            {
+                "token": "secret",
+                "wallet": 100000,
+                "game": {"state": "mystery", "secret": "value"},
+                "available_commands": ["init", "play"],
+            }
+        )
+        self.assertIn("token", summary["top_level_keys"])
+        self.assertEqual(summary["top_level_types"]["wallet"], "int")
+        self.assertEqual(summary["game_keys"], ["secret", "state"])
+        self.assertEqual(summary["available_commands"], ["init", "play"])
+        self.assertNotIn("secret", str(summary).replace("'secret'", ""))
+        self.assertNotIn("100000", str(summary))
 
     def test_extracts_actual_launch_script_urls(self) -> None:
         html = """
