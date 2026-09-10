@@ -4,8 +4,12 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from unittest.mock import patch
+
+import requests
 
 from tester_spin.providers.rubyplay.adapter import RubyPlayProvider
+from tester_spin.providers.rubyplay.browser_catalog import BrowserBricksResponse
 from tester_spin.providers.rubyplay.catalog import (
     load_query_payload,
     parse_bricks_catalog_state,
@@ -26,15 +30,23 @@ class _CatalogResponse:
 
     def raise_for_status(self) -> None:
         if self.status_code >= 400:
-            raise RuntimeError(self.status_code)
+            response = requests.Response()
+            response.status_code = self.status_code
+            response.url = self.url
+            response._content = self.text.encode("utf-8")
+            raise requests.HTTPError(
+                f"{self.status_code} error for {self.url}",
+                response=response,
+            )
 
     def json(self):
         return self._payload
 
 
 class _CatalogSession:
-    def __init__(self, initial_html: str):
+    def __init__(self, initial_html: str, *, forbidden: bool = False):
         self.initial_html = initial_html
+        self.forbidden = forbidden
         self.posts: list[tuple[str, int]] = []
 
     def get(self, url, **_kwargs):
@@ -47,6 +59,16 @@ class _CatalogSession:
         self.posts.append((query_id, page))
         if page != 2:
             raise AssertionError(f"unexpected page {page}")
+        if self.forbidden:
+            return _CatalogResponse(
+                url=url,
+                status_code=403,
+                text=(
+                    '{"code":"rest_cookie_invalid_nonce",'
+                    '"message":"Bricks cookie check failed",'
+                    '"data":{"status":403}}'
+                ),
+            )
         slug = "alpha-2" if query_id == "alpha" else "beta-2"
         return _CatalogResponse(
             url=url,
@@ -60,6 +82,44 @@ class _CatalogSession:
                     "end": 2,
                 },
             },
+        )
+
+
+class _FakeBrowserCatalogClient:
+    instances = []
+
+    def __init__(self, catalog_url: str, *, timeout_s: float = 30.0):
+        self.catalog_url = catalog_url
+        self.timeout_s = timeout_s
+        self.started = False
+        self.closed = False
+        self.calls: list[tuple[str, int]] = []
+        self.__class__.instances.append(self)
+
+    def start(self) -> None:
+        self.started = True
+
+    def close(self) -> None:
+        self.closed = True
+
+    def fetch_page(self, state, page: int) -> BrowserBricksResponse:
+        self.calls.append((state.query_element_id, page))
+        slug = f"{state.query_element_id}-{page}"
+        data = {
+            "html": f'<div><a href="/games/{slug}/">{slug}</a></div>',
+            "updated_query": {
+                "element_id": state.query_element_id,
+                "count": 2,
+                "max_num_pages": 2,
+                "start": 2,
+                "end": 2,
+            },
+        }
+        return BrowserBricksResponse(
+            status=200,
+            url=state.load_query_url,
+            body="{}",
+            data=data,
         )
 
 
@@ -200,6 +260,51 @@ class RubyPlayCatalogTests(unittest.TestCase):
         )
         self.assertEqual(fake.posts, [("alpha", 2), ("beta", 2)])
         self.assertTrue(provider.catalog_crawl_authoritative)
+
+    def test_403_pagination_retries_from_browser_origin(self) -> None:
+        html = r'''
+        <script>
+        var bricksData = {
+          restApiUrl: "https://rubyplay.com/wp-json/bricks/v1/",
+          nonce: "query-nonce",
+          wpRestNonce: "rest-nonce",
+          postId: "10149",
+          language: "en"
+        };
+        </script>
+        <div data-query-element-id="alpha"
+             data-query-vars='{"post_type":["games"],"posts_per_page":1,"paged":1}'
+             data-page="1" data-max-pages="2" data-start="1" data-end="1"></div>
+        <!--brx-loop-start-alpha-->
+          <div><a href="/games/alpha-1/">Alpha 1</a></div>
+        <!--brx-loop-end-alpha-->
+        '''
+        _FakeBrowserCatalogClient.instances.clear()
+        messages: list[str] = []
+        with tempfile.TemporaryDirectory() as temp:
+            provider = RubyPlayProvider(Path(temp))
+            fake = _CatalogSession(html, forbidden=True)
+            provider.http = fake  # type: ignore[assignment]
+            with patch(
+                "tester_spin.providers.rubyplay.adapter.RubyPlayBrowserCatalogClient",
+                _FakeBrowserCatalogClient,
+            ):
+                games = provider.crawl_catalog(
+                    stop_event=threading.Event(),
+                    progress=messages.append,
+                    max_pages=0,
+                )
+
+        self.assertEqual({game.slug for game in games}, {"alpha-1", "alpha-2"})
+        self.assertEqual(fake.posts, [("alpha", 2)])
+        self.assertEqual(len(_FakeBrowserCatalogClient.instances), 1)
+        browser = _FakeBrowserCatalogClient.instances[0]
+        self.assertTrue(browser.started)
+        self.assertTrue(browser.closed)
+        self.assertEqual(browser.calls, [("alpha", 2)])
+        self.assertTrue(provider.catalog_crawl_authoritative)
+        self.assertTrue(any("HTTP 403" in message for message in messages))
+        self.assertTrue(any("fallback Chromium activo" in message for message in messages))
 
     def test_rest_root_can_be_derived_from_wordpress_link(self) -> None:
         html = r'''
