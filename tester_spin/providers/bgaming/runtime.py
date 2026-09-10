@@ -688,9 +688,20 @@ def discover_api_v2_wire_profile(
         if value:
             purchase_features.add(value)
 
+    required_option_fields = sorted(
+        {
+            str(match)
+            for match in re.findall(
+                r"additionalSpinOptions\.([A-Za-z_][A-Za-z0-9_]*)",
+                bundle,
+            )
+        }
+    )
+
     profile: dict[str, Any] = {
         "spin_options": {},
         "purchase_features": sorted(purchase_features),
+        "required_option_fields": required_option_fields,
         "source": sanitize_session_url(source) if source else "",
         "bundle_sha256": (
             hashlib.sha256(bundle.encode("utf-8", errors="replace")).hexdigest()
