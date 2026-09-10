@@ -6,7 +6,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from typing import Any
-from urllib.parse import urljoin, urlparse
+from urllib.parse import parse_qs, urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -141,11 +141,23 @@ def sanitize_session_url(url: str) -> str:
 
 
 def is_demo_url(url: str) -> bool:
+    """Return whether a URL is a BGaming demo/runtime launch.
+
+    Besides the historical /play/... and /games/... launch shapes, newer
+    HyperHive demos legitimately terminate at /hyperhive?launch_token=....
+    The resolver must accept that final runtime URL or a valid public-page
+    redirect can be discarded as SIN_DEMO before bootstrap ever runs.
+    """
     parsed = urlparse(str(url or ""))
     host = (parsed.hostname or "").casefold()
     if not (host == "bgaming-network.com" or host.endswith(".bgaming-network.com")):
         return False
+
     parts = [part for part in parsed.path.split("/") if part]
+    if len(parts) == 1 and parts[0].casefold() == "hyperhive":
+        query = parse_qs(parsed.query, keep_blank_values=False)
+        return bool(query.get("launch_token") or query.get("play_token"))
+
     if len(parts) < 3:
         return False
     return parts[0].casefold() in {"play", "games"}
@@ -1544,4 +1556,3 @@ def validate_spin(
                 )
 
     return warnings
-
