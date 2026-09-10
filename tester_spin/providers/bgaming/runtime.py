@@ -698,7 +698,6 @@ def validate_spin(
     command: str = "spin",
     expected_debit: int | float | None = None,
     variable_layout: bool = False,
-    trust_returned_bet: bool = False,
 ) -> list[str]:
     warnings: list[str] = []
 
@@ -714,11 +713,7 @@ def validate_spin(
     win = outcome.get("win")
     # BGaming is not consistent about outcome.bet inside zero-debit continuations.
     # For freespins/preselection, the balance delta is authoritative.
-    if (
-        command == "spin"
-        and not trust_returned_bet
-        and actual_bet != requested_bet
-    ):
+    if command == "spin" and actual_bet != requested_bet:
         warnings.append(f"bet devuelta={actual_bet!r}, solicitada={requested_bet!r}")
     if not isinstance(win, (int, float)):
         warnings.append(f"{command} sin win numérico")
@@ -787,18 +782,11 @@ def validate_spin(
             warnings.append(f"flow.state no terminal/no observado: {state!r}")
 
     current_total = balance_total(data)
-    if (
-        command == "spin"
-        and trust_returned_bet
-        and isinstance(actual_bet, (int, float))
-    ):
-        debit = float(actual_bet)
-    else:
-        debit = (
-            float(expected_debit)
-            if isinstance(expected_debit, (int, float))
-            else (0.0 if command == "freespin" else float(actual_bet or 0))
-        )
+    debit = (
+        float(expected_debit)
+        if isinstance(expected_debit, (int, float))
+        else (0.0 if command == "freespin" else float(actual_bet or 0))
+    )
     if (
         previous_balance_total is not None
         and current_total is not None
