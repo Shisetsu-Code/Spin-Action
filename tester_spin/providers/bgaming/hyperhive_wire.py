@@ -277,7 +277,15 @@ def apply_observed_play_wire(
     existing_custom = req.get("custom_req")
     if profile.custom_req and not isinstance(existing_custom, dict):
         action = str(req.pop("action", "") or "spin")
-        custom: dict[str, Any] = dict(profile.custom_literals)
+        # HAR/live-client evidence shows that request-map selector defaults such
+        # as isNormalBuy/isSuperBuy belong to the initial spin only. Continuation
+        # actions serialize just their action/exponent unless their own template
+        # explicitly supplied additional fields.
+        custom: dict[str, Any] = (
+            dict(profile.custom_literals)
+            if action.casefold() == "spin"
+            else {}
+        )
         if profile.custom_action:
             custom["action"] = action
         if profile.custom_exponent:
