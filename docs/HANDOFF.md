@@ -803,6 +803,7 @@ confidence
 evidence
 spin_options
 command_options
+request_extra_data
 purchase_features
 rows_required
 line_count
@@ -835,6 +836,12 @@ bootstrap
 ```
 
 No se usa el 422 como flujo normal de aprendizaje. El 422 es únicamente recovery para cambios de contrato.
+
+Antes del primer `init`, API-v2 inspecciona los scripts BGaming y puede descubrir
+defaults globales bajo `extraDataOptions.extra_data`. Esos valores se guardan
+en `request_extra_data` y `post_command` los fusiona con `round_series_id`
+en init/spin/continuaciones. Esto cubre runtimes que negocian, por ejemplo,
+`api_version=2` desde el cliente sin hardcode por juego.
 
 Los scripts de terceros presentes en el launch (por ejemplo analytics/tag managers) no pueden convertirse en fuente de protocolo. Sólo se inspeccionan orígenes declarados por el runtime o controlados por BGaming, y los scripts se priorizan por firmas de contrato (`additionalSpinOptions`, `purchased_feature`, `round_series_id`, `flow`, etc.).
 
