@@ -217,10 +217,22 @@ def discover_modes_from_bundle(
     runtime: BGamingRuntime,
     *,
     timeout_s: float,
+    bundle_text: str | None = None,
+    engine_contract: str = "",
 ) -> list[dict[str, Any]]:
-    """Discover the exact HyperHive request vocabulary from the loaded bundle."""
-    bundle = _download_bundle(runtime, timeout_s)
-    bet_type = "betting" if 'bet_type:"betting"' in bundle else ""
+    """Discover the exact HyperHive request vocabulary from loaded JS."""
+    bundle = (
+        _download_bundle(runtime, timeout_s)
+        if bundle_text is None
+        else bundle_text
+    )
+    combined = bundle + "\n" + engine_contract
+    if 'bet_type:"betting"' in combined:
+        bet_type = "betting"
+    elif 'bet_type:"bet"' in combined:
+        bet_type = "bet"
+    else:
+        bet_type = ""
 
     spin_request: dict[str, Any] = {}
     if bet_type:
@@ -228,13 +240,28 @@ def discover_modes_from_bundle(
     if 'action:"spin"' in bundle:
         spin_request["action"] = "spin"
 
+    custom_req_profile = (
+        "pz-per-line"
+        if (
+            "custom_req" in engine_contract
+            and "selectedWinLines:[0]" in engine_contract
+            and "perLine:!0" in engine_contract
+        )
+        else ""
+    )
+
     modes: list[dict[str, Any]] = [
         {
             "id": "SPIN",
             "kind": "SPIN",
             "request": spin_request,
             "expected_multiplier": 1.0,
-            "source": "game_bundle_source" if bundle else "hyperhive-base",
+            "custom_req_profile": custom_req_profile,
+            "source": (
+                "game_bundle_source+engine_contract"
+                if custom_req_profile
+                else ("game_bundle_source" if bundle else "hyperhive-base")
+            ),
         }
     ]
     if not bundle:
