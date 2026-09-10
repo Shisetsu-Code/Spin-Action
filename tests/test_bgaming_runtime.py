@@ -14,6 +14,7 @@ from tester_spin.providers.bgaming.runtime import (
     extract_options,
     extract_script_urls,
     flow_continuation_command,
+    infer_missing_wire_options,
     infer_observed_debit,
     is_line_bet_init,
     legacy_safe_terminal_command,
@@ -751,6 +752,27 @@ class BGamingRuntimeTests(unittest.TestCase):
 
         self.assertEqual(profile["spin_options"], {"mode": "60"})
         self.assertEqual(profile["kind"], "selectable-lines-mode")
+
+    def test_422_infers_only_fields_named_by_server_validation(self) -> None:
+        class Response:
+            text = '{"error":{"rows":["is required"]}}'
+            def json(self):
+                return {"error": {"rows": ["is required"]}}
+
+        inferred, evidence = infer_missing_wire_options(
+            Response(),
+            {
+                "options": {
+                    "default_bet": 100,
+                    "layout": {"reels": 5, "rows": 3},
+                    "currency": "FUN",
+                }
+            },
+        )
+        self.assertEqual(inferred, {"rows": 3})
+        self.assertIn("rows", evidence)
+        self.assertNotIn("reels", inferred)
+        self.assertNotIn("currency", inferred)
 
     def test_resolves_ephemeral_demo_from_public_page_without_persisting_it(self) -> None:
         class Response:
