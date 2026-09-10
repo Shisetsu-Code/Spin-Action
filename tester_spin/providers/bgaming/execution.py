@@ -96,6 +96,7 @@ class BGamingExecutionMixin:
         discovered_modes: list[dict[str, Any]] = []
         discovered_mode_ids: set[str] = set()
         pending_actions: set[str] = set()
+        coverage_gaps: set[str] = set()
         unresolved_continuations: set[str] = set()
         previous_remote_identity: tuple[Any, Any, str] | None = None
 
@@ -497,6 +498,7 @@ class BGamingExecutionMixin:
                     )
                 else:
                     pending_actions.add(mode_id)
+                    coverage_gaps.add(mode_id)
 
                 register_mode(
                     {
@@ -1181,9 +1183,11 @@ class BGamingExecutionMixin:
                                     "continuación con wire-shape pendiente de resolver: "
                                     f"{continuation_command}"
                                 )
-                                pending_actions.add(
+                                gap_id = (
                                     f"CONTINUATION_{continuation_command.upper()}"
                                 )
+                                pending_actions.add(gap_id)
+                                coverage_gaps.add(gap_id)
                                 runtime_needs_refresh = True
                                 break
 
@@ -1201,9 +1205,11 @@ class BGamingExecutionMixin:
                                 if continuation_status != 422:
                                     raise
                                 unresolved_continuations.add(continuation_command)
-                                pending_actions.add(
+                                gap_id = (
                                     f"CONTINUATION_{continuation_command.upper()}"
                                 )
+                                pending_actions.add(gap_id)
+                                coverage_gaps.add(gap_id)
                                 warnings.append(
                                     "continuación BGaming respondió HTTP 422; "
                                     f"wire-shape no resuelto para {continuation_command}"
@@ -1464,6 +1470,7 @@ class BGamingExecutionMixin:
             attempted
             and successes == requested_total
             and not errors
+            and not coverage_gaps
         ):
             # Attempt validation already incorporates fatal protocol warnings.
             # Optional/unclassified actions are coverage metadata, not failures
@@ -1485,10 +1492,17 @@ class BGamingExecutionMixin:
                     )
                     + "."
                 )
-            if pending_actions:
+            if coverage_gaps:
                 detail.append(
-                    "Acciones aún no clasificadas: "
-                    + ", ".join(sorted(pending_actions))
+                    "Cobertura requerida pendiente: "
+                    + ", ".join(sorted(coverage_gaps))
+                    + "."
+                )
+            optional_pending = pending_actions - coverage_gaps
+            if optional_pending:
+                detail.append(
+                    "Acciones opcionales/no clasificadas: "
+                    + ", ".join(sorted(optional_pending))
                     + "."
                 )
             if global_warnings:
