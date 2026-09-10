@@ -31,6 +31,7 @@ from tester_spin.providers.bgaming.runtime import (
     build_line_bets,
     discover_api_v2_wire_profile,
     discover_purchase_modes,
+    effective_bet_for_options,
     flow_continuation_command,
     http_error_evidence,
     is_line_bet_init,
@@ -71,6 +72,14 @@ def _write_json(path: Path, payload: Any) -> None:
 
 def _fmt_number(value: Any) -> str:
     return f"{float(value):g}" if isinstance(value, (int, float)) else "unknown"
+
+
+def _purchase_mode_id(purchase: dict[str, Any]) -> str:
+    name = str(purchase.get("name") or "").upper()
+    level = purchase.get("level")
+    if level is None:
+        return f"PURCHASE_{name}"
+    return f"PURCHASE_{name}_LEVEL_{str(level).upper()}"
 
 
 class BGamingExecutionMixin:
@@ -506,13 +515,21 @@ class BGamingExecutionMixin:
 
             for purchase in purchase_modes:
                 name = str(purchase["name"])
-                mode_id = f"PURCHASE_{name.upper()}"
+                level = purchase.get("level")
+                mode_id = _purchase_mode_id(purchase)
                 client_observed = any(
                     purchase_names_equivalent(name, observed)
                     or purchase_names_equivalent(observed, name)
                     for observed in client_purchase_features
                 )
-                executable = client_observed
+                level_supported = (
+                    level is None
+                    or (
+                        active_profile is not None
+                        and active_profile.purchase_feature_level_supported
+                    )
+                )
+                executable = client_observed and level_supported
                 if executable:
                     mode_specs.append(
                         {
@@ -539,6 +556,7 @@ class BGamingExecutionMixin:
                         ),
                         "wire_command": "spin",
                         "purchased_feature": name,
+                        "purchased_feature_level": level,
                         "feature_multiplier": purchase["feature_multiplier"],
                         "base_multiplier": purchase["base_multiplier"],
                         "cost_multiplier": purchase["cost_multiplier"],
@@ -566,11 +584,17 @@ class BGamingExecutionMixin:
             )
             for purchase in purchase_modes:
                 purchase_name = str(purchase["name"])
-                mode_id = f"PURCHASE_{purchase_name.upper()}"
+                purchase_level = purchase.get("level")
+                mode_id = _purchase_mode_id(purchase)
                 executable = mode_id not in pending_actions
+                level_text = (
+                    f", nivel={purchase_level}"
+                    if purchase_level is not None
+                    else ""
+                )
                 progress(
-                    f"[{game.name}] COMPRA detectada: {purchase_name} "
-                    f"x{_fmt_number(purchase.get('cost_multiplier'))} de la apuesta base "
+                    f"[{game.name}] COMPRA detectada: {purchase_name}{level_text} "
+                    f"x{_fmt_number(purchase.get('cost_multiplier'))} de la apuesta efectiva "
                     f"(source={purchase.get('base_source') or 'unknown'}, "
                     f"wire={'ejecutable' if executable else 'sin contrato cliente'})."
                 )
@@ -855,6 +879,11 @@ class BGamingExecutionMixin:
                     if isinstance(purchase, dict)
                     else ""
                 )
+                purchase_level = (
+                    purchase.get("level")
+                    if isinstance(purchase, dict)
+                    else None
+                )
 
                 for repetition in range(1, repetitions + 1):
                     if stop_event.is_set():
@@ -892,11 +921,44 @@ class BGamingExecutionMixin:
                             )
                         else:
                             spin_options = {"bet": default_bet}
+                            if active_profile is not None:
+                                for key, value in active_profile.spin_options.items():
+                                    spin_options.setdefault(key, value)
                             if purchase_name:
                                 spin_options["purchased_feature"] = purchase_name
+                            if purchase_level is not None:
+                                spin_options["purchased_feature_level"] = str(
+                                    purchase_level
+                                )
+
+                            if (
+                                active_profile is not None
+                                and purchase_level is not None
+                                and active_profile.effective_bet_selector
+                                and str(purchase_level)
+                                in active_profile.effective_bet_multipliers
+                            ):
+                                spin_options[
+                                    active_profile.effective_bet_selector
+                                ] = str(purchase_level)
+
                             request_extra_data = None
-                            expected_debit = purchase_expected_debit(
+                            expected_outcome_bet = effective_bet_for_options(
                                 default_bet,
+                                selector_field=(
+                                    active_profile.effective_bet_selector
+                                    if active_profile is not None
+                                    else ""
+                                ),
+                                multipliers=(
+                                    active_profile.effective_bet_multipliers
+                                    if active_profile is not None
+                                    else {}
+                                ),
+                                options=spin_options,
+                            )
+                            expected_debit = purchase_expected_debit(
+                                expected_outcome_bet,
                                 purchase if isinstance(purchase, dict) else None,
                             )
 
@@ -1078,6 +1140,11 @@ class BGamingExecutionMixin:
                                 expected_rows=expected_rows,
                                 command="spin",
                                 expected_debit=expected_debit,
+                                expected_outcome_bet=(
+                                    expected_outcome_bet
+                                    if not legacy_line_bets
+                                    else None
+                                ),
                                 variable_layout=variable_layout,
                                 allow_observed_debit=learn_purchase_debit,
                             )
@@ -1087,10 +1154,11 @@ class BGamingExecutionMixin:
                             learn_purchase_debit
                             and isinstance(observed_purchase_debit, (int, float))
                             and observed_purchase_debit > 0
-                            and float(default_bet) > 0
+                            and float(expected_outcome_bet) > 0
                         ):
                             learned_multiplier = (
-                                float(observed_purchase_debit) / float(default_bet)
+                                float(observed_purchase_debit)
+                                / float(expected_outcome_bet)
                             )
                             purchase["cost_multiplier"] = learned_multiplier
                             purchase["base_source"] = "observed_balance_delta"
@@ -1146,6 +1214,11 @@ class BGamingExecutionMixin:
                         proof["mode_id"] = mode_id
                         proof["step"] = wire_steps
                         proof["expected_debit"] = expected_debit
+                        proof["expected_outcome_bet"] = (
+                            expected_outcome_bet
+                            if not legacy_line_bets
+                            else None
+                        )
                         _write_json(
                             attempt_dir / f"step-{wire_steps:03d}-proof.json",
                             proof,
