@@ -1690,10 +1690,21 @@ Durante la feature:
 ```
 
 Tester-Spin no aplica `rows` indiscriminadamente a todos los juegos.
-Si un comando API v2 falla con HTTP 422, existe `layout.rows` y el request
-todavía no contiene `rows`, se reintenta una vez usando ese valor. Si el
-retry funciona, el perfil `rows-required` queda aprendido para el resto de
-la sesión y se aplica a spins, compras y continuaciones.
+El recovery actual tampoco infiere `rows` sólo porque exista `layout.rows`.
+Si un comando API v2 devuelve HTTP 422, primero se inspecciona la validación
+devuelta por el servidor y el contrato del cliente cargado. Sólo un campo
+nombrado explícitamente por esa evidencia puede añadirse al retry.
+
+Los campos aprendidos por validación HTTP se persisten por comando, por ejemplo:
+
+```text
+command_options.spin.rows = 5
+command_options.freespin.rows = 5
+```
+
+De este modo un requisito observado para `spin` no contamina automáticamente
+`respin`, `play_bonus` u otra continuación. Si el 422 no identifica ninguna
+opción faltante utilizable, no se reintenta adivinando desde el layout.
 
 Este HAR mostró débitos equivalentes a x80 y x2, pero Tester-Spin ya no codifica una base porcentual implícita. Cuando `feature_multipliers` no publica un `base_bet`/denominador, el `cost_multiplier` queda inicialmente desconocido.
 
