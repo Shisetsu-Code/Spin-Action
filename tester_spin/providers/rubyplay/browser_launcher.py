@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 import time
-from urllib.parse import parse_qs, urljoin, urlparse
+from urllib.parse import parse_qs, parse_qsl, urlencode, urljoin, urlparse, urlunparse
 
 
 def _is_launcher_url(value: str) -> bool:
@@ -13,20 +13,35 @@ def _is_launcher_url(value: str) -> bool:
     return parsed.path.rstrip("/").endswith("/launcher")
 
 
-def _is_doubled_rubyplay_gamename(value: str) -> bool:
-    """Reject exact accidental concatenation such as rp_160rp_160.
-
-    This is a provider-family integrity check, not a per-game map. We only flag
-    the value when it is exactly two identical ``rp_*`` identifiers joined
-    together; merely sharing a prefix is not enough.
-    """
+def _collapse_exact_doubled_gamename(value: str) -> str:
     text = str(value or "").strip()
     match = re.fullmatch(r"(rp_[A-Za-z0-9_-]+)\1", text, re.I)
-    return bool(match)
+    return match.group(1) if match else text
+
+
+def _canonicalize_launcher_url(value: str) -> str:
+    """Repair only exact duplicated RubyPlay IDs such as rp_160rp_160."""
+    if not _is_launcher_url(value):
+        return str(value or "")
+    parsed = urlparse(value)
+    items = parse_qsl(parsed.query, keep_blank_values=True)
+    changed = False
+    out: list[tuple[str, str]] = []
+    for key, current in items:
+        if key == "gamename":
+            normalized = _collapse_exact_doubled_gamename(current)
+            changed = changed or normalized != current
+            out.append((key, normalized))
+        else:
+            out.append((key, current))
+    if not changed:
+        return value
+    return urlunparse(parsed._replace(query=urlencode(out, doseq=True)))
 
 
 def _semantic_launcher_key(value: str) -> tuple[str, ...] | None:
-    """Return the complete demo-launch tuple or None for placeholders/malformed URLs."""
+    """Return the complete demo-launch tuple or None for placeholders."""
+    value = _canonicalize_launcher_url(str(value or "").strip())
     if not _is_launcher_url(value):
         return None
     parsed = urlparse(value)
@@ -39,8 +54,6 @@ def _semantic_launcher_key(value: str) -> tuple[str, ...] | None:
         if len(unique) != 1:
             return None
         resolved.append(unique[0])
-    if _is_doubled_rubyplay_gamename(resolved[0]):
-        return None
     lang_values = [str(item) for item in params.get("lang", []) if str(item)]
     lang_unique = list(dict.fromkeys(lang_values))
     if len(lang_unique) > 1:
@@ -52,7 +65,7 @@ def _semantic_launcher_key(value: str) -> tuple[str, ...] | None:
 def _pick_complete_launcher(candidates: list[str]) -> str | None:
     by_key: dict[tuple[str, ...], str] = {}
     for raw in candidates:
-        value = str(raw or "").strip()
+        value = _canonicalize_launcher_url(str(raw or "").strip())
         key = _semantic_launcher_key(value)
         if key is None:
             continue
@@ -84,13 +97,7 @@ def _launch_browser(*, headless: bool = True):
 
 
 def resolve_demo_launcher_browser(public_url: str, *, timeout_s: float = 30.0) -> str:
-    """Resolve the executable RubyPlay demo launcher through the official UI.
-
-    The public game page is only discovery/bootstrap UI. When its static HTML
-    exposes an incomplete launcher, Chromium follows the site's own Play Demo
-    flow and we capture the resulting complete /launcher URL. Gameplay remains
-    endpoint-first after this one discovery step.
-    """
+    """Resolve the executable RubyPlay demo launcher through the official UI."""
     timeout_ms = max(5_000, int(float(timeout_s) * 1000))
     observed: list[str] = []
 
@@ -137,7 +144,6 @@ def resolve_demo_launcher_browser(public_url: str, *, timeout_s: float = 30.0) -
             re.compile(r"^\s*play\s+for\s+free\s*$", re.I),
             re.compile(r"\bdemo\b", re.I),
         ]
-        # First use semantic roles where the site exposes them.
         for pattern in patterns:
             for role in ("link", "button"):
                 try:
@@ -160,10 +166,6 @@ def resolve_demo_launcher_browser(public_url: str, *, timeout_s: float = 30.0) -
             if clicked:
                 break
 
-        # Bricks/WordPress builds sometimes bind the click to a generic wrapper
-        # (div/span) instead of an accessible button. Click the exact visible text
-        # itself, then its nearest clickable ancestor. No generated element IDs are
-        # used and no game names are hardcoded.
         if not clicked:
             for pattern in patterns[:2]:
                 try:
@@ -200,7 +202,6 @@ def resolve_demo_launcher_browser(public_url: str, *, timeout_s: float = 30.0) -
                 if clicked:
                     break
 
-        # Final generic clickable-text fallback.
         if not clicked:
             try:
                 locator = page.locator(
@@ -251,13 +252,8 @@ def capture_init_contract_browser(
     *,
     timeout_s: float = 30.0,
 ) -> dict[str, object]:
-    """Capture the official client's first gameserver ``action=init`` envelope.
-
-    This is a bootstrap fallback for bundles whose static/minified math wiring is
-    ambiguous or has changed. Only protocol-envelope fields are returned; session
-    keys and funModeData stay inside the browser and are never reused. Endpoint
-    execution continues with a fresh tester-owned session afterwards.
-    """
+    """Capture the official client's first gameserver ``action=init`` envelope."""
+    launcher_url = _canonicalize_launcher_url(launcher_url)
     timeout_ms = max(5_000, int(float(timeout_s) * 1000))
     captured: dict[str, object] = {}
 
