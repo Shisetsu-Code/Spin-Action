@@ -7,10 +7,12 @@ from typing import Any
 from tester_spin.providers.rubyplay import runtime as _runtime
 
 
-# Wire shapes demonstrated by captured RubyPlay gameserver traffic. These are
-# provider-family actions, not game-name routes. A purchased feature remains one
-# logical test iteration while these manual continuation clicks are replayed.
-PURCHASE_CONTINUATIONS = frozenset({"respin", "freespin"})
+# Provider-family wire shapes demonstrated by captured RubyPlay gameserver traffic
+# plus the generated client action builders. These are not routed by game name.
+# A purchased/natural feature remains one logical test iteration while these
+# manual continuation clicks are replayed until response.data.next_action=spin.
+STATE_CONTINUATIONS = frozenset({"respin", "freespin", "minispin", "select", "pick"})
+INDEX_CONTINUATIONS = frozenset({"select", "pick"})
 
 _JS_NUMBER = r"(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?"
 _JS_IDENT = r"[A-Za-z_$][A-Za-z0-9_$]*"
@@ -46,17 +48,16 @@ def _unique_integral_js_number(values: list[str]) -> int | None:
     return parsed[0] if len(parsed) == 1 else None
 
 
-def _active_slot_engine_alias(bundle: str) -> tuple[str, str] | None:
-    """Return (engine_class, constants_alias) for the wired SlotEngine.
+def _active_slot_engine_alias(bundle: str) -> tuple[str, str, int] | None:
+    """Return (engine_class, constants_alias, class_offset) for the wired engine.
 
-    Some RubyPlay bundles contain more than one math table/version. Global value
-    uniqueness is therefore not a valid way to choose v_math or WAGER. The live
-    engine is structurally wired by a generated class whose constructor calls
-    ``super(ALIAS.MATH_VERSION)`` and whose ``getMaxWager`` returns the same
-    ``ALIAS.WAGER``. We accept the relationship only when exactly one such class
-    is actually instantiated by the generated client/binary factory.
+    Generated RubyPlay bundles can retain multiple/old math engines. The live
+    engine is structurally wired by a class instantiated by the binary/client
+    factory. Its constructor references either ``ALIAS.MATH_VERSION`` or the
+    generated lazy getter ``ALIAS.MATH_VERSION_$LI$()`` and getMaxWager returns
+    ``ALIAS.WAGER``.
     """
-    candidates: list[tuple[str, str]] = []
+    candidates: list[tuple[str, str, int]] = []
     class_re = re.compile(
         rf"var\s+({_JS_IDENT})=class\s+extends\s+{_JS_IDENT}\{{(.*?)\}};\1\.__class=",
         re.S,
@@ -65,7 +66,7 @@ def _active_slot_engine_alias(bundle: str) -> tuple[str, str] | None:
         engine_class = match.group(1)
         body = match.group(2)
         math_ref = re.search(
-            rf"super\(({_JS_IDENT})\.MATH_VERSION\)",
+            rf"super\(\s*({_JS_IDENT})\.MATH_VERSION(?:_\$LI\$\(\))?\s*\)",
             body,
         )
         if not math_ref:
@@ -90,24 +91,42 @@ def _active_slot_engine_alias(bundle: str) -> tuple[str, str] | None:
         )
         if not instantiated:
             continue
-        pair = (engine_class, alias)
-        if pair not in candidates:
-            candidates.append(pair)
+        candidate = (engine_class, alias, match.start())
+        if candidate not in candidates:
+            candidates.append(candidate)
 
     return candidates[0] if len(candidates) == 1 else None
 
 
-def _alias_math_version(bundle: str, alias: str, rtp: float | None) -> int | None:
-    escaped = re.escape(alias)
-    direct = re.findall(
-        rf"\b{escaped}\.MATH_VERSION\s*=\s*({_JS_NUMBER})(?![A-Za-z0-9_$\.])",
-        bundle,
-        re.I,
-    )
-    direct_value = _unique_integral_js_number(direct)
-    if direct_value is not None:
-        return direct_value
+def _nearest_alias_source(bundle: str, alias: str, before: int) -> str:
+    """Resolve generated aliases such as ``I=f`` nearest the live engine.
 
+    Minified identifiers are reused across unrelated modules, so a global alias
+    map is unsafe. Only the nearest identifier assignment before the structurally
+    selected engine is considered.
+    """
+    assignments = list(
+        re.finditer(
+            rf"\b{re.escape(alias)}\s*=\s*({_JS_IDENT})\b",
+            (bundle or "")[: max(0, int(before))],
+        )
+    )
+    if not assignments:
+        return ""
+    source = assignments[-1].group(1)
+    if source in {"void", "null", "true", "false", "undefined"}:
+        return ""
+    return source
+
+
+def _math_version_for_alias(
+    bundle: str,
+    alias: str,
+    rtp: float | None,
+) -> int | None:
+    escaped = re.escape(alias)
+    # Prefer base+RTP before a direct numeric assignment because generated lazy
+    # getters contain both ``MATH_VERSION=BASE+RTP`` and the numeric BASE prefix.
     bases = re.findall(
         rf"\b{escaped}\.MATH_VERSION\s*=\s*({_JS_NUMBER})\s*\+\s*"
         rf"{escaped}\.RTP",
@@ -122,6 +141,31 @@ def _alias_math_version(bundle: str, alias: str, rtp: float | None) -> int | Non
         and float(rtp).is_integer()
     ):
         return base + int(rtp)
+
+    direct = re.findall(
+        rf"\b{escaped}\.MATH_VERSION\s*=\s*({_JS_NUMBER})(?![A-Za-z0-9_$\.])",
+        bundle,
+        re.I,
+    )
+    return _unique_integral_js_number(direct)
+
+
+def _alias_math_version(
+    bundle: str,
+    alias: str,
+    rtp: float | None,
+    *,
+    engine_offset: int,
+) -> int | None:
+    value = _math_version_for_alias(bundle, alias, rtp)
+    if value is not None:
+        return value
+
+    # Generated client modules often export the constants class through an alias:
+    # ``var f=class{MATH_VERSION_$LI$...}; ... I=f; ... new Engine(I...)``.
+    source = _nearest_alias_source(bundle, alias, engine_offset)
+    if source and source != alias:
+        return _math_version_for_alias(bundle, source, rtp)
     return None
 
 
@@ -142,14 +186,7 @@ def _alias_wager(bundle: str, alias: str) -> float | None:
 def discover_client_profile(
     scripts: list[tuple[str, str]],
 ) -> _runtime.RubyPlayClientProfile:
-    """Discover the client contract without global numeric-value guessing.
-
-    Besides JavaScript scientific notation, generated bundles may retain old or
-    alternate math engines. We first identify the SlotEngine that the generated
-    client actually instantiates and resolve MATH_VERSION/WAGER through that
-    engine's constants alias. Only when no unique active engine is demonstrable
-    do we fall back to globally unique values.
-    """
+    """Discover the client contract without global numeric-value guessing."""
     profile = _ORIGINAL_DISCOVER_CLIENT_PROFILE(scripts)
     contract_parts = [
         text
@@ -167,8 +204,13 @@ def discover_client_profile(
 
     active = _active_slot_engine_alias(bundle)
     if active is not None:
-        engine_class, alias = active
-        active_math = _alias_math_version(bundle, alias, profile.rtp)
+        engine_class, alias, engine_offset = active
+        active_math = _alias_math_version(
+            bundle,
+            alias,
+            profile.rtp,
+            engine_offset=engine_offset,
+        )
         active_wager = _alias_wager(bundle, alias)
         if active_math is not None:
             profile.math_version = active_math
@@ -218,13 +260,14 @@ def post_action(
     bet: int | float | None = None,
     buy_feature_type: str = "",
     buy_feature_price: int | float | None = None,
+    action_index: int | None = None,
 ):
     """Send one RubyPlay gameserver action using the observed family envelope.
 
-    Purchased freespin/respin rounds are manual UI clicks, but on the wire they
-    are continuation actions: no new bet/price is sent, while buy_feature_type is
-    carried forward. Mixed freespin/respin chains are followed strictly from the
-    server's ``next_action`` until it returns to normal ``spin``.
+    ``select`` and ``pick`` use the provider client's INDEX field. ``minispin``,
+    ``freespin`` and ``respin`` have no action-specific numeric argument. When a
+    purchased feature is in progress, its buy_feature_type is carried through the
+    continuation envelope; natural features omit it.
     """
     command = str(action or "").strip().lower()
     if not command or command == "init":
@@ -249,6 +292,11 @@ def post_action(
             raise ValueError(f"RubyPlay {command}: bet no anunciado por init: {bet!r}.")
         payload["bet"] = bet
 
+    if command in INDEX_CONTINUATIONS:
+        if not isinstance(action_index, int) or isinstance(action_index, bool) or action_index < 0:
+            raise ValueError(f"RubyPlay {command}: index entero >= 0 requerido.")
+        payload["index"] = action_index
+
     feature_type = str(buy_feature_type or runtime.active_feature_type or "").strip().lower()
     if command == "buy_feature":
         if not feature_type:
@@ -261,7 +309,7 @@ def post_action(
             raise ValueError("RubyPlay buy_feature: precio no descubierto.")
         payload["buy_feature_type"] = feature_type
         payload["buy_feature_price"] = buy_feature_price
-    elif command in PURCHASE_CONTINUATIONS and feature_type:
+    elif command in STATE_CONTINUATIONS and feature_type:
         payload["buy_feature_type"] = feature_type
 
     response = runtime.session.post(
@@ -302,10 +350,10 @@ def post_action(
 
 
 def install_runtime_contracts() -> None:
-    """Install HAR-proven RubyPlay runtime contracts after adapter import."""
+    """Install HAR/client-proven RubyPlay runtime contracts after adapter import."""
     from tester_spin.providers.rubyplay import execution as _execution
 
     _runtime.discover_client_profile = discover_client_profile
     _runtime.post_action = post_action
     _execution.post_action = post_action
-    _execution.SAFE_CONTINUATIONS.update(PURCHASE_CONTINUATIONS)
+    _execution.SAFE_CONTINUATIONS.update(STATE_CONTINUATIONS)
