@@ -11,7 +11,7 @@ from unittest.mock import patch
 import requests
 
 from tester_spin.models import Game, GameTestResult
-from tester_spin.providers.redtiger import adapter, bootstrap, catalog, execution, provider, result_tree, runtime
+from tester_spin.providers.redtiger import adapter, bootstrap, catalog, cms_auth, execution, provider, result_tree, runtime
 from tester_spin.providers.redtiger.adapter import RedTigerProvider as RedTigerAdapter
 from tester_spin.providers.redtiger.provider import RedTigerProvider
 from tester_spin.providers.redtiger.runtime import RedTigerRuntime
@@ -60,6 +60,59 @@ class RedTigerCatalogTests(unittest.TestCase):
             record.game.url,
             "https://redtiger.example/games/synthetic-public-slug",
         )
+
+    def test_cms_authorization_is_case_insensitive_and_observed_not_fixed(self) -> None:
+        self.assertEqual(
+            cms_auth.authorization_from_headers(
+                {"accept": "application/json", "authorization": "Bearer runtime-value"}
+            ),
+            "Bearer runtime-value",
+        )
+        self.assertEqual(
+            cms_auth.authorization_from_headers({"Authorization": "Bearer another-value"}),
+            "Bearer another-value",
+        )
+
+    def test_cms_403_bootstraps_frontend_authorization_and_retries(self) -> None:
+        class FakeResponse:
+            def __init__(self, status_code: int) -> None:
+                self.status_code = status_code
+
+            def raise_for_status(self) -> None:
+                if self.status_code >= 400:
+                    raise requests.HTTPError(f"HTTP {self.status_code}")
+
+        class FakeSession:
+            def __init__(self) -> None:
+                self.headers: dict[str, str] = {}
+                self.calls = 0
+
+            def get(self, *_args, **_kwargs):
+                self.calls += 1
+                return FakeResponse(403 if self.calls == 1 else 200)
+
+        with tempfile.TemporaryDirectory() as temp:
+            redtiger = RedTigerAdapter(Path(temp))
+            fake = FakeSession()
+            redtiger.http = fake  # type: ignore[assignment]
+            progress: list[str] = []
+            with patch.object(
+                adapter,
+                "discover_cms_authorization",
+                return_value="Bearer dynamically-observed",
+            ) as discover:
+                response = redtiger._cms_get(
+                    "games",
+                    params={"filters[studio][$eq]": 9137},
+                    timeout_s=5.0,
+                    progress=progress.append,
+                )
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(fake.calls, 2)
+            self.assertEqual(fake.headers.get("Authorization"), "Bearer dynamically-observed")
+            discover.assert_called_once()
+            self.assertTrue(any("autorización" in line.casefold() for line in progress))
 
 
 class RedTigerRuntimeTests(unittest.TestCase):
@@ -182,9 +235,10 @@ class RedTigerRuntimeTests(unittest.TestCase):
             self.assertEqual(game.symbol, "opaque-table-7xq")
 
     def test_production_module_has_no_title_specific_or_foreign_provider_contract(self) -> None:
-        modules = (adapter, bootstrap, catalog, execution, provider, result_tree, runtime)
+        modules = (adapter, bootstrap, catalog, cms_auth, execution, provider, result_tree, runtime)
         source = "\n".join(inspect.getsource(module) for module in modules)
         self.assertNotIn("Zillard", source)
+        self.assertNotIn("92cfd365", source)
         for foreign in (
             "providers.pragmatic",
             "providers.bgaming",
