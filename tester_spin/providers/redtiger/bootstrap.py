@@ -6,11 +6,11 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urlparse
 
 import requests
 
-from tester_spin.providers.redtiger.demo_auth import post_demo_token
+from tester_spin.providers.redtiger.demo_auth import demo_page_url
 from tester_spin.providers.redtiger.runtime import (
     RedTigerRuntime,
     feature_buys_from_settings,
@@ -26,6 +26,14 @@ DEFAULT_ENTRY_ORIGIN = "https://fansite.evo-games.com"
 
 @dataclass(frozen=True, slots=True)
 class BootstrapEndpoints:
+    """Compatibility/configuration boundary for the observed Red Tiger deployment.
+
+    The runtime bootstrap intentionally does not reproduce ``token/demo`` itself.
+    The official ``/demo/<tableId>`` frontend owns token issuance, redirects and
+    cookies inside one browser context. These fields remain available for tests and
+    future deployments without leaking provider-specific state into other modules.
+    """
+
     demo_token_url: str = DEFAULT_DEMO_TOKEN_URL
     entry_origin: str = DEFAULT_ENTRY_ORIGIN
 
@@ -99,6 +107,29 @@ def _runtime_session(
     return session
 
 
+def _is_settings_response(response: Any) -> bool:
+    try:
+        return (
+            response.request.method.upper() == "POST"
+            and urlparse(response.url).path.rstrip("/").endswith("/platform/game/settings")
+        )
+    except Exception:
+        return False
+
+
+def _trace_response(response: Any) -> dict[str, Any]:
+    try:
+        request = response.request
+        return {
+            "method": str(request.method or ""),
+            "status": int(response.status),
+            "url": str(response.url or ""),
+            "resource_type": str(getattr(request, "resource_type", "") or ""),
+        }
+    except Exception:
+        return {"url": str(getattr(response, "url", "") or "")}
+
+
 def bootstrap_game(
     public_url: str,
     table_id: str,
@@ -108,82 +139,108 @@ def bootstrap_game(
     endpoints: BootstrapEndpoints | None = None,
     progress: Callable[[str], None] | None = None,
 ) -> RedTigerRuntime:
-    """Create a fresh demo session through the official launcher, then switch to HTTP.
+    """Create one fresh official demo session, then switch to direct HTTP.
 
-    The browser is bootstrap-only. It solves provider-owned authentication and the
-    edge launcher flow, and we observe the official ``platform/game/settings``
-    request instead of guessing gameId, gserver hostname, session fields, cookies
-    or client versions. All game actions after bootstrap use the captured provider
-    contract directly over HTTP.
+    The browser owns the complete provider bootstrap chain:
+
+    ``/demo/<tableId> -> token/demo -> entry -> launcher -> platform/game/settings``.
+
+    We deliberately do not replay token issuance, x-api-key, entry URLs or session
+    cookies ourselves. Once the official client emits ``settings``, its observed
+    request, response, cookies and headers become the authority for direct spins.
     """
     table = str(table_id or "").strip()
     if not table:
         raise ValueError("Red Tiger bootstrap requiere tableId del catálogo.")
-    cfg = endpoints or BootstrapEndpoints()
-    timeout_ms = max(8_000, int(float(timeout_s) * 1000))
+
+    # Keep the configuration object as an explicit provider boundary even though
+    # the official browser route now owns token/entry resolution end-to-end.
+    _ = endpoints or BootstrapEndpoints()
+    timeout_ms = max(30_000, int(float(timeout_s) * 1000))
+    settings_timeout_ms = max(60_000, timeout_ms)
     artifact_dir.mkdir(parents=True, exist_ok=True)
 
-    public_parsed = urlparse(public_url)
-    public_origin = f"{public_parsed.scheme}://{public_parsed.netloc}"
-    token_session = requests.Session()
-    token_session.headers.update(
-        {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128 Safari/537.36"
-            ),
-            "Accept": "*/*",
-            "Content-Type": "application/json",
-            "Origin": public_origin,
-            "Referer": public_origin.rstrip("/") + "/",
-        }
-    )
-    token_request = {
-        "demo": {"language": "en-GB", "currency": "VC0"},
-        "game": {"tableId": table},
-    }
-    token_response = post_demo_token(
-        token_session,
-        cfg.demo_token_url,
-        public_url,
-        token_request,
-        timeout_s=timeout_s,
-        progress=progress,
-    )
-    token_data = _json_object(token_response.text, "demo token")
-    entry = str(token_data.get("entry") or "").strip()
-    if not entry:
-        raise ValueError("Red Tiger demo token no devolvió entry.")
-    entry_url = urljoin(cfg.entry_origin.rstrip("/") + "/", entry.lstrip("/"))
+    launch_url = demo_page_url(public_url, table)
+    if progress is not None:
+        progress(
+            "Red Tiger bootstrap: abriendo ruta demo oficial en una única sesión "
+            f"de navegador para tableId={table}."
+        )
 
-    _write_json(artifact_dir / "demo-token.request.json", token_request)
-    _write_json(
-        artifact_dir / "demo-token.response.json",
-        {
-            "entry_present": bool(token_data.get("entry")),
-            "entry_embedded_present": bool(token_data.get("entryEmbedded")),
-        },
-    )
-
+    from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
     from playwright.sync_api import sync_playwright
 
     playwright = sync_playwright().start()
     browser = None
     context = None
+    response_trace: list[dict[str, Any]] = []
+    console_trace: list[dict[str, str]] = []
+    page_errors: list[str] = []
+    page = None
     try:
         browser = playwright.chromium.launch(headless=True)
         context = browser.new_context(locale="en-GB")
         page = context.new_page()
-        with page.expect_response(
-            lambda response: (
-                response.request.method.upper() == "POST"
-                and urlparse(response.url).path.rstrip("/").endswith("/platform/game/settings")
-            ),
-            timeout=timeout_ms,
-        ) as pending_settings:
-            page.goto(entry_url, wait_until="domcontentloaded", timeout=timeout_ms)
 
-        settings_response = pending_settings.value
+        def on_response(response: Any) -> None:
+            if len(response_trace) >= 300:
+                return
+            response_trace.append(_trace_response(response))
+
+        def on_console(message: Any) -> None:
+            if len(console_trace) >= 100:
+                return
+            try:
+                console_trace.append({"type": str(message.type), "text": str(message.text)})
+            except Exception:
+                pass
+
+        def on_page_error(error: Any) -> None:
+            if len(page_errors) < 50:
+                page_errors.append(str(error))
+
+        page.on("response", on_response)
+        page.on("console", on_console)
+        page.on("pageerror", on_page_error)
+
+        try:
+            with page.expect_response(_is_settings_response, timeout=settings_timeout_ms) as pending_settings:
+                page.goto(launch_url, wait_until="domcontentloaded", timeout=timeout_ms)
+            settings_response = pending_settings.value
+        except PlaywrightTimeoutError as exc:
+            diagnostic = {
+                "table_id": table,
+                "launch_url": launch_url,
+                "final_url": str(page.url or "") if page is not None else "",
+                "responses": response_trace,
+                "console": console_trace,
+                "page_errors": page_errors,
+            }
+            _write_json(artifact_dir / "bootstrap-trace.json", diagnostic)
+            recent = response_trace[-8:]
+            recent_text = "; ".join(
+                f"{item.get('status', '?')} {item.get('method', '')} {item.get('url', '')}"
+                for item in recent
+            )
+            raise RuntimeError(
+                "Red Tiger: la ruta demo oficial no emitió platform/game/settings "
+                f"en {settings_timeout_ms / 1000:.0f}s. final_url={diagnostic['final_url']!r}; "
+                f"últimas respuestas={recent_text or 'ninguna'}. "
+                f"Diagnóstico: {artifact_dir / 'bootstrap-trace.json'}"
+            ) from exc
+
+        _write_json(
+            artifact_dir / "bootstrap-trace.json",
+            {
+                "table_id": table,
+                "launch_url": launch_url,
+                "final_url": str(page.url or ""),
+                "responses": response_trace,
+                "console": console_trace,
+                "page_errors": page_errors,
+            },
+        )
+
         settings_request = settings_response.request
         request_payload = _json_object(settings_request.post_data or "{}", "settings request")
         response_payload = _json_object(settings_response.text(), "settings response")
@@ -244,14 +301,8 @@ def bootstrap_game(
             feature_buys=feature_buys,
         )
 
-        _write_json(
-            artifact_dir / "settings.request.json",
-            sanitize_payload(request_payload),
-        )
-        _write_json(
-            artifact_dir / "settings.response.json",
-            sanitize_payload(response_payload),
-        )
+        _write_json(artifact_dir / "settings.request.json", sanitize_payload(request_payload))
+        _write_json(artifact_dir / "settings.response.json", sanitize_payload(response_payload))
         _write_json(
             artifact_dir / "runtime-profile.json",
             {
@@ -285,6 +336,11 @@ def bootstrap_game(
                 },
             },
         )
+        if progress is not None:
+            progress(
+                "Red Tiger bootstrap: settings observado en la misma sesión oficial; "
+                "continuando por HTTP directo."
+            )
         return runtime
     finally:
         if context is not None:
