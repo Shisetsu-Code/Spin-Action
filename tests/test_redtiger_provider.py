@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 import inspect
+import tempfile
+import threading
 import unittest
 from decimal import Decimal
+from pathlib import Path
+from unittest.mock import patch
 
 import requests
 
-from tester_spin.providers.redtiger import adapter, bootstrap, catalog, execution, result_tree, runtime
+from tester_spin.models import Game, GameTestResult
+from tester_spin.providers.redtiger import adapter, bootstrap, catalog, execution, provider, result_tree, runtime
+from tester_spin.providers.redtiger.adapter import RedTigerProvider as RedTigerAdapter
+from tester_spin.providers.redtiger.provider import RedTigerProvider
 from tester_spin.providers.redtiger.runtime import RedTigerRuntime
 
 
@@ -141,8 +148,41 @@ class RedTigerRuntimeTests(unittest.TestCase):
         nodes = result_tree.result_nodes(game)
         self.assertTrue(any("anotherUnknownLayer" in node.path for node in nodes))
 
-    def test_production_module_has_no_title_specific_contract(self) -> None:
-        modules = (adapter, bootstrap, catalog, execution, result_tree, runtime)
+    def test_public_provider_preserves_table_id_not_runtime_game_id_in_storage_symbol(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            redtiger = RedTigerProvider(Path(temp))
+            game = Game(
+                provider="redtiger",
+                slug="synthetic-public-slug",
+                name="Synthetic Game",
+                url="https://redtiger.example/games/synthetic-public-slug",
+                symbol="opaque-table-7xq",
+            )
+            inner = GameTestResult(
+                provider="redtiger",
+                slug=game.slug,
+                game_name=game.name,
+                game_url=game.url,
+                requested_spins=1,
+                successful_spins=1,
+                failed_spins=0,
+                status="OK",
+                symbol="OpaqueRuntimeGame",
+            )
+            with patch.object(RedTigerAdapter, "test_game", return_value=inner):
+                result = redtiger.test_game(
+                    game,
+                    spins=1,
+                    timeout_s=5.0,
+                    stop_event=threading.Event(),
+                    progress=lambda _message: None,
+                )
+
+            self.assertEqual(result.symbol, "opaque-table-7xq")
+            self.assertEqual(game.symbol, "opaque-table-7xq")
+
+    def test_production_module_has_no_title_specific_or_foreign_provider_contract(self) -> None:
+        modules = (adapter, bootstrap, catalog, execution, provider, result_tree, runtime)
         source = "\n".join(inspect.getsource(module) for module in modules)
         self.assertNotIn("Zillard", source)
         for foreign in (
