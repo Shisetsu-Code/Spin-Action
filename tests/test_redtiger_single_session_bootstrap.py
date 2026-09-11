@@ -13,25 +13,26 @@ class RedTigerSingleSessionBootstrapTests(unittest.TestCase):
             "tester_spin.providers.redtiger.bootstrap_browser",
         )
 
-    def test_trace_url_drops_query_and_redacts_jsessionid(self) -> None:
+    def test_trace_url_redacts_query_values_and_jsessionid(self) -> None:
         sanitized = _safe_trace_url(
             "https://fansite.example/entry;JSESSIONID=secret-value/path?token=secret&x=1"
         )
         self.assertEqual(
             sanitized,
-            "https://fansite.example/entry;jsessionid=<redacted>/path",
+            "https://fansite.example/entry;jsessionid=<redacted>/path?token=<redacted>&x=<redacted>",
         )
-        self.assertNotIn("token=", sanitized)
         self.assertNotIn("secret-value", sanitized)
+        self.assertNotIn("token=secret", sanitized)
 
-    def test_trace_url_redacts_long_opaque_path_segments(self) -> None:
+    def test_trace_url_redacts_long_opaque_path_segments_and_query_values(self) -> None:
         sanitized = _safe_trace_url(
             "https://g.example/a/" + ("x" * 80) + "/platform/game/settings?session=secret"
         )
         self.assertEqual(
             sanitized,
-            "https://g.example/a/<opaque>/platform/game/settings",
+            "https://g.example/a/<opaque>/platform/game/settings?session=<redacted>",
         )
+        self.assertNotIn("session=secret", sanitized)
 
 
 if __name__ == "__main__":
