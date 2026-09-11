@@ -17,6 +17,7 @@ INDEX_CONTINUATIONS = frozenset({"select", "pick"})
 _JS_NUMBER = r"(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?"
 _JS_IDENT = r"[A-Za-z_$][A-Za-z0-9_$]*"
 _ORIGINAL_DISCOVER_CLIENT_PROFILE = _runtime.discover_client_profile
+_AUTO_PICK_INDEX: dict[tuple[int, str], int] = {}
 
 
 def _parse_integral_js_number(raw: str) -> int | None:
@@ -125,8 +126,6 @@ def _math_version_for_alias(
     rtp: float | None,
 ) -> int | None:
     escaped = re.escape(alias)
-    # Prefer base+RTP before a direct numeric assignment because generated lazy
-    # getters contain both ``MATH_VERSION=BASE+RTP`` and the numeric BASE prefix.
     bases = re.findall(
         rf"\b{escaped}\.MATH_VERSION\s*=\s*({_JS_NUMBER})\s*\+\s*"
         rf"{escaped}\.RTP",
@@ -161,7 +160,7 @@ def _alias_math_version(
     if value is not None:
         return value
 
-    # Generated client modules often export the constants class through an alias:
+    # Generated modules often export the constants class through a local alias:
     # ``var f=class{MATH_VERSION_$LI$...}; ... I=f; ... new Engine(I...)``.
     source = _nearest_alias_source(bundle, alias, engine_offset)
     if source and source != alias:
@@ -252,6 +251,10 @@ def discover_client_profile(
     return profile
 
 
+def _pick_cursor_key(runtime: _runtime.RubyPlayRuntime) -> tuple[int, str]:
+    return (id(runtime), str(runtime.session_key or ""))
+
+
 def post_action(
     runtime: _runtime.RubyPlayRuntime,
     action: str,
@@ -264,14 +267,26 @@ def post_action(
 ):
     """Send one RubyPlay gameserver action using the observed family envelope.
 
-    ``select`` and ``pick`` use the provider client's INDEX field. ``minispin``,
-    ``freespin`` and ``respin`` have no action-specific numeric argument. When a
-    purchased feature is in progress, its buy_feature_type is carried through the
-    continuation envelope; natural features omit it.
+    ``select`` and ``pick`` use the provider client's INDEX field. The executor
+    can therefore keep following ``next_action`` without game-specific branches:
+    select deterministically chooses the first valid option (index 0), while a
+    consecutive pick chain uses distinct indices 0,1,2,... because the generated
+    PickMessageHandler rejects duplicate picks. ``minispin``, ``freespin`` and
+    ``respin`` have no action-specific numeric argument.
     """
     command = str(action or "").strip().lower()
     if not command or command == "init":
         raise ValueError("RubyPlay: post_action requiere una acción posterior a init.")
+
+    pick_key = _pick_cursor_key(runtime)
+    if command in {"spin", "buy_feature", "select"}:
+        _AUTO_PICK_INDEX.pop(pick_key, None)
+
+    if command == "select" and action_index is None:
+        action_index = 0
+    elif command == "pick" and action_index is None:
+        action_index = _AUTO_PICK_INDEX.get(pick_key, 0)
+        _AUTO_PICK_INDEX[pick_key] = action_index + 1
 
     previous_an = runtime.action_number
     payload: dict[str, Any] = {
@@ -343,7 +358,11 @@ def post_action(
         runtime.active_feature_type = response_feature_type
     elif command == "buy_feature" and feature_type:
         runtime.active_feature_type = feature_type
+
+    if command == "pick" and next_action != "pick":
+        _AUTO_PICK_INDEX.pop(pick_key, None)
     if next_action == "spin":
+        _AUTO_PICK_INDEX.pop(pick_key, None)
         runtime.active_feature_type = ""
 
     return response, payload, data, previous_an
