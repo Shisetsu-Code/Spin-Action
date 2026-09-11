@@ -101,6 +101,29 @@ class RubyPlayManualContinuationTests(unittest.TestCase):
         self.assertEqual(profile.rtp, 96.0)
         self.assertEqual(profile.math_version, 2025103096)
 
+    def test_active_slot_engine_wins_over_stale_embedded_math_table(self) -> None:
+        bundle = (
+            'tt.VERSION=2;tt.__class="com.gongxigames.math.core.binary.BinarySerializer";'
+            'I.MATH_VERSION=2024071596,I.RTP=96,I.WAGER=10;'
+            'pt.MATH_VERSION=2023081496,pt.RTP=96,pt.WAGER=50;'
+            'var Zd=class extends hy{constructor(){super(I.MATH_VERSION),this.x=1}'
+            'getMaxWager(){return I.WAGER}};'
+            'Zd.__class="com.gongxigames.math.diamondexplosion.engine.DiamondExplosionEngine";'
+            'vd.initBinaryFactory(new Zd);'
+            'var D1=class{static createProxy(){return new ty(new Zd)}};'
+        )
+        profile = discover_client_profile([("https://cdn.example/game.js", bundle)])
+        self.assertEqual(profile.protocol_version, 2)
+        self.assertEqual(profile.rtp, 96.0)
+        self.assertEqual(profile.math_version, 2024071596)
+        self.assertEqual(profile.wager, 10.0)
+        self.assertTrue(
+            any("active-slot-engine.Zd->I.MATH_VERSION" in item for item in profile.evidence)
+        )
+        self.assertTrue(
+            any("active-slot-engine.Zd->I.WAGER" in item for item in profile.evidence)
+        )
+
     def test_freespin_manual_purchase_click_uses_proven_wire_shape(self) -> None:
         runtime, session = _runtime_for("freespin")
         _response, request, _data, previous_an = post_action(
