@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 
+from tester_spin.providers.rubyplay.client_capability import _apply_effective_buy_capability
 from tester_spin.providers.rubyplay.runtime import (
     LauncherConfig,
     RubyPlayClientProfile,
@@ -122,8 +123,62 @@ class RubyPlayRuntimeTests(unittest.TestCase):
         self.assertEqual(profile.wager, 2.0)
         self.assertEqual(profile.buy_feature_type, "respin")
         self.assertEqual(profile.buy_feature_multiplier, 50.0)
+        self.assertTrue(profile.buy_feature_client_supported)
         self.assertIn("spin", profile.actions)
         self.assertIn("buy_feature", profile.actions)
+
+    def test_legacy_client_without_session_buy_api_suppresses_false_server_flag(self) -> None:
+        bundle = (
+            'qe.VERSION=2;'
+            'qe.__class="com.gongxigames.math.core.binary.BinarySerializer";'
+            'var be={};be.MATH_VERSION=20220126,be.WAGER=10;'
+            'var Yo=class extends GS{constructor(){super(be.MATH_VERSION),this.x=1}'
+            'getMaxWager(){return be.WAGER}createSession(){return new Ra}};'
+            'Yo.__class="com.gongxigames.math.arabiansecret.engine.ArabianSecretEngine";'
+            'Ec.initBinaryFactory(new Yo);'
+            'var GF=class{static createProxy(){return new xS(new Yo)}};'
+            'isBuyFeatureGame(){return!!this.getSession().isBuyFeatureGame?.()}'
+        )
+        profile = discover_client_profile(
+            [("https://cdn.example/legacy-game.js", bundle)]
+        )
+        self.assertEqual(profile.protocol_version, 2)
+        self.assertEqual(profile.math_version, 20220126)
+        self.assertEqual(profile.wager, 10.0)
+        self.assertIs(profile.buy_feature_client_supported, False)
+        self.assertIn("client.buy-feature.contract=absent", profile.evidence)
+
+        runtime = RubyPlayRuntime(
+            session=_FakeSession(),  # type: ignore[arg-type]
+            launcher=LauncherConfig(
+                launcher_url="https://launcher.example/launcher?x=1",
+                gamename="rp_legacy",
+                operator="rubyplay.com",
+                server_url="https://srv.example",
+                currency="EUR",
+                mode="fun",
+                lang="en",
+            ),
+            client_profile=profile,
+            session_key="secret",
+            fun_mode_data={"gameId": 71},
+            init_data={"data": {"buy_feature_available": True}},
+            bets=[1, 10, 100],
+            default_bet=10,
+            default_bet_index=1,
+            currency="EUR",
+            subunit=100,
+            action_number=0,
+            next_action="spin",
+        )
+        _apply_effective_buy_capability(runtime)
+        body = runtime.init_data["data"]
+        self.assertFalse(body["buy_feature_available"])
+        self.assertTrue(body["buy_feature_available_server"])
+        self.assertEqual(
+            body["buy_feature_available_effective_reason"],
+            "client_session_contract_absent",
+        )
 
     def test_bets_and_purchase_price_are_derived_from_init(self) -> None:
         init = {
