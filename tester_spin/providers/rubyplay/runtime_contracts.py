@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 import re
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -14,6 +13,7 @@ from tester_spin.providers.rubyplay import runtime as _runtime
 PURCHASE_CONTINUATIONS = frozenset({"respin", "freespin"})
 
 _JS_NUMBER = r"(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?"
+_JS_IDENT = r"[A-Za-z_$][A-Za-z0-9_$]*"
 _ORIGINAL_DISCOVER_CLIENT_PROFILE = _runtime.discover_client_profile
 
 
@@ -27,6 +27,16 @@ def _parse_integral_js_number(raw: str) -> int | None:
     return int(value)
 
 
+def _parse_positive_js_number(raw: str) -> float | None:
+    try:
+        value = Decimal(str(raw))
+    except (InvalidOperation, ValueError):
+        return None
+    if not value.is_finite() or value <= 0:
+        return None
+    return float(value)
+
+
 def _unique_integral_js_number(values: list[str]) -> int | None:
     parsed: list[int] = []
     for raw in values:
@@ -36,16 +46,109 @@ def _unique_integral_js_number(values: list[str]) -> int | None:
     return parsed[0] if len(parsed) == 1 else None
 
 
+def _active_slot_engine_alias(bundle: str) -> tuple[str, str] | None:
+    """Return (engine_class, constants_alias) for the wired SlotEngine.
+
+    Some RubyPlay bundles contain more than one math table/version. Global value
+    uniqueness is therefore not a valid way to choose v_math or WAGER. The live
+    engine is structurally wired by a generated class whose constructor calls
+    ``super(ALIAS.MATH_VERSION)`` and whose ``getMaxWager`` returns the same
+    ``ALIAS.WAGER``. We accept the relationship only when exactly one such class
+    is actually instantiated by the generated client/binary factory.
+    """
+    candidates: list[tuple[str, str]] = []
+    class_re = re.compile(
+        rf"var\s+({_JS_IDENT})=class\s+extends\s+{_JS_IDENT}\{{(.*?)\}};\1\.__class=",
+        re.S,
+    )
+    for match in class_re.finditer(bundle or ""):
+        engine_class = match.group(1)
+        body = match.group(2)
+        math_ref = re.search(
+            rf"super\(({_JS_IDENT})\.MATH_VERSION\)",
+            body,
+        )
+        if not math_ref:
+            continue
+        alias = math_ref.group(1)
+        wager_ref = re.search(
+            rf"getMaxWager\(\)\{{return\s+({_JS_IDENT})\.WAGER\}}",
+            body,
+        )
+        if wager_ref and wager_ref.group(1) != alias:
+            continue
+
+        instantiated = bool(
+            re.search(
+                rf"initBinaryFactory\(new\s+{re.escape(engine_class)}\b",
+                bundle,
+            )
+            or re.search(
+                rf"createProxy\(\)\{{return\s+new\s+{_JS_IDENT}\(new\s+{re.escape(engine_class)}\b",
+                bundle,
+            )
+        )
+        if not instantiated:
+            continue
+        pair = (engine_class, alias)
+        if pair not in candidates:
+            candidates.append(pair)
+
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def _alias_math_version(bundle: str, alias: str, rtp: float | None) -> int | None:
+    escaped = re.escape(alias)
+    direct = re.findall(
+        rf"\b{escaped}\.MATH_VERSION\s*=\s*({_JS_NUMBER})(?![A-Za-z0-9_$\.])",
+        bundle,
+        re.I,
+    )
+    direct_value = _unique_integral_js_number(direct)
+    if direct_value is not None:
+        return direct_value
+
+    bases = re.findall(
+        rf"\b{escaped}\.MATH_VERSION\s*=\s*({_JS_NUMBER})\s*\+\s*"
+        rf"{escaped}\.RTP",
+        bundle,
+        re.I,
+    )
+    base = _unique_integral_js_number(bases)
+    if (
+        base is not None
+        and isinstance(rtp, (int, float))
+        and not isinstance(rtp, bool)
+        and float(rtp).is_integer()
+    ):
+        return base + int(rtp)
+    return None
+
+
+def _alias_wager(bundle: str, alias: str) -> float | None:
+    values = re.findall(
+        rf"\b{re.escape(alias)}\.WAGER\s*=\s*({_JS_NUMBER})(?![A-Za-z0-9_$\.])",
+        bundle,
+        re.I,
+    )
+    parsed: list[float] = []
+    for raw in values:
+        value = _parse_positive_js_number(raw)
+        if value is not None and value not in parsed:
+            parsed.append(value)
+    return parsed[0] if len(parsed) == 1 else None
+
+
 def discover_client_profile(
     scripts: list[tuple[str, str]],
 ) -> _runtime.RubyPlayClientProfile:
-    """Extend RubyPlay client discovery with full JavaScript numeric literals.
+    """Discover the client contract without global numeric-value guessing.
 
-    Minified engines may encode an integer math-version base using scientific
-    notation (for example ``2025103e3``). The original decimal-only regex could
-    silently read the prefix ``2025103`` and send the wrong v_math. We retain all
-    existing discovery and only replace math_version when the client expression
-    is structurally unambiguous.
+    Besides JavaScript scientific notation, generated bundles may retain old or
+    alternate math engines. We first identify the SlotEngine that the generated
+    client actually instantiates and resolve MATH_VERSION/WAGER through that
+    engine's constants alias. Only when no unique active engine is demonstrable
+    do we fall back to globally unique values.
     """
     profile = _ORIGINAL_DISCOVER_CLIENT_PROFILE(scripts)
     contract_parts = [
@@ -61,6 +164,24 @@ def discover_client_profile(
     bundle = "\n".join(contract_parts)
     if not bundle:
         return profile
+
+    active = _active_slot_engine_alias(bundle)
+    if active is not None:
+        engine_class, alias = active
+        active_math = _alias_math_version(bundle, alias, profile.rtp)
+        active_wager = _alias_wager(bundle, alias)
+        if active_math is not None:
+            profile.math_version = active_math
+            profile.evidence.append(
+                f"client.active-slot-engine.{engine_class}->{alias}.MATH_VERSION"
+            )
+        if active_wager is not None:
+            profile.wager = active_wager
+            profile.evidence.append(
+                f"client.active-slot-engine.{engine_class}->{alias}.WAGER"
+            )
+        if active_math is not None or active_wager is not None:
+            return profile
 
     bases = re.findall(
         rf"MATH_VERSION\s*=\s*({_JS_NUMBER})\s*\+\s*"
@@ -102,8 +223,8 @@ def post_action(
 
     Purchased freespin/respin rounds are manual UI clicks, but on the wire they
     are continuation actions: no new bet/price is sent, while buy_feature_type is
-    carried forward. Natural continuations keep the field absent unless the
-    server has already exposed an active purchased feature type.
+    carried forward. Mixed freespin/respin chains are followed strictly from the
+    server's ``next_action`` until it returns to normal ``spin``.
     """
     command = str(action or "").strip().lower()
     if not command or command == "init":
@@ -141,8 +262,6 @@ def post_action(
         payload["buy_feature_type"] = feature_type
         payload["buy_feature_price"] = buy_feature_price
     elif command in PURCHASE_CONTINUATIONS and feature_type:
-        # Both supplied HAR families prove the same continuation envelope:
-        # common state + action + buy_feature_type, with no bet or purchase price.
         payload["buy_feature_type"] = feature_type
 
     response = runtime.session.post(
