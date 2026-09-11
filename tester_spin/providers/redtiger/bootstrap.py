@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -9,6 +10,7 @@ from urllib.parse import urljoin, urlparse
 
 import requests
 
+from tester_spin.providers.redtiger.demo_auth import post_demo_token
 from tester_spin.providers.redtiger.runtime import (
     RedTigerRuntime,
     feature_buys_from_settings,
@@ -104,13 +106,15 @@ def bootstrap_game(
     timeout_s: float,
     artifact_dir: Path,
     endpoints: BootstrapEndpoints | None = None,
+    progress: Callable[[str], None] | None = None,
 ) -> RedTigerRuntime:
     """Create a fresh demo session through the official launcher, then switch to HTTP.
 
-    The browser is bootstrap-only. It solves the provider/edge launcher flow and we
-    observe the official ``platform/game/settings`` request instead of guessing
-    gameId, gserver hostname, session fields, cookies or client versions. All game
-    actions after bootstrap use the captured provider contract directly over HTTP.
+    The browser is bootstrap-only. It solves provider-owned authentication and the
+    edge launcher flow, and we observe the official ``platform/game/settings``
+    request instead of guessing gameId, gserver hostname, session fields, cookies
+    or client versions. All game actions after bootstrap use the captured provider
+    contract directly over HTTP.
     """
     table = str(table_id or "").strip()
     if not table:
@@ -119,6 +123,8 @@ def bootstrap_game(
     timeout_ms = max(8_000, int(float(timeout_s) * 1000))
     artifact_dir.mkdir(parents=True, exist_ok=True)
 
+    public_parsed = urlparse(public_url)
+    public_origin = f"{public_parsed.scheme}://{public_parsed.netloc}"
     token_session = requests.Session()
     token_session.headers.update(
         {
@@ -126,22 +132,24 @@ def bootstrap_game(
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128 Safari/537.36"
             ),
-            "Accept": "application/json, text/plain, */*",
+            "Accept": "*/*",
             "Content-Type": "application/json",
-            "Origin": f"{urlparse(public_url).scheme}://{urlparse(public_url).netloc}",
-            "Referer": public_url,
+            "Origin": public_origin,
+            "Referer": public_origin.rstrip("/") + "/",
         }
     )
     token_request = {
         "demo": {"language": "en-GB", "currency": "VC0"},
         "game": {"tableId": table},
     }
-    token_response = token_session.post(
+    token_response = post_demo_token(
+        token_session,
         cfg.demo_token_url,
-        json=token_request,
-        timeout=timeout_s,
+        public_url,
+        token_request,
+        timeout_s=timeout_s,
+        progress=progress,
     )
-    token_response.raise_for_status()
     token_data = _json_object(token_response.text, "demo token")
     entry = str(token_data.get("entry") or "").strip()
     if not entry:
