@@ -56,12 +56,12 @@ def _forget_api_key(public_url: str, demo_token_url: str) -> None:
 
 
 def demo_page_url(public_url: str, table_id: str) -> str:
-    """Build the provider's own demo route from the catalog tableId.
+    """Build the provider's public demo route from the catalog tableId.
 
-    The route shape is an observed Red Tiger website contract. No game title,
-    runtime gameId, gserver hostname, session identifier or frontend secret is
-    derived here. The tenant value is taken from the public host instead of being
-    fixed to a particular deployment.
+    The public Red Tiger route is ``/demo/<tableId>?showNavbar=true``. Tenant is
+    resolved internally by the site/router and must not be injected into the
+    visible demo URL. No game title, runtime gameId, gserver hostname, session
+    identifier or frontend secret is derived here.
     """
     table = str(table_id or "").strip()
     if not table:
@@ -70,12 +70,7 @@ def demo_page_url(public_url: str, table_id: str) -> str:
     if not parsed.scheme or not parsed.netloc:
         raise ValueError("Red Tiger demo auth: URL pública inválida.")
 
-    host = (parsed.hostname or "").casefold()
-    labels = [part for part in host.split(".") if part and part != "www"]
-    tenant = labels[0] if labels else ""
-    query: dict[str, str] = {"showNavbar": "true"}
-    if tenant:
-        query["tenant"] = tenant
+    query = {"showNavbar": "true"}
     return urlunparse(
         (
             parsed.scheme,
@@ -193,8 +188,6 @@ def post_demo_token(
         response.raise_for_status()
         return response
 
-    # A cached deployment key may have rotated. Never keep retrying stale frontend
-    # data: discard it and observe the current official request again.
     session.headers.pop("x-api-key", None)
     _forget_api_key(public_url, demo_token_url)
 
