@@ -35,6 +35,38 @@ def _mode_id(value: str) -> str:
     return clean or "UNKNOWN"
 
 
+def _sanitize_direct_http_headers(runtime: RedTigerRuntime) -> None:
+    """Remove browser/HTTP2-only headers before requests sends direct runtime HTTP.
+
+    Playwright can expose HTTP/2 pseudo-headers (for example ``:authority``) in
+    ``request.all_headers()``. They describe the browser transport and are not
+    legal HTTP header names in ``requests``. Cookies are deliberately untouched:
+    they live in the session cookie jar and are transferred separately during
+    bootstrap.
+    """
+    browser_only = {
+        "connection",
+        "content-length",
+        "cookie",
+        "host",
+        "proxy-connection",
+        "te",
+        "trailer",
+        "transfer-encoding",
+        "upgrade",
+    }
+    for key in list(runtime.session.headers):
+        name = str(key or "")
+        lowered = name.casefold()
+        if (
+            not name
+            or name.startswith(":")
+            or lowered in browser_only
+            or any(ch in name for ch in "\r\n\t ")
+        ):
+            runtime.session.headers.pop(key, None)
+
+
 def _post_spin(
     runtime: RedTigerRuntime,
     *,
@@ -48,6 +80,7 @@ def _post_spin(
         feature_buy=feature_buy,
         game_mode=0,
     )
+    _sanitize_direct_http_headers(runtime)
     response = runtime.session.post(runtime.spin_url, json=payload, timeout=timeout_s)
     status = int(response.status_code)
     response.raise_for_status()
