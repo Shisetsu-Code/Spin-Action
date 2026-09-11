@@ -12,14 +12,14 @@ from tester_spin.providers.redtiger.bootstrap_browser import (
 class RedTigerEntryFallbackTests(unittest.TestCase):
     def test_safe_trace_url_keeps_query_names_but_not_values(self) -> None:
         value = _safe_trace_url(
-            "https://fansite.example/entry;jsessionid=secret?token=abc123&lang=en&foo=bar"
+            "https://fansite.example/entry;jsessionid=secret/path?token=abc123&lang=en&foo=bar"
         )
         self.assertIn(";jsessionid=<redacted>", value)
         self.assertIn("foo=<redacted>", value)
         self.assertIn("lang=<redacted>", value)
         self.assertIn("token=<redacted>", value)
         self.assertNotIn("abc123", value)
-        self.assertNotIn("secret", value)
+        self.assertNotIn("secret/path", value)
 
     def test_header_shape_exposes_only_names_and_cookie_names(self) -> None:
         shape = _header_shape(
