@@ -10,7 +10,7 @@ from tkinter import messagebox, ttk
 
 from tester_spin.app_current import CurrentTesterSpinApp
 from tester_spin.models import Game
-from tester_spin.providers import RubyPlayProvider
+from tester_spin.providers import RedTigerProvider, RubyPlayProvider
 
 
 def _open_directory(path: Path) -> None:
@@ -42,12 +42,15 @@ class HARToolTesterSpinApp(CurrentTesterSpinApp):
 
     def __init__(self) -> None:
         super().__init__()
-        # run.py enters through this application layer. Register RubyPlay here so
-        # the established GUI/scheduler/storage remain protocol-neutral while the
-        # provider itself stays isolated under providers/rubyplay/.
-        rubyplay = RubyPlayProvider(self.data_root)
-        self.registry.register(rubyplay)
-        self._display_to_key[rubyplay.display_name] = rubyplay.key
+        # run.py enters through this application layer. New providers are only
+        # registered here; their protocol implementations remain isolated under
+        # providers/<name>/ and GUI/scheduler/storage stay protocol-neutral.
+        for provider in (
+            RubyPlayProvider(self.data_root),
+            RedTigerProvider(self.data_root),
+        ):
+            self.registry.register(provider)
+            self._display_to_key[provider.display_name] = provider.key
         self.provider_combo.configure(values=list(self._display_to_key))
 
     def _build(self) -> None:
