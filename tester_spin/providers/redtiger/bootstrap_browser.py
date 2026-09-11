@@ -136,6 +136,20 @@ def _is_demo_token_response(response: Any, demo_token_url: str) -> bool:
         return False
 
 
+def _browser_user_agent(browser: Any) -> str:
+    version = str(getattr(browser, "version", "") or "").strip()
+    if version and re.fullmatch(r"\d+(?:\.\d+){1,3}", version):
+        return (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            f"Chrome/{version} Safari/537.36"
+        )
+    return (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128 Safari/537.36"
+    )
+
+
 def bootstrap_game(
     public_url: str,
     table_id: str,
@@ -157,7 +171,8 @@ def bootstrap_game(
         raise ValueError("Red Tiger bootstrap requiere tableId del catálogo.")
 
     cfg = endpoints or BootstrapEndpoints()
-    timeout_ms = max(8_000, int(float(timeout_s) * 1000))
+    navigation_timeout_ms = max(30_000, int(float(timeout_s) * 1000))
+    settings_timeout_ms = max(60_000, navigation_timeout_ms)
     artifact_dir.mkdir(parents=True, exist_ok=True)
     launch_url = demo_page_url(public_url, table)
 
@@ -173,11 +188,18 @@ def bootstrap_game(
     browser = None
     context = None
     trace: list[dict[str, Any]] = []
+    failed_requests: list[dict[str, str]] = []
+    console_trace: list[dict[str, str]] = []
+    page_errors: list[str] = []
     settings_box: list[Any] = []
     demo_token_statuses: list[int] = []
     try:
         browser = playwright.chromium.launch(headless=True)
-        context = browser.new_context(locale="en-GB")
+        context = browser.new_context(
+            locale="en-GB",
+            user_agent=_browser_user_agent(browser),
+            viewport={"width": 1365, "height": 900},
+        )
 
         def on_response(response: Any) -> None:
             try:
@@ -191,7 +213,7 @@ def bootstrap_game(
                     or "evo-games" in host
                     or "/platform/game/" in parsed.path
                 )
-                if interesting and len(trace) < 300:
+                if interesting and len(trace) < 400:
                     trace.append(
                         {
                             "method": str(request.method or ""),
@@ -207,11 +229,58 @@ def bootstrap_game(
             except Exception:
                 return
 
-        context.on("response", on_response)
-        page = context.new_page()
-        page.goto(launch_url, wait_until="domcontentloaded", timeout=timeout_ms)
+        def on_request_failed(request: Any) -> None:
+            if len(failed_requests) >= 100:
+                return
+            try:
+                failure = request.failure
+                failed_requests.append(
+                    {
+                        "method": str(request.method or ""),
+                        "url": _safe_trace_url(str(request.url or "")),
+                        "failure": str(failure or ""),
+                    }
+                )
+            except Exception:
+                return
 
-        deadline = time.monotonic() + (timeout_ms / 1000.0)
+        def attach_page(current_page: Any) -> None:
+            def on_console(message: Any) -> None:
+                if len(console_trace) >= 100:
+                    return
+                try:
+                    console_trace.append(
+                        {"type": str(message.type or ""), "text": str(message.text or "")[:1000]}
+                    )
+                except Exception:
+                    return
+
+            def on_page_error(error: Any) -> None:
+                if len(page_errors) < 50:
+                    page_errors.append(str(error)[:2000])
+
+            current_page.on("console", on_console)
+            current_page.on("pageerror", on_page_error)
+
+        context.on("response", on_response)
+        context.on("requestfailed", on_request_failed)
+        context.on("page", attach_page)
+        page = context.new_page()
+        attach_page(page)
+
+        try:
+            page.goto(launch_url, wait_until="domcontentloaded", timeout=navigation_timeout_ms)
+        except Exception as navigation_exc:
+            # Some provider launchers keep the top-level navigation pending while
+            # their popup/iframe continues. Do not abort if the context is alive;
+            # the authoritative condition is observing settings below.
+            if progress is not None:
+                progress(
+                    "Red Tiger bootstrap: navegación principal no terminó limpia "
+                    f"({type(navigation_exc).__name__}); esperando settings del contexto completo..."
+                )
+
+        deadline = time.monotonic() + (settings_timeout_ms / 1000.0)
         while not settings_box and time.monotonic() < deadline:
             pages = list(context.pages)
             if not pages:
@@ -223,27 +292,32 @@ def bootstrap_game(
                 # A popup can close while another page continues the launcher.
                 continue
 
-        _write_json(
-            artifact_dir / "bootstrap-trace.json",
-            {
-                "launch_url": _safe_trace_url(launch_url),
-                "demo_token_statuses": demo_token_statuses,
-                "settings_observed": bool(settings_box),
-                "pages": [_safe_trace_url(page.url) for page in context.pages],
-                "responses": trace,
-            },
-        )
+        diagnostic = {
+            "launch_url": _safe_trace_url(launch_url),
+            "demo_token_statuses": demo_token_statuses,
+            "settings_observed": bool(settings_box),
+            "pages": [_safe_trace_url(current.url) for current in context.pages],
+            "responses": trace,
+            "failed_requests": failed_requests,
+            "console": console_trace,
+            "page_errors": page_errors,
+        }
+        _write_json(artifact_dir / "bootstrap-trace.json", diagnostic)
 
         if not settings_box:
             tail = [
                 f"{item.get('status')} {item.get('method')} {item.get('url')}"
-                for item in trace[-8:]
+                for item in trace[-10:]
+            ]
+            failed_tail = [
+                f"{item.get('method')} {item.get('url')} => {item.get('failure')}"
+                for item in failed_requests[-5:]
             ]
             token_note = demo_token_statuses[-1] if demo_token_statuses else "no observado"
             raise TimeoutError(
                 "Red Tiger: la sesión demo no emitió platform/game/settings "
-                f"en {timeout_ms} ms; token/demo={token_note}; "
-                f"últimas respuestas={tail!r}. "
+                f"en {settings_timeout_ms} ms; token/demo={token_note}; "
+                f"últimas respuestas={tail!r}; fallos={failed_tail!r}. "
                 "Ver bootstrap/bootstrap-trace.json para el recorrido sanitizado."
             )
 
@@ -280,10 +354,7 @@ def bootstrap_game(
             except Exception:
                 continue
         if not user_agent:
-            user_agent = (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128 Safari/537.36"
-            )
+            user_agent = _browser_user_agent(browser)
 
         cookies = context.cookies()
         try:
