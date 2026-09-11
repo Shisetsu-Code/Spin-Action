@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
@@ -114,6 +115,40 @@ def _fragment_keys(value: str) -> list[str]:
     return sorted({key for key, _value in parse_qsl(parsed.fragment, keep_blank_values=True) if key})
 
 
+def _browser_fetch_json(page: Any, url: str) -> tuple[int, str]:
+    """Issue auth from the real Evolution page, not Playwright's API client.
+
+    The captured Evolution bundle performs this request from browser JavaScript.
+    BrowserContext.request shares cookies but is still a separate HTTP stack and can
+    be rejected by edge protection. Running fetch() in the page preserves the live
+    browser fingerprint, cookie jar, referrer/origin semantics and HTTP/2 handling.
+    """
+    result = page.evaluate(
+        """async ({url}) => {
+            try {
+                const response = await fetch(url, {
+                    method: 'GET',
+                    credentials: 'include',
+                    cache: 'no-store',
+                    headers: {Accept: 'application/json, text/plain, */*'}
+                });
+                return {status: response.status, text: await response.text()};
+            } catch (error) {
+                return {status: 0, text: '', error: String(error)};
+            }
+        }""",
+        {"url": url},
+    )
+    if not isinstance(result, dict):
+        raise RuntimeError("Red Tiger Evolution auth JSON: fetch del navegador no devolvió resultado.")
+    status = int(result.get("status") or 0)
+    if status <= 0:
+        raise RuntimeError(
+            "Red Tiger Evolution auth JSON: fetch del navegador falló antes de recibir HTTP."
+        )
+    return status, str(result.get("text") or "")
+
+
 def resolve_json_entry_auth(
     context: Any,
     *,
@@ -124,69 +159,101 @@ def resolve_json_entry_auth(
 ) -> tuple[str, dict[str, Any]]:
     """Resolve Evolution's JSON entry contract in the current browser context.
 
-    BrowserContext.request shares the context cookie jar, so cookies created by the
-    failed normal entry attempt remain part of the same provider-owned session.
-    No credential value is returned in diagnostics.
+    The live Evolution bundle performs the auth request from page JavaScript. We do
+    the same: load its current frontend in a real page, discover the current build,
+    then call the opaque token/demo entry URL through browser fetch(). No session
+    credential is decoded, persisted or reconstructed.
     """
-    api = context.request
     frontend_url = ""
     version = ""
     frontend_statuses: list[dict[str, Any]] = []
-
-    for path in _FRONTEND_PATHS:
-        candidate = urljoin(entry_origin.rstrip("/") + "/", path.lstrip("/"))
-        response = api.get(candidate, timeout=timeout_ms, fail_on_status_code=False)
-        status = int(response.status)
-        frontend_statuses.append({"path": urlparse(candidate).path, "status": status})
-        if status >= 400:
-            continue
-        found = client_version_from_html(response.text())
-        if found:
-            frontend_url = candidate
-            version = found
-            break
-
-    if not frontend_url or not version:
-        raise RuntimeError(
-            "Red Tiger Evolution auth: no se pudo descubrir client_version desde el frontend oficial; "
-            f"candidatos={frontend_statuses!r}."
-        )
-
-    auth_url = entry_json_url(entry, entry_origin, version)
-    headers = {"Accept": "application/json, text/plain, */*"}
-    if referer:
-        headers["Referer"] = referer
-    auth_response = api.get(
-        auth_url,
-        headers=headers,
-        timeout=timeout_ms,
-        fail_on_status_code=False,
-    )
-    auth_status = int(auth_response.status)
-    if auth_status >= 400:
-        raise RuntimeError(
-            "Red Tiger Evolution auth JSON rechazado: "
-            f"HTTP {auth_status}; query={_query_keys(auth_url)!r}."
-        )
+    auth_page = None
 
     try:
-        payload = auth_response.json()
-    except Exception as exc:
-        raise RuntimeError("Red Tiger Evolution auth JSON: respuesta no JSON.") from exc
-    if not isinstance(payload, dict):
-        raise RuntimeError("Red Tiger Evolution auth JSON: respuesta no es objeto.")
-    location = str(payload.get("location") or "").strip()
-    if not location:
-        raise RuntimeError("Red Tiger Evolution auth JSON: falta location.")
+        for path in _FRONTEND_PATHS:
+            candidate = urljoin(entry_origin.rstrip("/") + "/", path.lstrip("/"))
+            auth_page = context.new_page()
+            try:
+                response = auth_page.goto(
+                    candidate,
+                    wait_until="domcontentloaded",
+                    timeout=timeout_ms,
+                    referer=referer or None,
+                )
+                status = int(response.status) if response is not None else 0
+            except Exception:
+                status = 0
+            frontend_statuses.append({"path": urlparse(candidate).path, "status": status})
+            if status >= 400 or status <= 0:
+                auth_page.close()
+                auth_page = None
+                continue
 
-    target = loader_target_url(frontend_url, location, entry_origin)
-    diagnostics = {
-        "frontend_path": urlparse(frontend_url).path,
-        "client_version": version,
-        "frontend_statuses": frontend_statuses,
-        "auth_status": auth_status,
-        "auth_query_keys": _query_keys(auth_url),
-        "target_query_keys": _query_keys(target),
-        "target_fragment_keys": _fragment_keys(target),
-    }
-    return target, diagnostics
+            try:
+                found = client_version_from_html(auth_page.content())
+            except Exception:
+                found = ""
+            if found:
+                frontend_url = candidate
+                version = found
+                break
+            auth_page.close()
+            auth_page = None
+
+        if not frontend_url or not version or auth_page is None:
+            raise RuntimeError(
+                "Red Tiger Evolution auth: no se pudo descubrir client_version desde el frontend oficial; "
+                f"candidatos={frontend_statuses!r}."
+            )
+
+        # Give the official frontend/edge scripts a short opportunity to establish
+        # any browser-owned cookies before reproducing the same browser-side fetch.
+        auth_page.wait_for_timeout(500)
+        auth_url = entry_json_url(entry, entry_origin, version)
+        auth_statuses: list[int] = []
+        auth_text = ""
+        for attempt in range(2):
+            auth_status, auth_text = _browser_fetch_json(auth_page, auth_url)
+            auth_statuses.append(auth_status)
+            if auth_status < 400:
+                break
+            if auth_status not in {401, 403} or attempt:
+                break
+            auth_page.wait_for_timeout(1000)
+
+        auth_status = auth_statuses[-1]
+        if auth_status >= 400:
+            raise RuntimeError(
+                "Red Tiger Evolution auth JSON rechazado desde fetch del navegador: "
+                f"HTTP {auth_status}; intentos={auth_statuses!r}; query={_query_keys(auth_url)!r}."
+            )
+
+        try:
+            payload = json.loads(auth_text)
+        except Exception as exc:
+            raise RuntimeError("Red Tiger Evolution auth JSON: respuesta no JSON.") from exc
+        if not isinstance(payload, dict):
+            raise RuntimeError("Red Tiger Evolution auth JSON: respuesta no es objeto.")
+        location = str(payload.get("location") or "").strip()
+        if not location:
+            raise RuntimeError("Red Tiger Evolution auth JSON: falta location.")
+
+        target = loader_target_url(frontend_url, location, entry_origin)
+        diagnostics = {
+            "frontend_path": urlparse(frontend_url).path,
+            "client_version": version,
+            "frontend_statuses": frontend_statuses,
+            "auth_status": auth_status,
+            "auth_statuses": auth_statuses,
+            "auth_transport": "browser-fetch",
+            "auth_query_keys": _query_keys(auth_url),
+            "target_query_keys": _query_keys(target),
+            "target_fragment_keys": _fragment_keys(target),
+        }
+        return target, diagnostics
+    finally:
+        if auth_page is not None:
+            try:
+                auth_page.close()
+            except Exception:
+                pass
