@@ -69,23 +69,31 @@ def _copy_browser_cookies(session: requests.Session, cookies: list[dict[str, Any
 def _runtime_session(
     *,
     cookies: list[dict[str, Any]],
+    observed_headers: dict[str, str],
     user_agent: str,
     settings_url: str,
     launcher_url: str,
 ) -> requests.Session:
     session = requests.Session()
     _copy_browser_cookies(session, cookies)
+
+    # Reuse the official launcher's non-sensitive HTTP shape rather than cloning
+    # browser conventions by hand. Transport-specific headers that requests owns
+    # itself are excluded; cookies are transferred through the cookie jar above.
+    ignored = {"cookie", "content-length", "host", "connection", "accept-encoding"}
+    for key, value in observed_headers.items():
+        if str(key).lower() in ignored:
+            continue
+        if isinstance(value, str) and value:
+            session.headers[str(key)] = value
+
     parsed = urlparse(settings_url)
     origin = f"{parsed.scheme}://{parsed.netloc}"
-    session.headers.update(
-        {
-            "User-Agent": user_agent,
-            "Accept": "application/json, text/plain, */*",
-            "Content-Type": "application/json",
-            "Origin": origin,
-            "Referer": launcher_url or origin + "/",
-        }
-    )
+    session.headers.setdefault("User-Agent", user_agent)
+    session.headers.setdefault("Accept", "application/json, text/plain, */*")
+    session.headers.setdefault("Content-Type", "application/json")
+    session.headers.setdefault("Origin", origin)
+    session.headers.setdefault("Referer", launcher_url or origin + "/")
     return session
 
 
@@ -184,6 +192,7 @@ def bootstrap_game(
         launcher_url = str(settings_request.headers.get("referer") or page.url or "")
         user_agent = str(page.evaluate("() => navigator.userAgent") or "")
         cookies = context.cookies()
+        observed_headers = {str(key): str(value) for key, value in settings_request.headers.items()}
 
         result = response_payload["result"]
         user = result["user"]
@@ -204,6 +213,7 @@ def bootstrap_game(
         feature_buys = feature_buys_from_settings(response_payload)
         runtime_http = _runtime_session(
             cookies=cookies,
+            observed_headers=observed_headers,
             user_agent=user_agent,
             settings_url=settings_url,
             launcher_url=launcher_url,
