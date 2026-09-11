@@ -6,7 +6,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import parse_qsl, urljoin, urlparse, urlunparse
 
 import requests
 
@@ -99,7 +99,7 @@ def _runtime_session(
 
 
 def _safe_trace_url(value: str) -> str:
-    """Keep routing evidence without persisting query/session credentials."""
+    """Preserve routing/query shape while redacting all credential values."""
     try:
         parsed = urlparse(str(value or ""))
     except Exception:
@@ -107,11 +107,38 @@ def _safe_trace_url(value: str) -> str:
     path = re.sub(r";jsessionid=[^/?;]+", ";jsessionid=<redacted>", parsed.path, flags=re.I)
     parts: list[str] = []
     for part in path.split("/"):
-        if len(part) > 64:
-            parts.append("<opaque>")
-        else:
-            parts.append(part)
-    return urlunparse((parsed.scheme, parsed.netloc, "/".join(parts), "", "", ""))
+        parts.append("<opaque>" if len(part) > 64 else part)
+    query_keys = sorted({key for key, _value in parse_qsl(parsed.query, keep_blank_values=True) if key})
+    query = "&".join(f"{key}=<redacted>" for key in query_keys)
+    return urlunparse((parsed.scheme, parsed.netloc, "/".join(parts), "", query, ""))
+
+
+def _header_shape(headers: dict[str, str]) -> dict[str, Any]:
+    names = sorted({str(key).casefold() for key in (headers or {})})
+    cookie_names: list[str] = []
+    cookie_value = ""
+    for key, value in (headers or {}).items():
+        if str(key).casefold() == "cookie":
+            cookie_value = str(value or "")
+            break
+    if cookie_value:
+        cookie_names = sorted(
+            {
+                chunk.split("=", 1)[0].strip()
+                for chunk in cookie_value.split(";")
+                if "=" in chunk and chunk.split("=", 1)[0].strip()
+            }
+        )
+    return {"header_names": names, "cookie_names": cookie_names}
+
+
+def _response_body_hint(response: Any) -> str:
+    try:
+        text = str(response.text() or "")[:2000]
+    except Exception:
+        return ""
+    text = re.sub(r"[A-Za-z0-9_.~-]{40,}", "<opaque>", text)
+    return re.sub(r"\s+", " ", text).strip()[:1200]
 
 
 def _is_settings_response(response: Any) -> bool:
@@ -150,6 +177,30 @@ def _browser_user_agent(browser: Any) -> str:
     )
 
 
+def _launch_browser(playwright: Any) -> tuple[Any, str, list[str]]:
+    """Prefer installed Chrome; fall back to Playwright Chromium without failing bootstrap."""
+    failures: list[str] = []
+    try:
+        return playwright.chromium.launch(channel="chrome", headless=True), "system-chrome-headless", failures
+    except Exception as exc:
+        failures.append(f"system-chrome-headless: {type(exc).__name__}: {exc}")
+    browser = playwright.chromium.launch(headless=True)
+    return browser, "playwright-chromium-headless", failures
+
+
+def _embedded_entry_url(entries: dict[str, str], entry_origin: str, denied_url: str = "") -> str:
+    raw = str(entries.get("entryEmbedded") or "").strip()
+    if not raw:
+        return ""
+    candidate = urljoin(entry_origin.rstrip("/") + "/", raw.lstrip("/"))
+    if denied_url and candidate == denied_url:
+        return ""
+    parsed = urlparse(candidate)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return ""
+    return candidate
+
+
 def bootstrap_game(
     public_url: str,
     table_id: str,
@@ -159,12 +210,13 @@ def bootstrap_game(
     endpoints: BootstrapEndpoints | None = None,
     progress: Callable[[str], None] | None = None,
 ) -> RedTigerRuntime:
-    """Bootstrap Red Tiger in one official browser context, then switch to HTTP.
+    """Bootstrap Red Tiger in one provider-owned browser context, then use HTTP directly.
 
-    The official /demo/<tableId> route owns token/demo authentication, entry
-    navigation, cookies, popup/iframe creation and setup/config. We observe the
-    resulting platform/game/settings request context-wide. No x-api-key, entry,
-    JSESSIONID, gserver hostname, runtime gameId or session token is reconstructed.
+    No title, runtime gameId, gserver host, API key or session credential is fixed.
+    The official demo route owns token issuance. We observe its token response and
+    launcher traffic. If the normal entry is explicitly denied, ``entryEmbedded``
+    is tried only when that alternative was advertised by the same live token
+    response.
     """
     table = str(table_id or "").strip()
     if not table:
@@ -178,8 +230,8 @@ def bootstrap_game(
 
     if progress is not None:
         progress(
-            "Red Tiger bootstrap: abriendo ruta demo oficial en una sola sesión "
-            "y observando token → launcher → settings..."
+            "Red Tiger bootstrap: abriendo ruta demo oficial y observando "
+            "token → entry → launcher → settings..."
         )
 
     from playwright.sync_api import sync_playwright
@@ -193,13 +245,24 @@ def bootstrap_game(
     page_errors: list[str] = []
     settings_box: list[Any] = []
     demo_token_statuses: list[int] = []
+    demo_entries: dict[str, str] = {}
+    entry_responses: list[Any] = []
+    embedded_fallback_attempted = False
+    browser_profile = ""
+    browser_launch_failures: list[str] = []
+
     try:
-        browser = playwright.chromium.launch(headless=True)
+        browser, browser_profile, browser_launch_failures = _launch_browser(playwright)
         context = browser.new_context(
             locale="en-GB",
             user_agent=_browser_user_agent(browser),
             viewport={"width": 1365, "height": 900},
         )
+
+        if progress is not None:
+            progress(f"Red Tiger bootstrap: navegador={browser_profile}.")
+
+        entry_host = urlparse(cfg.entry_origin).netloc.casefold()
 
         def on_response(response: Any) -> None:
             try:
@@ -213,7 +276,7 @@ def bootstrap_game(
                     or "evo-games" in host
                     or "/platform/game/" in parsed.path
                 )
-                if interesting and len(trace) < 400:
+                if interesting and len(trace) < 500:
                     trace.append(
                         {
                             "method": str(request.method or ""),
@@ -222,15 +285,30 @@ def bootstrap_game(
                             "url": _safe_trace_url(url),
                         }
                     )
+
                 if _is_demo_token_response(response, cfg.demo_token_url):
                     demo_token_statuses.append(int(response.status))
+                    if int(response.status) < 400:
+                        try:
+                            payload = response.json()
+                        except Exception:
+                            payload = None
+                        if isinstance(payload, dict):
+                            for key in ("entry", "entryEmbedded"):
+                                value = str(payload.get(key) or "").strip()
+                                if value:
+                                    demo_entries[key] = value
+
+                if host == entry_host and parsed.path.rstrip("/").endswith("/entry"):
+                    entry_responses.append(response)
+
                 if _is_settings_response(response) and not settings_box:
                     settings_box.append(response)
             except Exception:
                 return
 
         def on_request_failed(request: Any) -> None:
-            if len(failed_requests) >= 100:
+            if len(failed_requests) >= 120:
                 return
             try:
                 failure = request.failure
@@ -246,7 +324,7 @@ def bootstrap_game(
 
         def attach_page(current_page: Any) -> None:
             def on_console(message: Any) -> None:
-                if len(console_trace) >= 100:
+                if len(console_trace) >= 120:
                     return
                 try:
                     console_trace.append(
@@ -256,7 +334,7 @@ def bootstrap_game(
                     return
 
             def on_page_error(error: Any) -> None:
-                if len(page_errors) < 50:
+                if len(page_errors) < 60:
                     page_errors.append(str(error)[:2000])
 
             current_page.on("console", on_console)
@@ -271,32 +349,90 @@ def bootstrap_game(
         try:
             page.goto(launch_url, wait_until="domcontentloaded", timeout=navigation_timeout_ms)
         except Exception as navigation_exc:
-            # Some provider launchers keep the top-level navigation pending while
-            # their popup/iframe continues. Do not abort if the context is alive;
-            # the authoritative condition is observing settings below.
             if progress is not None:
                 progress(
                     "Red Tiger bootstrap: navegación principal no terminó limpia "
-                    f"({type(navigation_exc).__name__}); esperando settings del contexto completo..."
+                    f"({type(navigation_exc).__name__}); observando el contexto completo..."
                 )
 
         deadline = time.monotonic() + (settings_timeout_ms / 1000.0)
         while not settings_box and time.monotonic() < deadline:
+            denied = next(
+                (
+                    response
+                    for response in reversed(entry_responses)
+                    if int(getattr(response, "status", 0) or 0) in {401, 403}
+                ),
+                None,
+            )
+            if denied is not None and not embedded_fallback_attempted:
+                denied_url = str(getattr(denied, "url", "") or "")
+                embedded_url = _embedded_entry_url(demo_entries, cfg.entry_origin, denied_url)
+                embedded_fallback_attempted = True
+                if embedded_url:
+                    if progress is not None:
+                        progress(
+                            "Red Tiger bootstrap: entry principal rechazado; probando "
+                            "entryEmbedded anunciado por token/demo en la misma sesión..."
+                        )
+                    fallback_page = context.new_page()
+                    attach_page(fallback_page)
+                    try:
+                        fallback_page.goto(
+                            embedded_url,
+                            wait_until="domcontentloaded",
+                            timeout=navigation_timeout_ms,
+                            referer=launch_url,
+                        )
+                    except Exception as fallback_exc:
+                        if progress is not None:
+                            progress(
+                                "Red Tiger bootstrap: entryEmbedded no terminó navegación limpia "
+                                f"({type(fallback_exc).__name__}); seguimos observando settings..."
+                            )
+
             pages = list(context.pages)
             if not pages:
                 break
-            waiter = pages[-1]
             try:
-                waiter.wait_for_timeout(100)
+                pages[-1].wait_for_timeout(100)
             except Exception:
-                # A popup can close while another page continues the launcher.
+                continue
+
+        entry_diagnostics: list[dict[str, Any]] = []
+        for response in entry_responses[-6:]:
+            try:
+                request = response.request
+                try:
+                    req_headers = request.all_headers()
+                except Exception:
+                    req_headers = dict(request.headers or {})
+                try:
+                    res_headers = response.all_headers()
+                except Exception:
+                    res_headers = {}
+                item: dict[str, Any] = {
+                    "status": int(response.status),
+                    "url": _safe_trace_url(str(response.url or "")),
+                    "request": _header_shape({str(k): str(v) for k, v in req_headers.items()}),
+                    "response_header_names": sorted(str(key).casefold() for key in res_headers),
+                }
+                if int(response.status) >= 400:
+                    item["body_hint"] = _response_body_hint(response)
+                entry_diagnostics.append(item)
+            except Exception:
                 continue
 
         diagnostic = {
             "launch_url": _safe_trace_url(launch_url),
+            "browser_profile": browser_profile,
+            "browser_launch_failures": browser_launch_failures,
             "demo_token_statuses": demo_token_statuses,
+            "demo_entry_fields": sorted(demo_entries),
+            "embedded_fallback_attempted": embedded_fallback_attempted,
             "settings_observed": bool(settings_box),
             "pages": [_safe_trace_url(current.url) for current in context.pages],
+            "entry_attempts": entry_diagnostics,
             "responses": trace,
             "failed_requests": failed_requests,
             "console": console_trace,
@@ -313,12 +449,16 @@ def bootstrap_game(
                 f"{item.get('method')} {item.get('url')} => {item.get('failure')}"
                 for item in failed_requests[-5:]
             ]
+            entry_tail = [
+                f"{item.get('status')} {item.get('url')} cookies={item.get('request', {}).get('cookie_names', [])}"
+                for item in entry_diagnostics[-3:]
+            ]
             token_note = demo_token_statuses[-1] if demo_token_statuses else "no observado"
             raise TimeoutError(
                 "Red Tiger: la sesión demo no emitió platform/game/settings "
-                f"en {settings_timeout_ms} ms; token/demo={token_note}; "
-                f"últimas respuestas={tail!r}; fallos={failed_tail!r}. "
-                "Ver bootstrap/bootstrap-trace.json para el recorrido sanitizado."
+                f"en {settings_timeout_ms} ms; navegador={browser_profile}; token/demo={token_note}; "
+                f"entry={entry_tail!r}; últimas respuestas={tail!r}; fallos={failed_tail!r}. "
+                "Ver bootstrap/bootstrap-trace.json para diagnóstico sanitizado."
             )
 
         settings_response = settings_box[0]
@@ -443,7 +583,7 @@ def bootstrap_game(
 
         if progress is not None:
             progress(
-                "Red Tiger bootstrap: settings observado en la misma sesión oficial; "
+                "Red Tiger bootstrap: settings observado en la sesión oficial; "
                 "continuando por HTTP directo."
             )
         return runtime
