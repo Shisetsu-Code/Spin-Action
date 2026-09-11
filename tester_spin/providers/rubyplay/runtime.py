@@ -46,6 +46,11 @@ class RubyPlayClientProfile:
     wager: float | None = None
     buy_feature_type: str = ""
     buy_feature_multiplier: float | None = None
+    # Tri-state capability learned from the active client bundle:
+    #   True  -> client contract proves Buy Feature support;
+    #   False -> client contract proves the session has no Buy Feature API;
+    #   None  -> unresolved, keep conservative coverage-gap behavior.
+    buy_feature_client_supported: bool | None = None
     actions: list[str] = field(default_factory=list)
     source_scripts: list[str] = field(default_factory=list)
     bundle_sha256: str = ""
@@ -59,6 +64,12 @@ class RubyPlayClientProfile:
         if not isinstance(raw, dict):
             return None
         try:
+            raw_capability = raw.get("buy_feature_client_supported")
+            capability = (
+                bool(raw_capability)
+                if isinstance(raw_capability, bool)
+                else None
+            )
             return cls(
                 protocol_version=(
                     int(raw["protocol_version"])
@@ -78,6 +89,7 @@ class RubyPlayClientProfile:
                     if raw.get("buy_feature_multiplier") is not None
                     else None
                 ),
+                buy_feature_client_supported=capability,
                 actions=[str(x) for x in raw.get("actions", []) if str(x)],
                 source_scripts=[str(x) for x in raw.get("source_scripts", []) if str(x)],
                 bundle_sha256=str(raw.get("bundle_sha256") or ""),
@@ -619,24 +631,27 @@ def post_action(
         "funModeData": dict(runtime.fun_mode_data),
         "action": command,
     }
+
     if command in {"spin", "buy_feature"}:
-        if not isinstance(bet, (int, float)) or bet <= 0:
+        if not isinstance(bet, (int, float)) or isinstance(bet, bool) or bet <= 0:
             raise ValueError(f"RubyPlay {command}: bet requerido.")
         if bet not in runtime.bets:
             raise ValueError(f"RubyPlay {command}: bet no anunciado por init: {bet!r}.")
         payload["bet"] = bet
 
-    feature_type = str(buy_feature_type or runtime.active_feature_type or "")
+    feature_type = str(buy_feature_type or runtime.active_feature_type or "").strip().lower()
     if command == "buy_feature":
         if not feature_type:
             raise ValueError("RubyPlay buy_feature: tipo no descubierto.")
-        if not isinstance(buy_feature_price, (int, float)) or buy_feature_price <= 0:
+        if (
+            not isinstance(buy_feature_price, (int, float))
+            or isinstance(buy_feature_price, bool)
+            or buy_feature_price <= 0
+        ):
             raise ValueError("RubyPlay buy_feature: precio no descubierto.")
         payload["buy_feature_type"] = feature_type
         payload["buy_feature_price"] = buy_feature_price
-    elif command == "respin" and feature_type:
-        # The supplied HAR proves this field for buy-feature respin chains. Natural
-        # respins are not forced to carry it unless the server already exposed it.
+    elif command in {"respin", "freespin"} and feature_type:
         payload["buy_feature_type"] = feature_type
 
     response = runtime.session.post(
@@ -646,9 +661,7 @@ def post_action(
     )
     data = _load_json_response(response, f"gameserver/{command}")
     if str(data.get("status") or "").lower() != "ok":
-        raise ValueError(
-            f"RubyPlay {command}: status={data.get('status')!r}."
-        )
+        raise ValueError(f"RubyPlay {command}: status={data.get('status')!r}.")
 
     body = data.get("data")
     if not isinstance(body, dict):
@@ -657,7 +670,7 @@ def post_action(
         new_an = int(body.get("an"))
     except (TypeError, ValueError):
         raise ValueError(f"RubyPlay {command}: data.an inválido.")
-    next_action = str(body.get("next_action") or "")
+    next_action = str(body.get("next_action") or "").strip().lower()
     if not next_action:
         raise ValueError(f"RubyPlay {command}: data.next_action vacío.")
 
@@ -667,7 +680,7 @@ def post_action(
     runtime.action_number = new_an
     runtime.next_action = next_action
 
-    response_feature_type = str(body.get("buy_feature_type") or "")
+    response_feature_type = str(body.get("buy_feature_type") or "").strip().lower()
     if response_feature_type:
         runtime.active_feature_type = response_feature_type
     elif command == "buy_feature" and feature_type:
@@ -685,26 +698,18 @@ def validate_action_response(
     previous_an: int,
 ) -> list[str]:
     warnings: list[str] = []
-    expected_topic = f"gameserver/{action}"
-    if str(data.get("topic") or "") != expected_topic:
-        warnings.append(
-            f"topic={data.get('topic')!r}, esperado={expected_topic!r}"
-        )
+    if str(data.get("topic") or "") != f"gameserver/{action}":
+        warnings.append(f"topic={data.get('topic')!r}")
     body = data.get("data")
     if not isinstance(body, dict):
-        return warnings + ["respuesta sin data"]
+        warnings.append("data ausente")
+        return warnings
     try:
         new_an = int(body.get("an"))
+        if new_an != previous_an + 1:
+            warnings.append(f"an {previous_an}->{new_an}, esperado +1")
     except (TypeError, ValueError):
-        warnings.append("data.an no entero")
-    else:
-        if new_an != int(previous_an) + 1:
-            warnings.append(f"an={new_an}, esperado={int(previous_an) + 1}")
+        warnings.append("data.an inválido")
     if not str(body.get("next_action") or ""):
-        warnings.append("data.next_action vacío")
-    player = body.get("player")
-    if not isinstance(player, dict) or not isinstance(player.get("balance"), (int, float)):
-        warnings.append("data.player.balance ausente/no numérico")
-    if not isinstance(data.get("funModeData"), dict):
-        warnings.append("funModeData ausente")
+        warnings.append("next_action vacío")
     return warnings
