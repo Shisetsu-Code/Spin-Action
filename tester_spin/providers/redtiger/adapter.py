@@ -19,6 +19,7 @@ from tester_spin.providers.redtiger.catalog import (
     games_query_params,
     parse_games_page,
 )
+from tester_spin.providers.redtiger.cms_auth import discover_cms_authorization
 from tester_spin.providers.redtiger.execution import RedTigerExecutionMixin
 
 
@@ -68,6 +69,57 @@ class RedTigerProvider(RedTigerExecutionMixin, ProviderAdapter):
             }
         )
         return session
+
+    def _cms_get(
+        self,
+        path: str,
+        *,
+        params: dict[str, Any],
+        timeout_s: float,
+        progress: Progress,
+    ) -> requests.Response:
+        """GET one CMS resource, bootstrapping frontend auth only when required.
+
+        The public Red Tiger frontend currently sends an Authorization value to
+        cmsevo. That value is deployment data embedded/installed by the frontend,
+        not a provider protocol constant, so Tester-Spin observes it at runtime
+        instead of storing a literal credential in source code.
+        """
+        parsed_public = urlparse(self.catalog_url)
+        origin = f"{parsed_public.scheme}://{parsed_public.netloc}"
+        headers = {
+            "Origin": origin,
+            "Referer": origin.rstrip("/") + "/",
+        }
+        url = f"{self.cms_api_url}/{str(path).lstrip('/')}"
+        response = self.http.get(
+            url,
+            params=params,
+            headers=headers,
+            timeout=timeout_s,
+        )
+        if response.status_code not in {401, 403}:
+            response.raise_for_status()
+            return response
+
+        progress(
+            f"Red Tiger CMS {response.status_code}: obteniendo autorización "
+            "desde una request real del frontend oficial..."
+        )
+        authorization = discover_cms_authorization(
+            self.catalog_url,
+            timeout_s=max(30.0, float(timeout_s)),
+        )
+        self.http.headers["Authorization"] = authorization
+        response = self.http.get(
+            url,
+            params=params,
+            headers=headers,
+            timeout=timeout_s,
+        )
+        response.raise_for_status()
+        progress("Red Tiger CMS: autorización del frontend reutilizada en memoria; replay HTTP OK.")
+        return response
 
     def game_dir(self, game: Game) -> Path:
         path = self.provider_root / _safe_folder(game.name)
@@ -171,12 +223,12 @@ class RedTigerProvider(RedTigerExecutionMixin, ProviderAdapter):
         authority_gaps: list[str] = []
 
         progress("Red Tiger catálogo: descubriendo studio CMS por título, sin ID numérico fijo...")
-        studios_response = self.http.get(
-            f"{self.cms_api_url}/studios",
+        studios_response = self._cms_get(
+            "studios",
             params={"populate": "deep"},
-            timeout=30.0,
+            timeout_s=30.0,
+            progress=progress,
         )
-        studios_response.raise_for_status()
         studios_payload = studios_response.json()
         if not isinstance(studios_payload, dict):
             raise ValueError("Red Tiger CMS studios no devolvió objeto JSON.")
@@ -200,17 +252,17 @@ class RedTigerProvider(RedTigerExecutionMixin, ProviderAdapter):
                     authority_gaps.append(f"crawl limitado a {limit} páginas")
                 break
 
-            response = self.http.get(
-                f"{self.cms_api_url}/games",
+            response = self._cms_get(
+                "games",
                 params=games_query_params(
                     studio_id,
                     page=page,
                     page_size=page_size,
                     released_before_iso=released_before,
                 ),
-                timeout=30.0,
+                timeout_s=30.0,
+                progress=progress,
             )
-            response.raise_for_status()
             payload = response.json()
             if not isinstance(payload, dict):
                 raise ValueError(f"Red Tiger CMS página {page}: JSON no objeto.")
