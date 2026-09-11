@@ -9,6 +9,15 @@ from tester_spin.providers.rubyplay import runtime as _runtime
 _ORIGINAL_DISCOVER = _runtime.discover_client_profile
 _ORIGINAL_BOOTSTRAP = _runtime.bootstrap_game
 
+_WRAPPER_REF = re.compile(
+    r"(?:[A-Za-z_$][A-Za-z0-9_$]*\.)?_\$wrappers\[(\d+)\]\.getName\(\)"
+)
+_WRAPPER_CHAIN = re.compile(
+    r"(?:[A-Za-z_$][A-Za-z0-9_$]*\.)?_\$wrappers\[\d+\]\.getName\(\)"
+    r"(?:\s*\+\s*['\"]_['\"]\s*\+\s*"
+    r"(?:[A-Za-z_$][A-Za-z0-9_$]*\.)?_\$wrappers\[\d+\]\.getName\(\))+"
+)
+
 
 def _action_wrapper_map(bundle: str) -> dict[int, str]:
     """Resolve Action._$wrappers indices without depending on game names."""
@@ -26,14 +35,45 @@ def _action_wrapper_map(bundle: str) -> dict[int, str]:
     }
 
 
+def _feature_types_from_method(body: str, action_map: dict[int, str]) -> set[str]:
+    """Resolve simple and composite Action-wrapper names from one method body.
+
+    RubyPlay uses both a single wrapper (``freespin``) and concatenated wrappers
+    such as ``freespin_respin``. Composite types are built literally as
+    ``wrapper[2].getName()+"_"+wrapper[3].getName()``. We preserve that provider
+    composition instead of inventing a per-game mapping.
+    """
+    candidates: set[str] = set()
+    covered: list[tuple[int, int]] = []
+
+    for match in _WRAPPER_CHAIN.finditer(body or ""):
+        indexes = [int(raw) for raw in _WRAPPER_REF.findall(match.group(0))]
+        names = [action_map.get(index, "") for index in indexes]
+        if indexes and all(names):
+            candidates.add("_".join(names))
+            covered.append(match.span())
+
+    def in_chain(position: int) -> bool:
+        return any(start <= position < end for start, end in covered)
+
+    for match in _WRAPPER_REF.finditer(body or ""):
+        if in_chain(match.start()):
+            continue
+        name = action_map.get(int(match.group(1)), "")
+        if name:
+            candidates.add(name)
+
+    return candidates
+
+
 def _recover_buy_feature_type(bundle: str, profile) -> None:
     """Recover Buy Feature type from method-local Action wrapper references.
 
     Older discovery required ``isBuyFeatureGame`` to appear shortly after
     ``getBuyFeatureType``. Real RubyPlay bundles can place those methods hundreds
     of kilobytes apart. The method itself is authoritative: if every concrete
-    ``getBuyFeatureType`` implementation that references an Action wrapper
-    converges on one action name, that name is safe to use.
+    implementation converges on one provider action/type string, that type is
+    safe to use.
     """
     if str(getattr(profile, "buy_feature_type", "") or "").strip():
         return
@@ -42,28 +82,22 @@ def _recover_buy_feature_type(bundle: str, profile) -> None:
     if not action_map:
         return
 
-    candidates: list[str] = []
+    candidates: set[str] = set()
     for match in re.finditer(
         r"getBuyFeatureType\([^)]*\)\{(?P<body>[^{}]{0,6000})\}",
         bundle or "",
         re.S,
     ):
-        indexes = {
-            int(raw)
-            for raw in re.findall(
-                r"_\$wrappers\[(\d+)\]\.getName\(\)",
-                match.group("body"),
-            )
-        }
-        names = {action_map[index] for index in indexes if index in action_map}
-        if len(names) != 1:
-            continue
-        name = next(iter(names))
-        if name not in candidates:
-            candidates.append(name)
+        method_types = _feature_types_from_method(match.group("body"), action_map)
+        if len(method_types) == 1:
+            candidates.update(method_types)
+        elif len(method_types) > 1:
+            # A method that can resolve to multiple unrelated types is ambiguous;
+            # do not guess which branch is active.
+            return
 
     if len(candidates) == 1:
-        profile.buy_feature_type = candidates[0]
+        profile.buy_feature_type = next(iter(candidates))
         profile.evidence.append(
             "client.getBuyFeatureType->Action wrapper (method-local)"
         )
@@ -111,9 +145,6 @@ def _client_buy_feature_capability(bundle: str, profile) -> bool | None:
     if concrete_true:
         return True
     if generic_wrapper_seen and not unresolved_concrete and not concrete_true:
-        # No session-side positive implementation was found. A bundle containing
-        # only the optional generic wrapper and base/false implementations is the
-        # legacy false-positive case seen in older RubyPlay clients.
         return False
     if concrete_false and not unresolved_concrete:
         return False
