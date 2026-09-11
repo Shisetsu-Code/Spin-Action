@@ -12,6 +12,7 @@ import requests
 
 from tester_spin.providers.redtiger.bootstrap import BootstrapEndpoints
 from tester_spin.providers.redtiger.demo_auth import demo_page_url
+from tester_spin.providers.redtiger.evo_auth import resolve_json_entry_auth
 from tester_spin.providers.redtiger.runtime import (
     RedTigerRuntime,
     feature_buys_from_settings,
@@ -213,10 +214,10 @@ def bootstrap_game(
     """Bootstrap Red Tiger in one provider-owned browser context, then use HTTP directly.
 
     No title, runtime gameId, gserver host, API key or session credential is fixed.
-    The official demo route owns token issuance. We observe its token response and
-    launcher traffic. If the normal entry fails at HTTP level, ``entryEmbedded``
-    is tried only when that alternative was advertised by the same live token
-    response.
+    The official demo route owns token issuance. We first allow its normal entry
+    navigation, then its advertised embedded entry, and finally the Evolution JSON
+    entry contract proven by the live client. All opaque session values still come
+    from the current token/demo response.
     """
     table = str(table_id or "").strip()
     if not table:
@@ -248,6 +249,8 @@ def bootstrap_game(
     demo_entries: dict[str, str] = {}
     entry_responses: list[Any] = []
     embedded_fallback_attempted = False
+    json_auth_attempted = False
+    json_auth_diagnostic: dict[str, Any] = {}
     browser_profile = ""
     browser_launch_failures: list[str] = []
 
@@ -391,6 +394,59 @@ def bootstrap_game(
                                 f"({type(fallback_exc).__name__}); seguimos observando settings..."
                             )
 
+            latest_entry_failure = next(
+                (
+                    response
+                    for response in reversed(entry_responses)
+                    if int(getattr(response, "status", 0) or 0) >= 400
+                ),
+                None,
+            )
+            if (
+                latest_entry_failure is not None
+                and embedded_fallback_attempted
+                and not json_auth_attempted
+                and str(demo_entries.get("entry") or "").strip()
+            ):
+                json_auth_attempted = True
+                if progress is not None:
+                    progress(
+                        "Red Tiger bootstrap: navegación entry/embedded falló; resolviendo "
+                        "el contrato JSON del cliente Evolution con client_version vivo..."
+                    )
+                try:
+                    target_url, json_auth_diagnostic = resolve_json_entry_auth(
+                        context,
+                        entry=demo_entries["entry"],
+                        entry_origin=cfg.entry_origin,
+                        referer=launch_url,
+                        timeout_ms=navigation_timeout_ms,
+                    )
+                    json_page = context.new_page()
+                    attach_page(json_page)
+                    try:
+                        json_page.goto(
+                            target_url,
+                            wait_until="domcontentloaded",
+                            timeout=navigation_timeout_ms,
+                            referer=launch_url,
+                        )
+                    except Exception as json_navigation_exc:
+                        if progress is not None:
+                            progress(
+                                "Red Tiger bootstrap: loader resuelto por auth JSON no terminó navegación limpia "
+                                f"({type(json_navigation_exc).__name__}); seguimos observando settings..."
+                            )
+                except Exception as json_auth_exc:
+                    json_auth_diagnostic = {
+                        "error": f"{type(json_auth_exc).__name__}: {json_auth_exc}"
+                    }
+                    if progress is not None:
+                        progress(
+                            "Red Tiger bootstrap: auth JSON Evolution no pudo resolverse: "
+                            f"{type(json_auth_exc).__name__}: {json_auth_exc}"
+                        )
+
             pages = list(context.pages)
             if not pages:
                 break
@@ -400,7 +456,7 @@ def bootstrap_game(
                 continue
 
         entry_diagnostics: list[dict[str, Any]] = []
-        for response in entry_responses[-6:]:
+        for response in entry_responses[-8:]:
             try:
                 request = response.request
                 try:
@@ -430,6 +486,8 @@ def bootstrap_game(
             "demo_token_statuses": demo_token_statuses,
             "demo_entry_fields": sorted(demo_entries),
             "embedded_fallback_attempted": embedded_fallback_attempted,
+            "json_auth_attempted": json_auth_attempted,
+            "json_auth": json_auth_diagnostic,
             "settings_observed": bool(settings_box),
             "pages": [_safe_trace_url(current.url) for current in context.pages],
             "entry_attempts": entry_diagnostics,
@@ -451,13 +509,15 @@ def bootstrap_game(
             ]
             entry_tail = [
                 f"{item.get('status')} {item.get('url')} cookies={item.get('request', {}).get('cookie_names', [])}"
-                for item in entry_diagnostics[-3:]
+                for item in entry_diagnostics[-4:]
             ]
             token_note = demo_token_statuses[-1] if demo_token_statuses else "no observado"
+            json_note = json_auth_diagnostic or {"attempted": json_auth_attempted}
             raise TimeoutError(
                 "Red Tiger: la sesión demo no emitió platform/game/settings "
                 f"en {settings_timeout_ms} ms; navegador={browser_profile}; token/demo={token_note}; "
-                f"entry={entry_tail!r}; últimas respuestas={tail!r}; fallos={failed_tail!r}. "
+                f"entry={entry_tail!r}; json_auth={json_note!r}; "
+                f"últimas respuestas={tail!r}; fallos={failed_tail!r}. "
                 "Ver bootstrap/bootstrap-trace.json para diagnóstico sanitizado."
             )
 
