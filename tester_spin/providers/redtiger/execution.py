@@ -9,7 +9,7 @@ from typing import Any
 
 from tester_spin.models import Game, GameTestResult, SpinAttempt, utc_now_iso
 from tester_spin.providers.base import Progress
-from tester_spin.providers.redtiger.bootstrap import bootstrap_game
+from tester_spin.providers.redtiger.bootstrap_browser import bootstrap_game
 from tester_spin.providers.redtiger.runtime import (
     FeatureBuy,
     RedTigerRuntime,
@@ -81,7 +81,7 @@ def _persist_runtime_metadata(provider, game: Game, runtime: RedTigerRuntime) ->
             "table_id": game.symbol,
             "runtime_game_id": runtime.game_id,
             "runtime_transport": "http_json_platform_game",
-            "runtime_bootstrap": "official_demo_launcher_observed_settings",
+            "runtime_bootstrap": "official_demo_route_single_browser_observed_settings",
             "settings_url": runtime.settings_url,
             "spin_url": runtime.spin_url,
             "stakes": [str(value) for value in runtime.stakes],
@@ -151,6 +151,7 @@ class RedTigerExecutionMixin:
                 timeout_s=max(30.0, float(timeout_s)),
                 artifact_dir=run_dir / "bootstrap",
                 endpoints=self.bootstrap_endpoints,
+                progress=progress,
             )
             game.symbol = table_id
             _persist_runtime_metadata(self, game, runtime)
