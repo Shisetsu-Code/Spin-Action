@@ -214,7 +214,7 @@ def bootstrap_game(
 
     No title, runtime gameId, gserver host, API key or session credential is fixed.
     The official demo route owns token issuance. We observe its token response and
-    launcher traffic. If the normal entry is explicitly denied, ``entryEmbedded``
+    launcher traffic. If the normal entry fails at HTTP level, ``entryEmbedded``
     is tried only when that alternative was advertised by the same live token
     response.
     """
@@ -361,7 +361,7 @@ def bootstrap_game(
                 (
                     response
                     for response in reversed(entry_responses)
-                    if int(getattr(response, "status", 0) or 0) in {401, 403}
+                    if int(getattr(response, "status", 0) or 0) >= 400
                 ),
                 None,
             )
@@ -372,7 +372,7 @@ def bootstrap_game(
                 if embedded_url:
                     if progress is not None:
                         progress(
-                            "Red Tiger bootstrap: entry principal rechazado; probando "
+                            "Red Tiger bootstrap: entry principal falló; probando "
                             "entryEmbedded anunciado por token/demo en la misma sesión..."
                         )
                     fallback_page = context.new_page()
