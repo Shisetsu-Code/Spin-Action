@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import inspect
 import unittest
 from urllib.parse import parse_qs, urlparse
 
+from tester_spin.providers.redtiger import evo_auth
 from tester_spin.providers.redtiger.evo_auth import (
+    _browser_fetch_json,
     client_version_from_html,
     entry_json_url,
     loader_target_url,
@@ -64,6 +67,31 @@ class RedTigerEvolutionAuthTests(unittest.TestCase):
                 "https://fansite.example",
                 "8.30000101.11111.22222-abcdef1234-r3",
             )
+
+    def test_json_auth_uses_real_browser_fetch_not_context_request(self) -> None:
+        source = inspect.getsource(evo_auth.resolve_json_entry_auth)
+        self.assertNotIn("context.request", source)
+        self.assertIn("_browser_fetch_json", source)
+        fetch_source = inspect.getsource(evo_auth._browser_fetch_json)
+        self.assertIn("credentials: 'include'", fetch_source)
+        self.assertIn("fetch(url", fetch_source)
+
+    def test_browser_fetch_json_returns_browser_http_result(self) -> None:
+        class FakePage:
+            def __init__(self) -> None:
+                self.argument = None
+
+            def evaluate(self, script, argument):
+                self.argument = argument
+                self.script = script
+                return {"status": 200, "text": '{"location":"/ok"}'}
+
+        page = FakePage()
+        status, text = _browser_fetch_json(page, "https://fansite.example/entry?x=opaque")
+        self.assertEqual(status, 200)
+        self.assertEqual(text, '{"location":"/ok"}')
+        self.assertEqual(page.argument, {"url": "https://fansite.example/entry?x=opaque"})
+        self.assertIn("credentials: 'include'", page.script)
 
 
 if __name__ == "__main__":
