@@ -44,13 +44,13 @@ class RedTigerDemoAuthTests(unittest.TestCase):
             "dynamic-key",
         )
 
-    def test_demo_route_is_derived_from_table_id_not_title(self) -> None:
+    def test_demo_route_is_exact_public_route_and_uses_table_id(self) -> None:
         self.assertEqual(
             demo_page_url(
                 "https://redtiger.example/games/a-public-slug",
                 "opaque-table-7xq",
             ),
-            "https://redtiger.example/demo/opaque-table-7xq?showNavbar=true&tenant=redtiger",
+            "https://redtiger.example/demo/opaque-table-7xq?showNavbar=true",
         )
 
     def test_unauthorized_demo_token_retries_with_observed_frontend_key(self) -> None:
