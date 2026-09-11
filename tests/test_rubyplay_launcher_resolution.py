@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
+from tester_spin.providers.rubyplay.browser_launcher import _pick_complete_launcher
 from tester_spin.providers.rubyplay.launcher_params import parse_launcher_url
 from tester_spin.providers.rubyplay.launcher_resolver import (
     extract_executable_launcher_url,
@@ -55,6 +56,20 @@ class RubyPlayLauncherResolutionTests(unittest.TestCase):
         self.assertEqual(parsed.currency, "EUR")
         self.assertEqual(parsed.mode, "fun")
         self.assertEqual(parsed.lang, "en")
+
+    def test_exact_doubled_gamename_is_canonicalized(self) -> None:
+        malformed = (
+            "https://prrpeu3.com/launcher?gamename=rp_160rp_160&operator=rubyplay.com"
+            "&server_url=https://srv.prrpeu3.com&currency=EUR&mode=fun&lang=en"
+        )
+        resolved = _pick_complete_launcher([malformed])
+        self.assertIsNotNone(resolved)
+        self.assertIn("gamename=rp_160&", str(resolved))
+        self.assertNotIn("rp_160rp_160", str(resolved))
+
+        parsed = parse_launcher_url(malformed)
+        self.assertEqual(parsed.gamename, "rp_160")
+        self.assertIn("gamename=rp_160&", parsed.launcher_url)
 
 
 if __name__ == "__main__":
