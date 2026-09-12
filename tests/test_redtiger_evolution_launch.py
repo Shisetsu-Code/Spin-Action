@@ -8,17 +8,17 @@ from tester_spin.providers.redtiger import evolution_launch
 
 
 class RedTigerEvolutionLaunchTests(unittest.TestCase):
-    def test_loader_wait_does_not_require_external_loader_constructor(self) -> None:
+    def test_live_start_contract_does_not_require_button_or_loader(self) -> None:
         class FakePage:
             def evaluate(self, _script):
                 return {
                     "id": "22914",
                     "form": True,
-                    "button": True,
+                    "button": False,
                     "api_host": "games.evolution.com",
                     "api_path": "/wp-json/",
                     "has_nonce": True,
-                    "loader": False,
+                    "loader": True,
                 }
 
             def wait_for_timeout(self, _milliseconds: int) -> None:
@@ -42,6 +42,15 @@ class RedTigerEvolutionLaunchTests(unittest.TestCase):
         self.assertIn("document.createElement('iframe')", source)
         self.assertNotIn("fa4f88a22f", source)
         self.assertNotIn("22914", source)
+
+    def test_contract_wait_uses_wire_inputs_not_visible_button(self) -> None:
+        source = inspect.getsource(evolution_launch._wait_for_live_start_contract)
+        acceptance = source.split("if (", 1)[-1]
+        self.assertIn("api_host", source)
+        self.assertIn("api_path", source)
+        self.assertIn("has_nonce", source)
+        self.assertNotIn('and bool(state.get("button"))', source)
+        self.assertNotIn('and bool(state.get("loader"))', source)
 
     def test_start_wait_is_cooperatively_cancellable(self) -> None:
         class NeverCalledPage:
