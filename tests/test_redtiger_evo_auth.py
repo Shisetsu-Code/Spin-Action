@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import threading
 import unittest
 from urllib.parse import parse_qs, urlparse
 
@@ -75,23 +76,56 @@ class RedTigerEvolutionAuthTests(unittest.TestCase):
         fetch_source = inspect.getsource(evo_auth._browser_fetch_json)
         self.assertIn("credentials: 'include'", fetch_source)
         self.assertIn("fetch(url", fetch_source)
+        self.assertIn("controller.abort()", fetch_source)
 
     def test_browser_fetch_json_returns_browser_http_result(self) -> None:
         class FakePage:
             def __init__(self) -> None:
                 self.argument = None
+                self.launch_script = ""
 
-            def evaluate(self, script, argument):
-                self.argument = argument
-                self.script = script
-                return {"status": 200, "text": '{"location":"/ok"}'}
+            def evaluate(self, script, argument=None):
+                if argument is not None:
+                    self.argument = argument
+                    self.launch_script = script
+                    return None
+                if "return {done:" in script:
+                    return {
+                        "done": True,
+                        "status": 200,
+                        "text": '{"location":"/ok"}',
+                        "error": "",
+                    }
+                return None
+
+            def wait_for_timeout(self, _milliseconds: int) -> None:
+                return None
 
         page = FakePage()
-        status, text = _browser_fetch_json(page, "https://fansite.example/entry?x=opaque")
+        status, text = _browser_fetch_json(
+            page,
+            "https://fansite.example/entry?x=opaque",
+            3000,
+        )
         self.assertEqual(status, 200)
         self.assertEqual(text, '{"location":"/ok"}')
         self.assertEqual(page.argument, {"url": "https://fansite.example/entry?x=opaque"})
-        self.assertIn("credentials: 'include'", page.script)
+        self.assertIn("credentials: 'include'", page.launch_script)
+
+    def test_browser_fetch_json_honors_preexisting_stop_request(self) -> None:
+        class NeverCalledPage:
+            def evaluate(self, *_args, **_kwargs):
+                raise AssertionError("browser fetch should not start after stop")
+
+        stop_event = threading.Event()
+        stop_event.set()
+        with self.assertRaises(InterruptedError):
+            _browser_fetch_json(
+                NeverCalledPage(),
+                "https://fansite.example/entry?x=opaque",
+                3000,
+                stop_event=stop_event,
+            )
 
 
 if __name__ == "__main__":
