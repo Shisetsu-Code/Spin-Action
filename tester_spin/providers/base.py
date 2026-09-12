@@ -72,6 +72,24 @@ class ProviderAdapter(ABC):
         """
         return None
 
+    def finalize_test_result(
+        self,
+        result: GameTestResult,
+        *,
+        progress: Progress,
+    ) -> GameTestResult:
+        """Apply provider-neutral completeness gates after the adapter finishes.
+
+        An adapter owns the wire protocol and is the only layer allowed to execute
+        provider-specific continuations. The neutral finalizer verifies that any
+        selectable branch exposed by adapter metadata or persisted JSON evidence was
+        actually covered. Unknown wire contracts therefore stay PARCIAL instead of
+        being silently reported as OK.
+        """
+        from tester_spin.providers.path_coverage import enforce_complete_path_coverage
+
+        return enforce_complete_path_coverage(result, progress=progress)
+
     @abstractmethod
     def crawl_catalog(
         self,
