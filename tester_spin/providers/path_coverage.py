@@ -141,6 +141,7 @@ def _artifact_branch_points(result: GameTestResult) -> list[dict[str, Any]]:
 
     selected_by_mode: dict[str, set[str]] = {}
     pending: dict[tuple[str, str, tuple[str, ...]], dict[str, Any]] = {}
+    pragmatic_fso: dict[tuple[str, str, tuple[str, ...]], dict[str, Any]] = {}
 
     for path in root.rglob("*.json"):
         if path.name in {"result.json", "path-coverage.json"}:
@@ -150,6 +151,33 @@ def _artifact_branch_points(result: GameTestResult) -> list[dict[str, Any]]:
             continue
         payload = _load_json(path)
         if payload is None:
+            continue
+
+        if (
+            isinstance(payload, dict)
+            and payload.get("schema") == "tester-spin/pragmatic-fso-selection/v1"
+        ):
+            required = _option_list(payload.get("option_indices"))
+            selected = _clean_option(payload.get("selected_index"))
+            if required:
+                # The wire step in the artifact name distinguishes multiple FSO
+                # prompts inside the same mode. Aggregate coverage by occurrence,
+                # not merely by mode, so a second nested selector cannot be hidden
+                # by options selected at the first one.
+                signature = f"{mode_id}:doFSOption:{path.name}"
+                key = (mode_id, signature, tuple(sorted(required)))
+                item = pragmatic_fso.setdefault(
+                    key,
+                    {
+                        "source": "pragmatic_fso_artifact",
+                        "mode_id": mode_id,
+                        "signature": signature,
+                        "required": required,
+                        "covered": set(),
+                    },
+                )
+                if selected:
+                    item["covered"].add(selected)
             continue
 
         lowered = path.name.casefold()
@@ -176,6 +204,13 @@ def _artifact_branch_points(result: GameTestResult) -> list[dict[str, Any]]:
         required = list(item["required"])
         covered = sorted(selected_by_mode.get(str(item["mode_id"]), set()).intersection(required))
         points.append({**item, "covered": covered})
+    for item in pragmatic_fso.values():
+        points.append(
+            {
+                **item,
+                "covered": sorted(item["covered"]),
+            }
+        )
     return points
 
 
