@@ -6,6 +6,7 @@ from tester_spin.models import Game, GameTestResult
 from tester_spin.providers.base import Progress
 from tester_spin.providers.redtiger import execution as redtiger_execution
 from tester_spin.providers.redtiger.adapter import RedTigerProvider as RedTigerAdapter
+from tester_spin.providers.redtiger.branch_coverage import expand_all_choice_branches
 from tester_spin.providers.redtiger.evolution_launch import bootstrap_game as evolution_bootstrap_game
 
 
@@ -39,6 +40,8 @@ def _normalize_metadata_only_partial(result: GameTestResult) -> None:
     ).strip()
     if "Cobertura pendiente:" in remainder or "Errores:" in remainder or "Diagnóstico:" in remainder:
         return
+    if "Cobertura de choices Red Tiger incompleta:" in remainder:
+        return
 
     result.status = "OK"
     result.error = ""
@@ -70,6 +73,16 @@ class RedTigerProvider(RedTigerAdapter):
         finally:
             redtiger_execution.bootstrap_game = original_bootstrap
 
+        result = expand_all_choice_branches(
+            self,
+            game,
+            result,
+            launch_id=launch_id,
+            repetitions=max(1, int(spins)),
+            timeout_s=timeout_s,
+            stop_event=stop_event,
+            progress=progress,
+        )
         _normalize_metadata_only_partial(result)
         if launch_id:
             game.symbol = launch_id
