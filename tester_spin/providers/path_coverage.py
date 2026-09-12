@@ -8,6 +8,18 @@ from tester_spin.models import GameTestResult
 
 
 _EMPTY_SELECTIONS = {None, ""}
+_ACTIONABLE_KINDS = {
+    "SPIN",
+    "PURCHASE",
+    "PURCHASE_BRANCH",
+    "FEATURE",
+    "CONTINUATION",
+    "VARIANT",
+    "CHOICE_BRANCH",
+    "CHOICE_CONTINUATION",
+    "INDEXED_CHOICE",
+    "UNRESOLVED_STATE",
+}
 
 
 def _clean_option(value: Any) -> str:
@@ -87,6 +99,40 @@ def _load_json(path: Path) -> Any | None:
         return None
 
 
+def _implicit_uncovered_action(mode: dict[str, Any]) -> dict[str, Any] | None:
+    """Turn an advertised-but-unexecuted provider action into required coverage.
+
+    Providers use slightly different metadata vocabularies. The shared invariant is
+    intentionally conservative: only gameplay-like kinds participate. Pure
+    DISCOVERED_ONLY/telemetry rows remain diagnostics. If an actionable row says
+    ``executable=False`` or ``observed=False``, it cannot silently coexist with OK.
+    """
+    kind = str(mode.get("kind") or "").upper()
+    if kind not in _ACTIONABLE_KINDS:
+        return None
+    if mode.get("coverage_required") is True:
+        return None
+    explicitly_unexecutable = mode.get("executable") is False
+    advertised_not_executed = mode.get("observed") is False
+    if not (explicitly_unexecutable or advertised_not_executed):
+        return None
+
+    mode_id = str(mode.get("id") or "UNKNOWN")
+    option = (
+        _clean_option(mode.get("wire_command"))
+        or _clean_option(mode.get("feature_buy"))
+        or _clean_option(mode.get("identifier"))
+        or mode_id
+    )
+    return {
+        "source": "discovered_modes_fail_closed",
+        "mode_id": mode_id,
+        "signature": str(mode.get("branch_signature") or f"{mode_id}:UNEXECUTED"),
+        "required": [option],
+        "covered": [],
+    }
+
+
 def _explicit_branch_points(result: GameTestResult) -> list[dict[str, Any]]:
     points: list[dict[str, Any]] = []
     for mode in result.discovered_modes:
@@ -119,6 +165,10 @@ def _explicit_branch_points(result: GameTestResult) -> list[dict[str, Any]]:
                         "covered": covered,
                     }
                 )
+        else:
+            implicit = _implicit_uncovered_action(mode)
+            if implicit is not None:
+                points.append(implicit)
 
         fs_required = _option_list(mode.get("fs_option_indices"))
         if fs_required:
