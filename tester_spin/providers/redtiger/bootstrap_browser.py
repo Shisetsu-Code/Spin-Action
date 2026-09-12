@@ -84,10 +84,14 @@ def _runtime_session(
         "sec-fetch-site",
     }
     for key, value in observed_headers.items():
-        if str(key).lower() in ignored:
+        name = str(key)
+        lowered = name.casefold()
+        if not name or name.startswith(":") or lowered in ignored:
+            continue
+        if any(ch in name for ch in "\r\n\t "):
             continue
         if isinstance(value, str) and value:
-            session.headers[str(key)] = value
+            session.headers[name] = value
 
     parsed = urlparse(settings_url)
     origin = f"{parsed.scheme}://{parsed.netloc}"
@@ -202,6 +206,23 @@ def _embedded_entry_url(entries: dict[str, str], entry_origin: str, denied_url: 
     return candidate
 
 
+def _bootstrap_timeouts(timeout_s: float) -> tuple[int, int, int]:
+    """Return per-navigation, total bootstrap and post-JSON grace budgets.
+
+    The GUI/provider already supplies a per-game timeout. Historically Red Tiger
+    forced every navigation to at least 30 seconds and the whole bootstrap to at
+    least 60 seconds, which made deterministic launcher rejections painfully slow
+    across hundreds of games. Keep the caller's total budget, but prevent one
+    browser step from monopolizing it and give a resolved JSON loader a short grace
+    window to emit settings.
+    """
+    requested_ms = max(15_000, int(max(1.0, float(timeout_s)) * 1000))
+    navigation_ms = min(15_000, requested_ms)
+    total_ms = requested_ms
+    post_json_grace_ms = min(10_000, max(5_000, navigation_ms))
+    return navigation_ms, total_ms, post_json_grace_ms
+
+
 def bootstrap_game(
     public_url: str,
     table_id: str,
@@ -224,8 +245,7 @@ def bootstrap_game(
         raise ValueError("Red Tiger bootstrap requiere tableId del catálogo.")
 
     cfg = endpoints or BootstrapEndpoints()
-    navigation_timeout_ms = max(30_000, int(float(timeout_s) * 1000))
-    settings_timeout_ms = max(60_000, navigation_timeout_ms)
+    navigation_timeout_ms, settings_timeout_ms, post_json_grace_ms = _bootstrap_timeouts(timeout_s)
     artifact_dir.mkdir(parents=True, exist_ok=True)
     launch_url = demo_page_url(public_url, table)
 
@@ -253,6 +273,7 @@ def bootstrap_game(
     json_auth_diagnostic: dict[str, Any] = {}
     browser_profile = ""
     browser_launch_failures: list[str] = []
+    terminal_bootstrap_failure = False
 
     try:
         browser, browser_profile, browser_launch_failures = _launch_browser(playwright)
@@ -263,7 +284,10 @@ def bootstrap_game(
         )
 
         if progress is not None:
-            progress(f"Red Tiger bootstrap: navegador={browser_profile}.")
+            progress(
+                f"Red Tiger bootstrap: navegador={browser_profile}; "
+                f"timeout_total={settings_timeout_ms // 1000}s, paso={navigation_timeout_ms // 1000}s."
+            )
 
         entry_host = urlparse(cfg.entry_origin).netloc.casefold()
 
@@ -435,17 +459,26 @@ def bootstrap_game(
                         if progress is not None:
                             progress(
                                 "Red Tiger bootstrap: loader resuelto por auth JSON no terminó navegación limpia "
-                                f"({type(json_navigation_exc).__name__}); seguimos observando settings..."
+                                f"({type(json_navigation_exc).__name__}); damos una gracia corta a settings..."
                             )
+                    deadline = min(
+                        deadline,
+                        time.monotonic() + (post_json_grace_ms / 1000.0),
+                    )
                 except Exception as json_auth_exc:
                     json_auth_diagnostic = {
                         "error": f"{type(json_auth_exc).__name__}: {json_auth_exc}"
                     }
+                    terminal_bootstrap_failure = True
                     if progress is not None:
                         progress(
                             "Red Tiger bootstrap: auth JSON Evolution no pudo resolverse: "
-                            f"{type(json_auth_exc).__name__}: {json_auth_exc}"
+                            f"{type(json_auth_exc).__name__}: {json_auth_exc}; "
+                            "no quedan rutas de bootstrap, fallando sin esperar el timeout completo."
                         )
+
+            if terminal_bootstrap_failure:
+                break
 
             pages = list(context.pages)
             if not pages:
@@ -483,6 +516,12 @@ def bootstrap_game(
             "launch_url": _safe_trace_url(launch_url),
             "browser_profile": browser_profile,
             "browser_launch_failures": browser_launch_failures,
+            "timeouts_ms": {
+                "navigation": navigation_timeout_ms,
+                "total": settings_timeout_ms,
+                "post_json_grace": post_json_grace_ms,
+            },
+            "terminal_bootstrap_failure": terminal_bootstrap_failure,
             "demo_token_statuses": demo_token_statuses,
             "demo_entry_fields": sorted(demo_entries),
             "embedded_fallback_attempted": embedded_fallback_attempted,
@@ -513,10 +552,11 @@ def bootstrap_game(
             ]
             token_note = demo_token_statuses[-1] if demo_token_statuses else "no observado"
             json_note = json_auth_diagnostic or {"attempted": json_auth_attempted}
+            reason = "rutas agotadas" if terminal_bootstrap_failure else "timeout"
             raise TimeoutError(
                 "Red Tiger: la sesión demo no emitió platform/game/settings "
-                f"en {settings_timeout_ms} ms; navegador={browser_profile}; token/demo={token_note}; "
-                f"entry={entry_tail!r}; json_auth={json_note!r}; "
+                f"({reason}); presupuesto={settings_timeout_ms} ms; navegador={browser_profile}; "
+                f"token/demo={token_note}; entry={entry_tail!r}; json_auth={json_note!r}; "
                 f"últimas respuestas={tail!r}; fallos={failed_tail!r}. "
                 "Ver bootstrap/bootstrap-trace.json para diagnóstico sanitizado."
             )
