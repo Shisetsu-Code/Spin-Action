@@ -76,7 +76,9 @@ class RedTigerEvolutionAuthTests(unittest.TestCase):
         fetch_source = inspect.getsource(evo_auth._browser_fetch_json)
         self.assertIn("credentials: 'include'", fetch_source)
         self.assertIn("fetch(url", fetch_source)
-        self.assertIn("controller.abort()", fetch_source)
+        self.assertIn("_abort_browser_fetch(page)", fetch_source)
+        abort_source = inspect.getsource(evo_auth._abort_browser_fetch)
+        self.assertIn("controller.abort()", abort_source)
 
     def test_browser_fetch_json_returns_browser_http_result(self) -> None:
         class FakePage:
