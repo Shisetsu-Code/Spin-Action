@@ -28,15 +28,18 @@ def walk_tree(value: Any, path: str = "$") -> Iterator[tuple[str, Any]]:
 def _is_structural_state_node(value: dict[str, Any]) -> bool:
     """Recognize provider game-state objects that legitimately omit ``spinMode``.
 
-    Some Red Tiger titles return the normal spin as ``result.game`` with
-    ``gameMode`` + ``hasState`` and the actual outcome fields, but no ``spinMode``.
-    Requiring ``spinMode`` made those successful HTTP 200 / success=true spins look
-    partial even though the provider returned a complete terminal game state.
+    Red Tiger has more than one terminal response shape. Some titles return
+    ``gameMode`` + ``hasState`` while others return only ``hasState`` together
+    with the actual outcome object (for example ``win``/``nsp``). Requiring
+    ``spinMode`` or ``gameMode`` made those successful HTTP 200 / success=true
+    spins look partial even though the provider returned a complete terminal
+    game state.
 
-    Keep the fallback deliberately structural: a lone ``gameMode`` is not enough.
-    We require the provider state marker plus at least one outcome-bearing field.
+    Keep the fallback deliberately structural: ``hasState`` alone is not enough.
+    We require the provider state marker plus at least one outcome-bearing field,
+    so settings/config metadata is not mistaken for a spin result.
     """
-    if "gameMode" not in value or not isinstance(value.get("hasState"), bool):
+    if not isinstance(value.get("hasState"), bool):
         return False
     return any(
         key in value
@@ -48,6 +51,9 @@ def _is_structural_state_node(value: dict[str, Any]) -> bool:
             "winLines",
             "scatters",
             "nearMiss",
+            "nsp",
+            "fsp",
+            "rsp",
         )
     )
 
@@ -56,9 +62,10 @@ def result_nodes(payload: Any) -> list[ResultNode]:
     """Return structurally identifiable game-state nodes at any response depth.
 
     Prefer the explicit provider ``spinMode`` when present. For titles whose
-    normal-spin response omits it, accept the independently observed
-    ``gameMode``/``hasState`` state shape instead. An omitted spin mode remains an
-    empty string so Tester-Spin records the evidence without inventing semantics.
+    response omits it, accept an independently observed terminal state shape
+    anchored by ``hasState`` plus outcome-bearing fields. Missing ``spinMode`` or
+    ``gameMode`` remains missing in the evidence; Tester-Spin does not invent
+    semantics the provider did not send.
     """
     nodes: list[ResultNode] = []
     for path, value in walk_tree(payload):
