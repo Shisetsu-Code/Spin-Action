@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import threading
 import unittest
 
-from tester_spin.providers.redtiger.bootstrap_browser import _bootstrap_timeouts
+from tester_spin.providers.redtiger.bootstrap_browser import (
+    _bootstrap_timeouts,
+    _raise_if_stopped,
+)
 
 
 class RedTigerBootstrapTimingTests(unittest.TestCase):
@@ -23,6 +27,13 @@ class RedTigerBootstrapTimingTests(unittest.TestCase):
         self.assertEqual(navigation_ms, 15_000)
         self.assertEqual(total_ms, 15_000)
         self.assertEqual(post_json_ms, 10_000)
+
+    def test_stop_event_interrupts_bootstrap_contract(self) -> None:
+        event = threading.Event()
+        _raise_if_stopped(event)
+        event.set()
+        with self.assertRaises(InterruptedError):
+            _raise_if_stopped(event)
 
 
 if __name__ == "__main__":
