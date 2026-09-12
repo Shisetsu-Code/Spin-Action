@@ -11,9 +11,10 @@ from tester_spin.providers import (
     BGamingProvider,
     BelatraProvider,
     OneSpin4WinProvider,
+    PragmaticProvider,
     RubyPlayProvider,
 )
-from tester_spin.providers import bgaming_exhaustive, belatra_exhaustive
+from tester_spin.providers import bgaming_exhaustive, belatra_exhaustive, pragmatic_exhaustive
 from tester_spin.providers.one_spin4win_exhaustive import apply_d1_path_audit
 from tester_spin.providers.rubyplay.exhaustive import apply_rubyplay_path_audit
 
@@ -37,6 +38,7 @@ class ExhaustiveProviderPathTests(unittest.TestCase):
         self.assertEqual(BGamingProvider.__module__, "tester_spin.providers.bgaming")
         self.assertEqual(BelatraProvider.__module__, "tester_spin.providers.belatra_exhaustive")
         self.assertEqual(OneSpin4WinProvider.__module__, "tester_spin.providers.one_spin4win_exhaustive")
+        self.assertEqual(PragmaticProvider.__module__, "tester_spin.providers.pragmatic_hybrid")
         self.assertEqual(RubyPlayProvider.__module__, "tester_spin.providers.rubyplay.exhaustive")
 
     def test_belatra_discovers_full_scalar_selector_matrix(self) -> None:
@@ -151,6 +153,68 @@ class ExhaustiveProviderPathTests(unittest.TestCase):
                 bgaming_exhaustive._apply_profile_override(profile)
         finally:
             bgaming_exhaustive._OVERRIDE_LOCAL.spin_options = old
+
+    def test_pragmatic_branch_points_are_keyed_by_selector_prefix(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            attempt_root = Path(temp) / "PURCHASE_1" / "attempt-0001"
+            attempt_root.mkdir(parents=True)
+            (attempt_root / "fso-selection-002.json").write_text(
+                json.dumps(
+                    {
+                        "schema": "tester-spin/pragmatic-fso-selection/v1",
+                        "option_indices": [0, 1],
+                        "selected_index": 0,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (attempt_root / "fso-selection-005.json").write_text(
+                json.dumps(
+                    {
+                        "schema": "tester-spin/pragmatic-fso-selection/v1",
+                        "option_indices": [0, 1],
+                        "selected_index": 1,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            attempt = SpinAttempt(
+                number=1,
+                ok=True,
+                terminal=True,
+                mode_id="PURCHASE_1",
+                artifact_dir=str(attempt_root),
+            )
+            points = {}
+            pragmatic_exhaustive._ingest_attempt(points, attempt)
+            self.assertIn(("PURCHASE_1", ()), points)
+            self.assertIn(("PURCHASE_1", (0,)), points)
+            self.assertEqual(points[("PURCHASE_1", ())].covered, {0})
+            self.assertEqual(points[("PURCHASE_1", (0,))].covered, {1})
+            self.assertIn(("PURCHASE_1", (1,)), pragmatic_exhaustive._missing_prefixes(points))
+            self.assertIn(("PURCHASE_1", (0, 0)), pragmatic_exhaustive._missing_prefixes(points))
+
+    def test_pragmatic_forced_prefix_selects_requested_then_discovers_first_sibling(self) -> None:
+        state_before = getattr(pragmatic_exhaustive._FORCE_LOCAL, "state", None)
+        try:
+            pragmatic_exhaustive._FORCE_LOCAL.state = {
+                "prefix": (1,),
+                "depth": 0,
+                "trace": [],
+            }
+            options = [{"index": 0}, {"index": 1}, {"index": 2}]
+            first = pragmatic_exhaustive._forced_choose_fs_option_index(
+                options,
+                repetition=99,
+            )
+            second = pragmatic_exhaustive._forced_choose_fs_option_index(
+                options,
+                repetition=99,
+            )
+            self.assertEqual(first, 1)
+            self.assertEqual(second, 0)
+        finally:
+            pragmatic_exhaustive._FORCE_LOCAL.state = state_before
 
 
 if __name__ == "__main__":
