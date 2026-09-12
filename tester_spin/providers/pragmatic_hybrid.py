@@ -101,9 +101,24 @@ class PragmaticProvider(_EndpointPragmaticProvider):
             )
 
             if unhandled:
+                preview = ", ".join(
+                    str(item.get("state_kind") or item.get("signature") or "desconocido")
+                    if isinstance(item, dict)
+                    else str(item)
+                    for item in unhandled[:8]
+                )
+                message = (
+                    "Pragmatic: cobertura de caminos incompleta; "
+                    f"firmas de continuación sin handler={preview or len(unhandled)}."
+                )
+                if result.status == "OK":
+                    result.status = "PARCIAL"
+                if result.status not in {"ERROR", "CANCELADO"} and message not in str(result.error or ""):
+                    result.error = (str(result.error or "").strip() + " " + message).strip()
                 progress(
-                    "Los estados pendientes de automatización quedaron clasificados en "
+                    "Los estados pendientes de automatización bloquean OK y quedaron clasificados en "
                     "protocol-observations.json y en los *.analysis.json."
                 )
+                self._write_json(run_root / "result.json", result.to_dict())
 
         return result
