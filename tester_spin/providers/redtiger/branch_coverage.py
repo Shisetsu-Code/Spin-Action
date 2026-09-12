@@ -60,6 +60,13 @@ def _write_json(path: Path, payload: Any) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _read_json(path: Path) -> Any | None:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
 def _safe_decimal(value: Any) -> Decimal | None:
     try:
         parsed = Decimal(str(value))
@@ -97,11 +104,8 @@ def _choice_parent_modes(result: GameTestResult) -> set[str]:
     root = Path(str(result.run_dir or ""))
     if root.is_dir():
         for path in root.glob("*/attempt-*/response.json"):
-            try:
-                payload = json.loads(path.read_text(encoding="utf-8"))
-            except Exception:
-                continue
-            if pending_choice_from_response(payload) is not None:
+            payload = _read_json(path)
+            if isinstance(payload, dict) and pending_choice_from_response(payload) is not None:
                 parents.add(path.relative_to(root).parts[0])
     return parents
 
@@ -116,6 +120,92 @@ def _branch_mode_id(base_mode: str, prefix: tuple[str, ...]) -> str:
     if not prefix:
         return base_mode
     return base_mode + "__" + "__".join(f"CHOICE_{_mode_id(value)}" for value in prefix)
+
+
+def _merge_branch_point(
+    branch_points: dict[tuple[str, tuple[str, ...]], BranchPoint],
+    *,
+    mode_id: str,
+    prefix: tuple[str, ...],
+    required: list[str] | tuple[str, ...],
+) -> BranchPoint:
+    key = (mode_id, prefix)
+    point = branch_points.get(key)
+    if point is None:
+        point = BranchPoint(
+            mode_id=mode_id,
+            prefix=prefix,
+            required=[],
+            covered=set(),
+        )
+        branch_points[key] = point
+    for raw in required:
+        option = str(raw or "").strip()
+        if option and option not in point.required:
+            point.required.append(option)
+    return point
+
+
+def _base_attempt_ok(result: GameTestResult, attempt_root: Path) -> bool:
+    target = str(attempt_root)
+    return any(
+        attempt.ok and str(attempt.artifact_dir or "") == target
+        for attempt in result.attempts
+    )
+
+
+def _seed_from_base_attempt(
+    result: GameTestResult,
+    *,
+    run_root: Path,
+    base_mode: str,
+    repetition: int,
+    branch_points: dict[tuple[str, tuple[str, ...]], BranchPoint],
+) -> list[tuple[str, ...]]:
+    """Reuse the already validated first path and schedule only missing siblings."""
+    attempt_root = run_root / base_mode / f"attempt-{repetition:05d}"
+    summary = _read_json(attempt_root / "summary.json")
+    records = summary.get("choice_continuations") if isinstance(summary, dict) else None
+    if not isinstance(records, list) or not records:
+        return [()]
+
+    base_ok = _base_attempt_ok(result, attempt_root)
+    queue: list[tuple[str, ...]] = []
+    prefix: tuple[str, ...] = ()
+
+    for record in records:
+        if not isinstance(record, dict):
+            break
+        available = [
+            str(value).strip()
+            for value in (record.get("available") or [])
+            if str(value).strip()
+        ]
+        selected = str(record.get("selected") or "").strip()
+        if not available:
+            break
+
+        point = _merge_branch_point(
+            branch_points,
+            mode_id=base_mode,
+            prefix=prefix,
+            required=available,
+        )
+        if base_ok and selected in available:
+            point.covered.add(selected)
+
+        for option in available:
+            if base_ok and option == selected:
+                continue
+            candidate = prefix + (option,)
+            if candidate not in queue:
+                queue.append(candidate)
+
+        if not selected:
+            break
+        prefix = prefix + (selected,)
+
+    return queue or ([] if base_ok else [()])
 
 
 def _replay_prefix(
@@ -242,8 +332,6 @@ def _upsert_branch_metadata(
     result: GameTestResult,
     branch_points: dict[tuple[str, tuple[str, ...]], BranchPoint],
 ) -> None:
-    # Remove the older diagnostic-only continuation rows. They record only the
-    # first selected option and would otherwise make coverage look ambiguous.
     result.discovered_modes = [
         item
         for item in result.discovered_modes
@@ -290,10 +378,11 @@ def expand_all_choice_branches(
 ) -> GameTestResult:
     """Execute every observed Red Tiger choice path using fresh rounds.
 
-    A choice consumes the provider round id, so sibling options cannot be tested on
-    the same transaction. Each queued prefix is replayed from a fresh Evolution
-    demo session, and every discovered option is expanded. Unknown/unstable paths
-    never become OK silently: they are recorded as failed coverage.
+    The first path already executed by the normal provider run is reused as
+    coverage evidence. Every missing sibling is then replayed from a fresh
+    Evolution session because selecting a choice consumes its round id. If a
+    sibling exposes another selector, expansion continues recursively until every
+    observed leaf has been executed or a defensive limit is hit.
     """
     if result.status in {"ERROR", "CANCELADO"} or not result.run_dir or not launch_id:
         return result
@@ -315,10 +404,16 @@ def expand_all_choice_branches(
         if spec is None:
             branch_errors.append(f"{base_mode}: no se pudo reconstruir el contrato de entrada")
             continue
-        mode_kind, feature = spec
+        _mode_kind, feature = spec
 
         for repetition in range(1, max(1, int(repetitions)) + 1):
-            queue: list[tuple[str, ...]] = [()]
+            queue = _seed_from_base_attempt(
+                result,
+                run_root=run_root,
+                base_mode=base_mode,
+                repetition=repetition,
+                branch_points=branch_points,
+            )
             seen: set[tuple[str, ...]] = set()
             scheduled = 0
 
@@ -341,7 +436,7 @@ def expand_all_choice_branches(
 
                 progress(
                     f"[{game.name}] {base_mode}: recorriendo rama "
-                    f"{list(prefix) if prefix else ['<descubrir>']} "
+                    f"{list(prefix) if prefix else ['<redescubrir>']} "
                     f"(rep={repetition})."
                 )
                 try:
@@ -394,35 +489,24 @@ def expand_all_choice_branches(
                         parent.covered.add(prefix[-1])
 
                 if outcome.prompt is not None:
-                    key = (base_mode, prefix)
-                    point = branch_points.get(key)
-                    if point is None:
-                        point = BranchPoint(
-                            mode_id=base_mode,
-                            prefix=prefix,
-                            required=list(outcome.prompt.available),
-                            covered=set(),
-                        )
-                        branch_points[key] = point
-                    else:
-                        for option in outcome.prompt.available:
-                            if option not in point.required:
-                                point.required.append(option)
-
+                    point = _merge_branch_point(
+                        branch_points,
+                        mode_id=base_mode,
+                        prefix=prefix,
+                        required=outcome.prompt.available,
+                    )
                     if len(prefix) >= MAX_CHOICE_DEPTH:
                         branch_errors.append(
                             f"{base_mode}/{_path_label(prefix)}: selector adicional supera profundidad máxima"
                         )
                         continue
-                    for option in outcome.prompt.available:
+                    for option in point.required:
                         child = prefix + (option,)
                         if child not in seen and child not in queue:
                             queue.append(child)
                     continue
 
                 if not prefix:
-                    # A branch was seen in the original run but a fresh replay no
-                    # longer exposed it. Keep the run incomplete rather than guess.
                     branch_errors.append(
                         f"{base_mode}: la rama observada no reapareció en una sesión fresca"
                     )
@@ -484,10 +568,12 @@ def expand_all_choice_branches(
             "Cobertura de choices Red Tiger incompleta: "
             + " | ".join(list(dict.fromkeys(branch_errors))[:8]),
         )
-    elif added_requested:
+    elif branch_points:
+        covered = sum(len(point.covered) for point in branch_points.values())
+        required = sum(len(point.required) for point in branch_points.values())
         progress(
-            f"[{game.name}] Red Tiger ramas: {added_successes}/{added_requested} "
-            "rutas terminales adicionales validadas."
+            f"[{game.name}] Red Tiger ramas: cobertura {covered}/{required}; "
+            f"rutas terminales adicionales={added_successes}."
         )
 
     _write_json(run_root / "result.json", result.to_dict())
