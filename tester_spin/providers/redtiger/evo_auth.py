@@ -6,8 +6,6 @@ from typing import Any
 from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
 
 
-# This is an observed Evolution wrapper family path, not a game identifier. The
-# build/version itself is always read from the live HTML before auth is replayed.
 _FRONTEND_PATHS = ("/frontend/evo/r3/",)
 
 
@@ -29,6 +27,28 @@ def client_version_from_html(html: str) -> str:
     return ""
 
 
+def _stop_requested(stop_event: Any | None) -> bool:
+    try:
+        return bool(stop_event is not None and stop_event.is_set())
+    except Exception:
+        return False
+
+
+def _raise_if_stopped(stop_event: Any | None) -> None:
+    if _stop_requested(stop_event):
+        raise InterruptedError("Detención solicitada durante auth Evolution de Red Tiger.")
+
+
+def _wait_interruptible(page: Any, delay_ms: int, stop_event: Any | None) -> None:
+    remaining = max(0, int(delay_ms))
+    while remaining > 0:
+        _raise_if_stopped(stop_event)
+        step = min(100, remaining)
+        page.wait_for_timeout(step)
+        remaining -= step
+    _raise_if_stopped(stop_event)
+
+
 def _same_origin(candidate: str, origin: str) -> bool:
     left = urlparse(str(candidate or ""))
     right = urlparse(str(origin or ""))
@@ -40,11 +60,7 @@ def _same_origin(candidate: str, origin: str) -> bool:
 
 
 def entry_json_url(entry: str, entry_origin: str, client_version: str) -> str:
-    """Build the JSON auth request exactly from a live token/demo entry URL.
-
-    JSESSIONID/params and all opaque values stay untouched. Only the three fields
-    proven by the Evolution client contract are added/replaced.
-    """
+    """Build the JSON auth request exactly from a live token/demo entry URL."""
     version = str(client_version or "").strip()
     if not version:
         raise ValueError("Red Tiger Evolution auth: client_version vacío.")
@@ -72,11 +88,7 @@ def entry_json_url(entry: str, entry_origin: str, client_version: str) -> str:
 
 
 def loader_target_url(frontend_url: str, auth_location: str, entry_origin: str) -> str:
-    """Apply the auth location to the already validated Evolution loader path.
-
-    This mirrors the captured client: retain the loader pathname, take search/hash
-    from the auth response, and expose only the bare remote origin to the loader.
-    """
+    """Apply the auth location to the already validated Evolution loader path."""
     frontend = urlparse(str(frontend_url or ""))
     if not frontend.scheme or not frontend.netloc:
         raise ValueError("Red Tiger Evolution auth: frontend URL inválida.")
@@ -115,50 +127,91 @@ def _fragment_keys(value: str) -> list[str]:
     return sorted({key for key, _value in parse_qsl(parsed.fragment, keep_blank_values=True) if key})
 
 
-def _browser_fetch_json(page: Any, url: str, timeout_ms: int) -> tuple[int, str]:
-    """Issue auth from the real Evolution page with an explicit browser timeout.
-
-    The captured Evolution bundle performs this request from browser JavaScript.
-    BrowserContext.request shares cookies but is still a separate HTTP stack and can
-    be rejected by edge protection. Running fetch() in the page preserves the live
-    browser fingerprint, cookie jar, referrer/origin semantics and HTTP/2 handling.
-
-    A browser-side AbortController is important for bulk catalog testing: an edge
-    request that never completes must not consume the whole per-game bootstrap
-    budget.
-    """
-    bounded_timeout_ms = max(2_000, min(8_000, int(timeout_ms)))
-    result = page.evaluate(
-        """async ({url, timeoutMs}) => {
-            const controller = new AbortController();
-            const timer = setTimeout(() => controller.abort(), timeoutMs);
-            try {
-                const response = await fetch(url, {
-                    method: 'GET',
-                    credentials: 'include',
-                    cache: 'no-store',
-                    headers: {Accept: 'application/json, text/plain, */*'},
-                    signal: controller.signal
-                });
-                return {status: response.status, text: await response.text()};
-            } catch (error) {
-                return {status: 0, text: '', error: String(error)};
-            } finally {
-                clearTimeout(timer);
-            }
-        }""",
-        {"url": url, "timeoutMs": bounded_timeout_ms},
-    )
-    if not isinstance(result, dict):
-        raise RuntimeError("Red Tiger Evolution auth JSON: fetch del navegador no devolvió resultado.")
-    status = int(result.get("status") or 0)
-    if status <= 0:
-        error = str(result.get("error") or "sin detalle")
-        raise RuntimeError(
-            "Red Tiger Evolution auth JSON: fetch del navegador agotó/falló antes de recibir HTTP "
-            f"({error[:180]})."
+def _abort_browser_fetch(page: Any) -> None:
+    try:
+        page.evaluate(
+            """() => {
+                const state = window.__testerSpinRedTigerAuth;
+                if (state && state.controller) state.controller.abort();
+            }"""
         )
-    return status, str(result.get("text") or "")
+    except Exception:
+        pass
+
+
+def _browser_fetch_json(
+    page: Any,
+    url: str,
+    timeout_ms: int,
+    stop_event: Any | None = None,
+) -> tuple[int, str]:
+    """Issue auth in browser JS while remaining cooperatively cancellable."""
+    bounded_timeout_ms = max(2_000, min(8_000, int(timeout_ms)))
+    _raise_if_stopped(stop_event)
+
+    page.evaluate(
+        """({url}) => {
+            const controller = new AbortController();
+            const state = {
+                done: false,
+                status: 0,
+                text: '',
+                error: '',
+                controller
+            };
+            window.__testerSpinRedTigerAuth = state;
+            fetch(url, {
+                method: 'GET',
+                credentials: 'include',
+                cache: 'no-store',
+                headers: {Accept: 'application/json, text/plain, */*'},
+                signal: controller.signal
+            }).then(async response => {
+                state.status = response.status;
+                state.text = await response.text();
+            }).catch(error => {
+                state.error = String(error);
+            }).finally(() => {
+                state.done = true;
+            });
+        }""",
+        {"url": url},
+    )
+
+    remaining = bounded_timeout_ms
+    while remaining > 0:
+        if _stop_requested(stop_event):
+            _abort_browser_fetch(page)
+            raise InterruptedError("Detención solicitada durante fetch Evolution de Red Tiger.")
+        state = page.evaluate(
+            """() => {
+                const s = window.__testerSpinRedTigerAuth;
+                if (!s) return null;
+                return {done: !!s.done, status: s.status || 0, text: s.text || '', error: s.error || ''};
+            }"""
+        )
+        if isinstance(state, dict) and state.get("done"):
+            status = int(state.get("status") or 0)
+            text = str(state.get("text") or "")
+            error = str(state.get("error") or "")
+            try:
+                page.evaluate("() => { delete window.__testerSpinRedTigerAuth; }")
+            except Exception:
+                pass
+            if status <= 0:
+                raise RuntimeError(
+                    "Red Tiger Evolution auth JSON: fetch del navegador falló antes de recibir HTTP "
+                    f"({error[:180] or 'sin detalle'})."
+                )
+            return status, text
+        step = min(100, remaining)
+        page.wait_for_timeout(step)
+        remaining -= step
+
+    _abort_browser_fetch(page)
+    raise RuntimeError(
+        f"Red Tiger Evolution auth JSON: fetch del navegador agotó {bounded_timeout_ms} ms."
+    )
 
 
 def resolve_json_entry_auth(
@@ -168,47 +221,51 @@ def resolve_json_entry_auth(
     entry_origin: str,
     referer: str,
     timeout_ms: int,
+    stop_event: Any | None = None,
 ) -> tuple[str, dict[str, Any]]:
-    """Resolve Evolution's JSON entry contract in the current browser context.
-
-    The live Evolution bundle performs the auth request from page JavaScript. We do
-    the same: load its current frontend in a real page, discover the current build,
-    then call the opaque token/demo entry URL through browser fetch(). No session
-    credential is decoded, persisted or reconstructed.
-    """
+    """Resolve Evolution's JSON entry contract in the current browser context."""
     frontend_url = ""
     version = ""
     frontend_statuses: list[dict[str, Any]] = []
     auth_page = None
-    step_timeout_ms = max(5_000, min(10_000, int(timeout_ms)))
+    step_timeout_ms = max(3_000, min(5_000, int(timeout_ms)))
 
     try:
         for path in _FRONTEND_PATHS:
+            _raise_if_stopped(stop_event)
             candidate = urljoin(entry_origin.rstrip("/") + "/", path.lstrip("/"))
             auth_page = context.new_page()
             try:
                 response = auth_page.goto(
                     candidate,
-                    wait_until="domcontentloaded",
+                    wait_until="commit",
                     timeout=step_timeout_ms,
                     referer=referer or None,
                 )
                 status = int(response.status) if response is not None else 0
             except Exception:
                 status = 0
+            _raise_if_stopped(stop_event)
             frontend_statuses.append({"path": urlparse(candidate).path, "status": status})
             if status >= 400 or status <= 0:
                 auth_page.close()
                 auth_page = None
                 continue
 
-            try:
-                found = client_version_from_html(auth_page.content())
-            except Exception:
-                found = ""
-            if found:
-                frontend_url = candidate
-                version = found
+            # The build meta is in the server HTML; poll briefly instead of waiting
+            # for every frontend resource/DOMContentLoaded event.
+            for _ in range(25):
+                _raise_if_stopped(stop_event)
+                try:
+                    found = client_version_from_html(auth_page.content())
+                except Exception:
+                    found = ""
+                if found:
+                    frontend_url = candidate
+                    version = found
+                    break
+                _wait_interruptible(auth_page, 100, stop_event)
+            if frontend_url and version:
                 break
             auth_page.close()
             auth_page = None
@@ -219,20 +276,24 @@ def resolve_json_entry_auth(
                 f"candidatos={frontend_statuses!r}."
             )
 
-        # Give the official frontend/edge scripts a short opportunity to establish
-        # any browser-owned cookies before reproducing the same browser-side fetch.
-        auth_page.wait_for_timeout(350)
+        _wait_interruptible(auth_page, 250, stop_event)
         auth_url = entry_json_url(entry, entry_origin, version)
         auth_statuses: list[int] = []
         auth_text = ""
         for attempt in range(2):
-            auth_status, auth_text = _browser_fetch_json(auth_page, auth_url, step_timeout_ms)
+            _raise_if_stopped(stop_event)
+            auth_status, auth_text = _browser_fetch_json(
+                auth_page,
+                auth_url,
+                step_timeout_ms,
+                stop_event=stop_event,
+            )
             auth_statuses.append(auth_status)
             if auth_status < 400:
                 break
             if auth_status not in {401, 403} or attempt:
                 break
-            auth_page.wait_for_timeout(500)
+            _wait_interruptible(auth_page, 350, stop_event)
 
         auth_status = auth_statuses[-1]
         if auth_status >= 400:
@@ -267,6 +328,7 @@ def resolve_json_entry_auth(
     finally:
         if auth_page is not None:
             try:
+                _abort_browser_fetch(auth_page)
                 auth_page.close()
             except Exception:
                 pass
