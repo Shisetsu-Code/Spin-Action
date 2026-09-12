@@ -3,10 +3,9 @@ from __future__ import annotations
 import json
 import re
 import threading
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 import requests
 
@@ -15,9 +14,9 @@ from tester_spin.providers.base import GameCallback, Progress, ProviderAdapter
 from tester_spin.providers.redtiger.bootstrap import BootstrapEndpoints
 from tester_spin.providers.redtiger.catalog import (
     RedTigerCatalogRecord,
-    find_studio_id,
-    games_query_params,
-    parse_games_page,
+    provider_id_from_catalog_url,
+    parse_wp_games_page,
+    wp_catalog_query_params,
 )
 from tester_spin.providers.redtiger.cms_auth import discover_cms_authorization
 from tester_spin.providers.redtiger.execution import RedTigerExecutionMixin
@@ -31,13 +30,18 @@ def _safe_folder(value: str) -> str:
     return clean[:140] or "game"
 
 
+def _normalized_provider(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").casefold())
+
+
 class RedTigerProvider(RedTigerExecutionMixin, ProviderAdapter):
     key = "redtiger"
     display_name = "Red Tiger"
-    catalog_url = "https://redtiger.com/games"
+    catalog_url = (
+        "https://games.evolution.com/all-games/"
+        "?game_provider%5B0%5D=1185&custom_sort=featured"
+    )
     min_catalog_reconcile_ratio = 0.80
-    # The public demo stack was captured as one stateful session. Keep it serial
-    # until concurrent independent sessions are explicitly demonstrated.
     max_test_concurrency = 1
 
     def __init__(
@@ -50,6 +54,8 @@ class RedTigerProvider(RedTigerExecutionMixin, ProviderAdapter):
         self.data_root = Path(data_root)
         self.provider_root = self.data_root / "providers" / self.key
         self.provider_root.mkdir(parents=True, exist_ok=True)
+        # Retained only for historical cmsevo helpers/tests. Active catalog uses
+        # the public Evolution Games WordPress endpoint derived from catalog_url.
         self.cms_api_url = str(cms_api_url).rstrip("/")
         self.bootstrap_endpoints = bootstrap_endpoints or BootstrapEndpoints()
         self.http = self._new_session()
@@ -78,26 +84,12 @@ class RedTigerProvider(RedTigerExecutionMixin, ProviderAdapter):
         timeout_s: float,
         progress: Progress,
     ) -> requests.Response:
-        """GET one CMS resource, bootstrapping frontend auth only when required.
-
-        The public Red Tiger frontend currently sends an Authorization value to
-        cmsevo. That value is deployment data embedded/installed by the frontend,
-        not a provider protocol constant, so Tester-Spin observes it at runtime
-        instead of storing a literal credential in source code.
-        """
+        """Legacy cmsevo helper retained for historical artifacts/tests only."""
         parsed_public = urlparse(self.catalog_url)
         origin = f"{parsed_public.scheme}://{parsed_public.netloc}"
-        headers = {
-            "Origin": origin,
-            "Referer": origin.rstrip("/") + "/",
-        }
+        headers = {"Origin": origin, "Referer": origin.rstrip("/") + "/"}
         url = f"{self.cms_api_url}/{str(path).lstrip('/')}"
-        response = self.http.get(
-            url,
-            params=params,
-            headers=headers,
-            timeout=timeout_s,
-        )
+        response = self.http.get(url, params=params, headers=headers, timeout=timeout_s)
         if response.status_code not in {401, 403}:
             response.raise_for_status()
             return response
@@ -111,14 +103,22 @@ class RedTigerProvider(RedTigerExecutionMixin, ProviderAdapter):
             timeout_s=max(30.0, float(timeout_s)),
         )
         self.http.headers["Authorization"] = authorization
+        response = self.http.get(url, params=params, headers=headers, timeout=timeout_s)
+        response.raise_for_status()
+        progress("Red Tiger CMS: autorización del frontend reutilizada en memoria; replay HTTP OK.")
+        return response
+
+    def _wp_catalog_get(self, *, params: dict[str, Any], timeout_s: float) -> requests.Response:
+        parsed = urlparse(self.catalog_url)
+        origin = f"{parsed.scheme}://{parsed.netloc}"
+        url = origin.rstrip("/") + "/wp-json/wp/v2/pages"
         response = self.http.get(
             url,
             params=params,
-            headers=headers,
+            headers={"Referer": self.catalog_url, "Accept": "application/json, text/plain, */*"},
             timeout=timeout_s,
         )
         response.raise_for_status()
-        progress("Red Tiger CMS: autorización del frontend reutilizada en memoria; replay HTTP OK.")
         return response
 
     def game_dir(self, game: Game) -> Path:
@@ -133,17 +133,19 @@ class RedTigerProvider(RedTigerExecutionMixin, ProviderAdapter):
             return "slug vacío"
         if not game.name.strip():
             return "nombre vacío"
-        if not game.symbol.strip():
-            return "tableId vacío"
+        if not str(game.symbol or "").strip():
+            return "Evolution post id vacío"
         parsed = urlparse(game.url)
-        if not re.fullmatch(r"/games/[^/]+/?", parsed.path or ""):
-            return "URL fuera del namespace /games/<slug>"
+        if parsed.netloc.casefold() != "games.evolution.com":
+            return "host fuera de games.evolution.com"
+        if not re.fullmatch(r"/slots/[^/]+/?", parsed.path or ""):
+            return "URL fuera del namespace /slots/<slug>/"
         return ""
 
-    def table_id_for_game(self, game: Game) -> str:
-        table_id = str(game.symbol or "").strip()
-        if table_id:
-            return table_id
+    def launch_id_for_game(self, game: Game) -> str:
+        launch_id = str(game.symbol or "").strip()
+        if launch_id:
+            return launch_id
         metadata_path = self.game_dir(game) / "game.json"
         if metadata_path.is_file():
             try:
@@ -151,8 +153,15 @@ class RedTigerProvider(RedTigerExecutionMixin, ProviderAdapter):
             except Exception:
                 payload = None
             if isinstance(payload, dict):
-                return str(payload.get("table_id") or "").strip()
+                return str(payload.get("launch_id") or payload.get("wp_post_id") or "").strip()
         return ""
+
+    def table_id_for_game(self, game: Game) -> str:
+        """Compatibility accessor for old callers/artifacts.
+
+        The new public flow launches by WordPress post id, not by acf.game_id.
+        """
+        return self.launch_id_for_game(game)
 
     def _record_dict(self, record: RedTigerCatalogRecord) -> dict[str, Any]:
         game = record.game
@@ -164,16 +173,18 @@ class RedTigerProvider(RedTigerExecutionMixin, ProviderAdapter):
             "url": game.url,
             "thumbnail_url": game.thumbnail_url,
             "thumbnail_path": game.thumbnail_path,
-            "cms_id": record.cms_id,
-            "table_id": record.table_id,
+            "wp_post_id": record.cms_id,
+            "launch_id": record.launch_id or str(record.cms_id or ""),
+            "catalog_game_id": record.table_id,
             "game_type": record.game_type,
-            "cms_provider": record.provider_name,
+            "catalog_provider": record.provider_name,
             "release_date": record.release_date,
             "has_bonus_buy": record.has_bonus_buy,
-            "catalog_transport": "cmsevo_strapi_json",
-            "runtime_transport": "official_launcher_bootstrap_then_http_json",
-            "math": attrs.get("math"),
-            "information": attrs.get("information"),
+            "catalog_transport": "games_evolution_wordpress_json",
+            "runtime_transport": "games_evolution_start_iframe_then_http_json",
+            "rtp": attrs.get("rtp"),
+            "volatility": attrs.get("volatility"),
+            "release_year": attrs.get("release_year"),
         }
 
     def _persist_record(self, record: RedTigerCatalogRecord) -> None:
@@ -222,27 +233,17 @@ class RedTigerProvider(RedTigerExecutionMixin, ProviderAdapter):
         raw_dir.mkdir(parents=True, exist_ok=True)
         authority_gaps: list[str] = []
 
-        progress("Red Tiger catálogo: descubriendo studio CMS por título, sin ID numérico fijo...")
-        studios_response = self._cms_get(
-            "studios",
-            params={"populate": "deep"},
-            timeout_s=30.0,
-            progress=progress,
+        provider_id = provider_id_from_catalog_url(self.catalog_url)
+        parsed_catalog_query = parse_qs(urlparse(self.catalog_url).query)
+        custom_sort = str((parsed_catalog_query.get("custom_sort") or ["featured"])[0] or "featured")
+        progress(
+            "Red Tiger catálogo: usando games.evolution.com WordPress; "
+            f"provider={provider_id}, orden={custom_sort}."
         )
-        studios_payload = studios_response.json()
-        if not isinstance(studios_payload, dict):
-            raise ValueError("Red Tiger CMS studios no devolvió objeto JSON.")
-        studio_id = find_studio_id(studios_payload, self.display_name)
-        (raw_dir / "studios.json").write_text(
-            json.dumps(studios_payload, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        progress(f"Red Tiger catálogo: studio resuelto dinámicamente id={studio_id!r}.")
 
         by_slug: dict[str, RedTigerCatalogRecord] = {}
-        released_before = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         page = 1
-        page_size = 100
+        page_size = 36
         expected_total: int | None = None
         expected_pages: int | None = None
 
@@ -252,36 +253,38 @@ class RedTigerProvider(RedTigerExecutionMixin, ProviderAdapter):
                     authority_gaps.append(f"crawl limitado a {limit} páginas")
                 break
 
-            response = self._cms_get(
-                "games",
-                params=games_query_params(
-                    studio_id,
+            response = self._wp_catalog_get(
+                params=wp_catalog_query_params(
+                    provider_id,
                     page=page,
                     page_size=page_size,
-                    released_before_iso=released_before,
+                    custom_sort=custom_sort,
                 ),
                 timeout_s=30.0,
-                progress=progress,
             )
             payload = response.json()
-            if not isinstance(payload, dict):
-                raise ValueError(f"Red Tiger CMS página {page}: JSON no objeto.")
+            if not isinstance(payload, list):
+                raise ValueError(f"Evolution Games página {page}: JSON no lista.")
             (raw_dir / f"page-{page:03d}.json").write_text(
                 json.dumps(payload, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
-            records, pagination = parse_games_page(
-                payload,
-                public_catalog_url=self.catalog_url,
-            )
-            data = payload.get("data") if isinstance(payload.get("data"), list) else []
-            if len(records) != len(data):
+
+            records = parse_wp_games_page(payload)
+            if len(records) != len(payload):
                 authority_gaps.append(
-                    f"p{page}: registros válidos={len(records)} != data={len(data)}"
+                    f"p{page}: registros válidos={len(records)} != data={len(payload)}"
                 )
 
-            page_total = pagination.get("total")
-            page_count = pagination.get("pageCount")
+            try:
+                page_total = int(response.headers.get("X-WP-Total", "") or 0) or None
+            except (TypeError, ValueError):
+                page_total = None
+            try:
+                page_count = int(response.headers.get("X-WP-TotalPages", "") or 0) or None
+            except (TypeError, ValueError):
+                page_count = None
+
             if page_total is not None:
                 if expected_total is None:
                     expected_total = page_total
@@ -291,13 +294,13 @@ class RedTigerProvider(RedTigerExecutionMixin, ProviderAdapter):
                 if expected_pages is None:
                     expected_pages = page_count
                 elif page_count != expected_pages:
-                    authority_gaps.append(f"pageCount cambió {expected_pages}->{page_count}")
+                    authority_gaps.append(f"totalPages cambió {expected_pages}->{page_count}")
 
             added = 0
             for record in records:
-                if record.provider_name and record.provider_name.casefold() != self.key:
+                if record.provider_name and _normalized_provider(record.provider_name) != _normalized_provider(self.display_name):
                     authority_gaps.append(
-                        f"{record.game.slug}: cms provider={record.provider_name!r}"
+                        f"{record.game.slug}: provider={record.provider_name!r}"
                     )
                     continue
                 if record.game.slug in by_slug:
@@ -317,19 +320,24 @@ class RedTigerProvider(RedTigerExecutionMixin, ProviderAdapter):
             if expected_pages is not None:
                 if page >= expected_pages:
                     break
-            elif len(data) < page_size:
+            elif len(payload) < page_size:
                 break
+            else:
+                # The HAR exposes X-WP-TotalPages. Without it we can continue, but
+                # the crawl is not authoritative enough for destructive reconcile.
+                if page == 1:
+                    authority_gaps.append("X-WP-TotalPages ausente")
             page += 1
 
         if stop_event.is_set():
             authority_gaps.append("crawl detenido por el usuario")
         if expected_total is not None and len(by_slug) != expected_total:
             authority_gaps.append(
-                f"juegos únicos={len(by_slug)} != total CMS={expected_total}"
+                f"juegos únicos={len(by_slug)} != total WordPress={expected_total}"
             )
         if not by_slug:
-            self.set_catalog_authority(False, "CMS no produjo juegos válidos")
-            raise RuntimeError("Red Tiger: catálogo CMS vacío o no parseable.")
+            self.set_catalog_authority(False, "WordPress no produjo juegos válidos")
+            raise RuntimeError("Red Tiger: catálogo Evolution Games vacío o no parseable.")
 
         self.set_catalog_authority(not authority_gaps, "; ".join(authority_gaps[:6]))
         records_out = sorted(by_slug.values(), key=lambda item: item.game.name.casefold())
