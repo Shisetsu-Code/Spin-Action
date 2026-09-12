@@ -115,36 +115,48 @@ def _fragment_keys(value: str) -> list[str]:
     return sorted({key for key, _value in parse_qsl(parsed.fragment, keep_blank_values=True) if key})
 
 
-def _browser_fetch_json(page: Any, url: str) -> tuple[int, str]:
-    """Issue auth from the real Evolution page, not Playwright's API client.
+def _browser_fetch_json(page: Any, url: str, timeout_ms: int) -> tuple[int, str]:
+    """Issue auth from the real Evolution page with an explicit browser timeout.
 
     The captured Evolution bundle performs this request from browser JavaScript.
     BrowserContext.request shares cookies but is still a separate HTTP stack and can
     be rejected by edge protection. Running fetch() in the page preserves the live
     browser fingerprint, cookie jar, referrer/origin semantics and HTTP/2 handling.
+
+    A browser-side AbortController is important for bulk catalog testing: an edge
+    request that never completes must not consume the whole per-game bootstrap
+    budget.
     """
+    bounded_timeout_ms = max(2_000, min(8_000, int(timeout_ms)))
     result = page.evaluate(
-        """async ({url}) => {
+        """async ({url, timeoutMs}) => {
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), timeoutMs);
             try {
                 const response = await fetch(url, {
                     method: 'GET',
                     credentials: 'include',
                     cache: 'no-store',
-                    headers: {Accept: 'application/json, text/plain, */*'}
+                    headers: {Accept: 'application/json, text/plain, */*'},
+                    signal: controller.signal
                 });
                 return {status: response.status, text: await response.text()};
             } catch (error) {
                 return {status: 0, text: '', error: String(error)};
+            } finally {
+                clearTimeout(timer);
             }
         }""",
-        {"url": url},
+        {"url": url, "timeoutMs": bounded_timeout_ms},
     )
     if not isinstance(result, dict):
         raise RuntimeError("Red Tiger Evolution auth JSON: fetch del navegador no devolvió resultado.")
     status = int(result.get("status") or 0)
     if status <= 0:
+        error = str(result.get("error") or "sin detalle")
         raise RuntimeError(
-            "Red Tiger Evolution auth JSON: fetch del navegador falló antes de recibir HTTP."
+            "Red Tiger Evolution auth JSON: fetch del navegador agotó/falló antes de recibir HTTP "
+            f"({error[:180]})."
         )
     return status, str(result.get("text") or "")
 
@@ -168,6 +180,7 @@ def resolve_json_entry_auth(
     version = ""
     frontend_statuses: list[dict[str, Any]] = []
     auth_page = None
+    step_timeout_ms = max(5_000, min(10_000, int(timeout_ms)))
 
     try:
         for path in _FRONTEND_PATHS:
@@ -177,7 +190,7 @@ def resolve_json_entry_auth(
                 response = auth_page.goto(
                     candidate,
                     wait_until="domcontentloaded",
-                    timeout=timeout_ms,
+                    timeout=step_timeout_ms,
                     referer=referer or None,
                 )
                 status = int(response.status) if response is not None else 0
@@ -208,18 +221,18 @@ def resolve_json_entry_auth(
 
         # Give the official frontend/edge scripts a short opportunity to establish
         # any browser-owned cookies before reproducing the same browser-side fetch.
-        auth_page.wait_for_timeout(500)
+        auth_page.wait_for_timeout(350)
         auth_url = entry_json_url(entry, entry_origin, version)
         auth_statuses: list[int] = []
         auth_text = ""
         for attempt in range(2):
-            auth_status, auth_text = _browser_fetch_json(auth_page, auth_url)
+            auth_status, auth_text = _browser_fetch_json(auth_page, auth_url, step_timeout_ms)
             auth_statuses.append(auth_status)
             if auth_status < 400:
                 break
             if auth_status not in {401, 403} or attempt:
                 break
-            auth_page.wait_for_timeout(1000)
+            auth_page.wait_for_timeout(500)
 
         auth_status = auth_statuses[-1]
         if auth_status >= 400:
