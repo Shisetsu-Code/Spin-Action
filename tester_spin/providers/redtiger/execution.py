@@ -11,10 +11,14 @@ from tester_spin.models import Game, GameTestResult, SpinAttempt, utc_now_iso
 from tester_spin.providers.base import Progress
 from tester_spin.providers.redtiger.bootstrap_browser import bootstrap_game
 from tester_spin.providers.redtiger.runtime import (
+    ChoicePrompt,
     FeatureBuy,
     RedTigerRuntime,
     apply_response_token,
+    build_choice_payload,
     build_spin_payload,
+    choice_url_from_spin_url,
+    pending_choice_from_response,
     response_summary,
     sanitize_payload,
     validate_spin_response,
@@ -90,6 +94,48 @@ def _post_spin(
         raise ValueError("Red Tiger spin inválido: " + "; ".join(warnings))
     apply_response_token(runtime, data)
     return status, payload, data, warnings
+
+
+def _post_choice(
+    runtime: RedTigerRuntime,
+    *,
+    prompt: ChoicePrompt,
+    choice: str,
+    timeout_s: float,
+    stop_event,
+) -> tuple[int, str, dict[str, Any], dict[str, Any], list[str]]:
+    if stop_event.is_set():
+        raise InterruptedError("Detención solicitada antes del selector Red Tiger.")
+    endpoint = choice_url_from_spin_url(runtime.spin_url)
+    payload = build_choice_payload(runtime, prompt=prompt, choice=choice)
+    _sanitize_direct_http_headers(runtime)
+    request_timeout = min(5.0, max(1.0, float(timeout_s)))
+    response = runtime.session.post(endpoint, json=payload, timeout=request_timeout)
+    if stop_event.is_set():
+        raise InterruptedError("Detención solicitada durante el selector Red Tiger.")
+    status = int(response.status_code)
+    response.raise_for_status()
+    data = response.json()
+    if not isinstance(data, dict):
+        raise ValueError("Red Tiger choice no devolvió objeto JSON.")
+    valid, warnings = validate_spin_response(data)
+    if not valid:
+        raise ValueError("Red Tiger choice inválido: " + "; ".join(warnings))
+    apply_response_token(runtime, data)
+    return status, endpoint, payload, data, warnings
+
+
+def _merge_modes(*summaries: dict[str, Any]) -> list[str]:
+    found: list[str] = []
+    for summary in summaries:
+        values = summary.get("spin_modes") if isinstance(summary, dict) else None
+        if not isinstance(values, list):
+            continue
+        for value in values:
+            clean = str(value or "").strip()
+            if clean and clean not in found:
+                found.append(clean)
+    return found
 
 
 def _persist_runtime_metadata(provider, game: Game, runtime: RedTigerRuntime) -> None:
@@ -283,13 +329,79 @@ class RedTigerExecutionMixin:
                                 timeout_s=timeout_s,
                                 stop_event=stop_event,
                             )
-                            responded += 1
-                            summary = response_summary(response_payload)
+                            initial_summary = response_summary(response_payload)
                             _write_json(attempt_dir / "request.json", sanitize_payload(request_payload))
                             _write_json(attempt_dir / "response.json", sanitize_payload(response_payload))
-                            _write_json(attempt_dir / "summary.json", summary)
 
-                            terminal = bool(summary.get("success"))
+                            summaries = [initial_summary]
+                            continuation_records: list[dict[str, Any]] = []
+                            wire_steps = 1
+                            final_payload = response_payload
+
+                            for continuation_index in range(1, 9):
+                                prompt = pending_choice_from_response(final_payload)
+                                if prompt is None:
+                                    break
+                                selected_choice = prompt.available[0]
+                                choice_status, choice_endpoint, choice_request, choice_response, choice_warnings = _post_choice(
+                                    runtime,
+                                    prompt=prompt,
+                                    choice=selected_choice,
+                                    timeout_s=timeout_s,
+                                    stop_event=stop_event,
+                                )
+                                wire_steps += 1
+                                warnings.extend(choice_warnings)
+                                choice_summary = response_summary(choice_response)
+                                summaries.append(choice_summary)
+                                choice_dir = attempt_dir / f"choice-{continuation_index:02d}-{_mode_id(selected_choice)}"
+                                _write_json(choice_dir / "request.json", sanitize_payload(choice_request))
+                                _write_json(choice_dir / "response.json", sanitize_payload(choice_response))
+                                _write_json(choice_dir / "summary.json", choice_summary)
+                                continuation_records.append(
+                                    {
+                                        "round_id": prompt.round_id,
+                                        "available": list(prompt.available),
+                                        "selected": selected_choice,
+                                        "endpoint": choice_endpoint,
+                                        "status_code": choice_status,
+                                    }
+                                )
+                                choice_mode_id = f"{mode_id}__CHOICE_{continuation_index}"
+                                if not any(item.get("id") == choice_mode_id for item in discovered_modes):
+                                    discovered_modes.append(
+                                        {
+                                            "id": choice_mode_id,
+                                            "kind": "CHOICE_CONTINUATION",
+                                            "parent": mode_id,
+                                            "observed": True,
+                                            "executable": True,
+                                            "wire_command": "platform/game/choice",
+                                            "available": list(prompt.available),
+                                            "selected_for_validation": selected_choice,
+                                        }
+                                    )
+                                progress(
+                                    f"[{game.name}] {mode_id}: selector requerido; "
+                                    f"opciones={list(prompt.available)}, seleccionado={selected_choice}."
+                                )
+                                final_payload = choice_response
+                            else:
+                                warnings.append("selector Red Tiger no terminó tras 8 continuaciones")
+
+                            if pending_choice_from_response(final_payload) is not None:
+                                warnings.append("selector Red Tiger quedó pendiente")
+
+                            final_summary = response_summary(final_payload)
+                            merged_modes = _merge_modes(*summaries)
+                            combined_summary = dict(final_summary)
+                            combined_summary["spin_modes"] = merged_modes
+                            combined_summary["wire_steps"] = wire_steps
+                            combined_summary["choice_continuations"] = continuation_records
+                            _write_json(attempt_dir / "summary.json", combined_summary)
+
+                            responded += 1
+                            terminal = bool(final_summary.get("success")) and pending_choice_from_response(final_payload) is None
                             validated = terminal and not warnings
                             successes += int(validated)
                             warnings_all.extend(warnings)
@@ -304,9 +416,9 @@ class RedTigerExecutionMixin:
                                     elapsed_ms=elapsed_ms,
                                     symbol=runtime.game_id,
                                     endpoint=runtime.spin_url,
-                                    na=",".join(summary.get("spin_modes") or []),
+                                    na=",".join(merged_modes),
                                     terminal=terminal,
-                                    wire_steps=1,
+                                    wire_steps=wire_steps,
                                     warning="; ".join(warnings),
                                     artifact_dir=str(attempt_dir),
                                 )
@@ -314,7 +426,7 @@ class RedTigerExecutionMixin:
                             progress(
                                 f"[{game.name}] {mode_id} {repetition}/{repetitions}: "
                                 f"{'OK' if validated else 'PARCIAL'} {elapsed_ms:.0f} ms, "
-                                f"spinModes={summary.get('spin_modes') or ['—']}."
+                                f"spinModes={merged_modes or ['—']}, wireSteps={wire_steps}."
                             )
                         except InterruptedError as exc:
                             cancelled = True
