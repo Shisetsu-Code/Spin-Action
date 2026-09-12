@@ -36,14 +36,6 @@ def _mode_id(value: str) -> str:
 
 
 def _sanitize_direct_http_headers(runtime: RedTigerRuntime) -> None:
-    """Remove browser/HTTP2-only headers before requests sends direct runtime HTTP.
-
-    Playwright can expose HTTP/2 pseudo-headers (for example ``:authority``) in
-    ``request.all_headers()``. They describe the browser transport and are not
-    legal HTTP header names in ``requests``. Cookies are deliberately untouched:
-    they live in the session cookie jar and are transferred separately during
-    bootstrap.
-    """
     browser_only = {
         "connection",
         "content-length",
@@ -73,7 +65,10 @@ def _post_spin(
     stake: Decimal,
     feature_buy: FeatureBuy | None,
     timeout_s: float,
+    stop_event,
 ) -> tuple[int, dict[str, Any], dict[str, Any], list[str]]:
+    if stop_event.is_set():
+        raise InterruptedError("Detención solicitada antes del spin Red Tiger.")
     payload = build_spin_payload(
         runtime,
         stake=stake,
@@ -81,7 +76,13 @@ def _post_spin(
         game_mode=0,
     )
     _sanitize_direct_http_headers(runtime)
-    response = runtime.session.post(runtime.spin_url, json=payload, timeout=timeout_s)
+    # requests cannot be asynchronously aborted safely from another thread. Keep
+    # the only non-cooperative runtime I/O slice short so DETENER never waits the
+    # full GUI timeout just because one spin socket is stalled.
+    request_timeout = min(5.0, max(1.0, float(timeout_s)))
+    response = runtime.session.post(runtime.spin_url, json=payload, timeout=request_timeout)
+    if stop_event.is_set():
+        raise InterruptedError("Detención solicitada durante el spin Red Tiger.")
     status = int(response.status_code)
     response.raise_for_status()
     data = response.json()
@@ -155,6 +156,8 @@ class RedTigerExecutionMixin:
         successes = 0
         responded = 0
         runtime: RedTigerRuntime | None = None
+        cancelled = bool(stop_event.is_set())
+        mode_specs: list[tuple[str, str, FeatureBuy | None]] = []
 
         table_id = self.table_id_for_game(game)
         if not table_id:
@@ -177,15 +180,20 @@ class RedTigerExecutionMixin:
             )
 
         try:
+            if cancelled:
+                raise InterruptedError("Detención solicitada antes de iniciar Red Tiger.")
             progress(f"[{game.name}] Red Tiger: creando demo fresco para tableId={table_id}...")
             runtime = bootstrap_game(
                 game.url,
                 table_id,
-                timeout_s=max(30.0, float(timeout_s)),
+                timeout_s=max(15.0, float(timeout_s)),
                 artifact_dir=run_dir / "bootstrap",
                 endpoints=self.bootstrap_endpoints,
                 progress=progress,
+                stop_event=stop_event,
             )
+            if stop_event.is_set():
+                raise InterruptedError("Detención solicitada al terminar bootstrap Red Tiger.")
             game.symbol = table_id
             _persist_runtime_metadata(self, game, runtime)
 
@@ -201,7 +209,7 @@ class RedTigerExecutionMixin:
                     "stakes": [str(value) for value in runtime.stakes],
                 }
             )
-            mode_specs: list[tuple[str, str, FeatureBuy | None]] = [("SPIN", "SPIN", None)]
+            mode_specs = [("SPIN", "SPIN", None)]
 
             for feature in runtime.feature_buys:
                 mode_id = f"PURCHASE_{_mode_id(feature.name)}"
@@ -242,88 +250,116 @@ class RedTigerExecutionMixin:
                 f"stakes={len(runtime.stakes)}, default={runtime.default_stake}, "
                 f"compras={len(runtime.feature_buys)}, endpoint={runtime.spin_url}."
             )
+        except InterruptedError as exc:
+            cancelled = True
+            progress(f"[{game.name}] Red Tiger CANCELADO: {exc}")
+            mode_specs = []
         except Exception as exc:
-            message = f"{type(exc).__name__}: {exc}"
-            errors.append(message)
-            progress(f"[{game.name}] Red Tiger bootstrap/settings ERROR: {message}")
+            if stop_event.is_set():
+                cancelled = True
+                progress(f"[{game.name}] Red Tiger CANCELADO durante cierre: {type(exc).__name__}: {exc}")
+            else:
+                message = f"{type(exc).__name__}: {exc}"
+                errors.append(message)
+                progress(f"[{game.name}] Red Tiger bootstrap/settings ERROR: {message}")
             mode_specs = []
 
         requested_total = repetitions * len(mode_specs) if mode_specs else repetitions
 
-        if runtime is not None and mode_specs:
-            for mode_id, mode_kind, feature in mode_specs:
-                for repetition in range(1, repetitions + 1):
-                    if stop_event.is_set():
+        if runtime is not None and mode_specs and not cancelled:
+            try:
+                for mode_id, mode_kind, feature in mode_specs:
+                    if cancelled:
                         break
-                    attempt_dir = run_dir / mode_id / f"attempt-{repetition:05d}"
-                    attempt_dir.mkdir(parents=True, exist_ok=True)
-                    attempt_started = time.monotonic()
-                    try:
-                        status_code, request_payload, response_payload, warnings = _post_spin(
-                            runtime,
-                            stake=runtime.default_stake,
-                            feature_buy=feature,
-                            timeout_s=timeout_s,
-                        )
-                        responded += 1
-                        summary = response_summary(response_payload)
-                        _write_json(attempt_dir / "request.json", sanitize_payload(request_payload))
-                        _write_json(attempt_dir / "response.json", sanitize_payload(response_payload))
-                        _write_json(attempt_dir / "summary.json", summary)
+                    for repetition in range(1, repetitions + 1):
+                        if stop_event.is_set():
+                            cancelled = True
+                            break
+                        attempt_dir = run_dir / mode_id / f"attempt-{repetition:05d}"
+                        attempt_dir.mkdir(parents=True, exist_ok=True)
+                        attempt_started = time.monotonic()
+                        try:
+                            status_code, request_payload, response_payload, warnings = _post_spin(
+                                runtime,
+                                stake=runtime.default_stake,
+                                feature_buy=feature,
+                                timeout_s=timeout_s,
+                                stop_event=stop_event,
+                            )
+                            responded += 1
+                            summary = response_summary(response_payload)
+                            _write_json(attempt_dir / "request.json", sanitize_payload(request_payload))
+                            _write_json(attempt_dir / "response.json", sanitize_payload(response_payload))
+                            _write_json(attempt_dir / "summary.json", summary)
 
-                        terminal = bool(summary.get("success"))
-                        validated = terminal and not warnings
-                        successes += int(validated)
-                        warnings_all.extend(warnings)
-                        elapsed_ms = (time.monotonic() - attempt_started) * 1000.0
-                        attempts.append(
-                            SpinAttempt(
-                                number=repetition,
-                                ok=validated,
-                                mode_id=mode_id,
-                                mode_kind=mode_kind,
-                                status_code=status_code,
-                                elapsed_ms=elapsed_ms,
-                                symbol=runtime.game_id,
-                                endpoint=runtime.spin_url,
-                                na=",".join(summary.get("spin_modes") or []),
-                                terminal=terminal,
-                                wire_steps=1,
-                                warning="; ".join(warnings),
-                                artifact_dir=str(attempt_dir),
+                            terminal = bool(summary.get("success"))
+                            validated = terminal and not warnings
+                            successes += int(validated)
+                            warnings_all.extend(warnings)
+                            elapsed_ms = (time.monotonic() - attempt_started) * 1000.0
+                            attempts.append(
+                                SpinAttempt(
+                                    number=repetition,
+                                    ok=validated,
+                                    mode_id=mode_id,
+                                    mode_kind=mode_kind,
+                                    status_code=status_code,
+                                    elapsed_ms=elapsed_ms,
+                                    symbol=runtime.game_id,
+                                    endpoint=runtime.spin_url,
+                                    na=",".join(summary.get("spin_modes") or []),
+                                    terminal=terminal,
+                                    wire_steps=1,
+                                    warning="; ".join(warnings),
+                                    artifact_dir=str(attempt_dir),
+                                )
                             )
-                        )
-                        progress(
-                            f"[{game.name}] {mode_id} {repetition}/{repetitions}: "
-                            f"{'OK' if validated else 'PARCIAL'} {elapsed_ms:.0f} ms, "
-                            f"spinModes={summary.get('spin_modes') or ['—']}."
-                        )
-                    except Exception as exc:
-                        message = f"{type(exc).__name__}: {exc}"
-                        errors.append(message)
-                        elapsed_ms = (time.monotonic() - attempt_started) * 1000.0
-                        attempts.append(
-                            SpinAttempt(
-                                number=repetition,
-                                ok=False,
-                                mode_id=mode_id,
-                                mode_kind=mode_kind,
-                                elapsed_ms=elapsed_ms,
-                                symbol=runtime.game_id,
-                                endpoint=runtime.spin_url,
-                                terminal=False,
-                                wire_steps=0,
-                                error=message,
-                                artifact_dir=str(attempt_dir),
+                            progress(
+                                f"[{game.name}] {mode_id} {repetition}/{repetitions}: "
+                                f"{'OK' if validated else 'PARCIAL'} {elapsed_ms:.0f} ms, "
+                                f"spinModes={summary.get('spin_modes') or ['—']}."
                             )
-                        )
-                        progress(
-                            f"[{game.name}] {mode_id} {repetition}/{repetitions}: ERROR {message}"
-                        )
-            runtime.session.close()
+                        except InterruptedError as exc:
+                            cancelled = True
+                            progress(f"[{game.name}] {mode_id} CANCELADO: {exc}")
+                            break
+                        except Exception as exc:
+                            if stop_event.is_set():
+                                cancelled = True
+                                progress(
+                                    f"[{game.name}] {mode_id} CANCELADO durante I/O: "
+                                    f"{type(exc).__name__}: {exc}"
+                                )
+                                break
+                            message = f"{type(exc).__name__}: {exc}"
+                            errors.append(message)
+                            elapsed_ms = (time.monotonic() - attempt_started) * 1000.0
+                            attempts.append(
+                                SpinAttempt(
+                                    number=repetition,
+                                    ok=False,
+                                    mode_id=mode_id,
+                                    mode_kind=mode_kind,
+                                    elapsed_ms=elapsed_ms,
+                                    symbol=runtime.game_id,
+                                    endpoint=runtime.spin_url,
+                                    terminal=False,
+                                    wire_steps=0,
+                                    error=message,
+                                    artifact_dir=str(attempt_dir),
+                                )
+                            )
+                            progress(
+                                f"[{game.name}] {mode_id} {repetition}/{repetitions}: ERROR {message}"
+                            )
+            finally:
+                runtime.session.close()
 
         elapsed_total = (time.monotonic() - started) * 1000.0
-        if requested_total and successes == requested_total and not errors and not coverage_gaps:
+        if cancelled or stop_event.is_set():
+            status = "CANCELADO"
+            error = "Detención solicitada por el usuario."
+        elif requested_total and successes == requested_total and not errors and not coverage_gaps:
             status = "OK"
             error = ""
         elif responded:
