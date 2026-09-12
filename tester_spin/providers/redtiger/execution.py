@@ -76,9 +76,6 @@ def _post_spin(
         game_mode=0,
     )
     _sanitize_direct_http_headers(runtime)
-    # requests cannot be asynchronously aborted safely from another thread. Keep
-    # the only non-cooperative runtime I/O slice short so DETENER never waits the
-    # full GUI timeout just because one spin socket is stalled.
     request_timeout = min(5.0, max(1.0, float(timeout_s)))
     response = runtime.session.post(runtime.spin_url, json=payload, timeout=request_timeout)
     if stop_event.is_set():
@@ -112,10 +109,10 @@ def _persist_runtime_metadata(provider, game: Game, runtime: RedTigerRuntime) ->
             "slug": game.slug,
             "name": game.name,
             "url": game.url,
-            "table_id": game.symbol,
+            "launch_id": game.symbol,
             "runtime_game_id": runtime.game_id,
             "runtime_transport": "http_json_platform_game",
-            "runtime_bootstrap": "official_demo_route_single_browser_observed_settings",
+            "runtime_bootstrap": "games_evolution_start_iframe_observed_settings",
             "settings_url": runtime.settings_url,
             "spin_url": runtime.spin_url,
             "stakes": [str(value) for value in runtime.stakes],
@@ -159,9 +156,9 @@ class RedTigerExecutionMixin:
         cancelled = bool(stop_event.is_set())
         mode_specs: list[tuple[str, str, FeatureBuy | None]] = []
 
-        table_id = self.table_id_for_game(game)
-        if not table_id:
-            message = "Red Tiger: tableId ausente; el catálogo debe descubrirlo antes de probar."
+        launch_id = self.launch_id_for_game(game)
+        if not launch_id:
+            message = "Red Tiger: Evolution post id ausente; el catálogo debe descubrirlo antes de probar."
             return GameTestResult(
                 provider=self.key,
                 slug=game.slug,
@@ -182,10 +179,10 @@ class RedTigerExecutionMixin:
         try:
             if cancelled:
                 raise InterruptedError("Detención solicitada antes de iniciar Red Tiger.")
-            progress(f"[{game.name}] Red Tiger: creando demo fresco para tableId={table_id}...")
+            progress(f"[{game.name}] Red Tiger: creando demo fresco para launchId={launch_id}...")
             runtime = bootstrap_game(
                 game.url,
-                table_id,
+                launch_id,
                 timeout_s=max(15.0, float(timeout_s)),
                 artifact_dir=run_dir / "bootstrap",
                 endpoints=self.bootstrap_endpoints,
@@ -194,7 +191,7 @@ class RedTigerExecutionMixin:
             )
             if stop_event.is_set():
                 raise InterruptedError("Detención solicitada al terminar bootstrap Red Tiger.")
-            game.symbol = table_id
+            game.symbol = launch_id
             _persist_runtime_metadata(self, game, runtime)
 
             settings_game = runtime.settings_response.get("result", {}).get("game", {})
