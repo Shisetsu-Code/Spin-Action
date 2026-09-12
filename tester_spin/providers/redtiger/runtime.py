@@ -16,6 +16,13 @@ class FeatureBuy:
     multiplier: Decimal
 
 
+@dataclass(frozen=True, slots=True)
+class ChoicePrompt:
+    round_id: int | str
+    available: tuple[str, ...]
+    selected: str | None = None
+
+
 @dataclass(slots=True)
 class RedTigerRuntime:
     session: requests.Session
@@ -155,6 +162,82 @@ def build_spin_payload(
     return payload
 
 
+def pending_choice_from_response(payload: Any) -> ChoicePrompt | None:
+    """Return a provider choice continuation announced by a successful action.
+
+    Red Tiger can make a feature purchase a two-step transaction: the spin response
+    opens a round with ``game.choices.available`` and ``selected=null``; the client
+    must then POST the selected value to the sibling ``platform/game/choice``
+    endpoint using the same round id. Leaving that state unresolved makes the next
+    purchase fail even though the original purchase itself returned success=true.
+    """
+    if not isinstance(payload, dict) or payload.get("success") is not True:
+        return None
+    result = payload.get("result")
+    if not isinstance(result, dict):
+        return None
+    game = result.get("game")
+    transactions = result.get("transactions")
+    if not isinstance(game, dict) or not isinstance(transactions, dict):
+        return None
+    raw_choices = game.get("choices")
+    if not isinstance(raw_choices, dict):
+        return None
+
+    selected_raw = raw_choices.get("selected")
+    selected = str(selected_raw).strip() if selected_raw not in {None, ""} else None
+    if selected:
+        return None
+
+    raw_available = raw_choices.get("available")
+    if not isinstance(raw_available, list):
+        return None
+    available: list[str] = []
+    for item in raw_available:
+        value = str(item or "").strip()
+        if value and value not in available:
+            available.append(value)
+    if not available:
+        return None
+
+    round_id = transactions.get("roundId")
+    if isinstance(round_id, bool) or round_id in {None, ""}:
+        return None
+    return ChoicePrompt(round_id=round_id, available=tuple(available), selected=None)
+
+
+def choice_url_from_spin_url(spin_url: str) -> str:
+    clean = str(spin_url or "").strip()
+    if not clean or "/" not in clean:
+        raise ValueError("Red Tiger spin_url inválido para derivar endpoint choice.")
+    base, _, leaf = clean.rpartition("/")
+    if leaf != "spin":
+        raise ValueError("Red Tiger spin_url no termina en /spin.")
+    return base + "/choice"
+
+
+def build_choice_payload(
+    runtime: RedTigerRuntime,
+    *,
+    prompt: ChoicePrompt,
+    choice: str,
+) -> dict[str, Any]:
+    selected = str(choice or "").strip()
+    if not selected or selected not in prompt.available:
+        raise ValueError(f"Red Tiger choice no anunciado por el servidor: {selected!r}.")
+    return {
+        "token": runtime.token,
+        "sessionId": runtime.session_id,
+        "playMode": str(runtime.settings_request.get("playMode") or "demo"),
+        "gameId": runtime.game_id,
+        "userData": copy.deepcopy(runtime.user_data),
+        "custom": copy.deepcopy(runtime.custom),
+        "roundId": prompt.round_id,
+        "choice": selected,
+        "listenToFrontend": bool(runtime.settings_request.get("listenToFrontend", True)),
+    }
+
+
 def validate_spin_response(payload: Any) -> tuple[bool, list[str]]:
     warnings: list[str] = []
     if not isinstance(payload, dict):
@@ -191,10 +274,11 @@ def apply_response_token(runtime: RedTigerRuntime, payload: Any) -> None:
 
 def response_summary(payload: Any) -> dict[str, Any]:
     if not isinstance(payload, dict):
-        return {"success": False, "spin_modes": [], "nodes": []}
+        return {"success": False, "spin_modes": [], "nodes": [], "pending_choice": None}
     result = payload.get("result") if isinstance(payload.get("result"), dict) else {}
     game = result.get("game") if isinstance(result.get("game"), dict) else {}
     nodes = result_nodes(game)
+    prompt = pending_choice_from_response(payload)
     return {
         "success": payload.get("success") is True,
         "spin_modes": observed_modes(game),
@@ -208,6 +292,14 @@ def response_summary(payload: Any) -> dict[str, Any]:
             }
             for node in nodes
         ],
+        "pending_choice": (
+            {
+                "round_id": prompt.round_id,
+                "available": list(prompt.available),
+            }
+            if prompt is not None
+            else None
+        ),
     }
 
 
