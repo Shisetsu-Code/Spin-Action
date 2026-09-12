@@ -8,11 +8,12 @@ from tester_spin.providers.redtiger.adapter import RedTigerProvider as RedTigerA
 
 
 class RedTigerProvider(RedTigerAdapter):
-    """Public provider boundary preserving Red Tiger's two distinct identifiers.
+    """Public provider boundary preserving catalog launch and runtime identities.
 
-    ``Game.symbol``/SQLite remains the CMS ``tableId`` because that is the stable
-    input required to create the next fresh demo. The runtime ``gameId`` discovered
-    from the official launcher is stored in game.json and per-attempt artifacts.
+    ``Game.symbol``/SQLite stores the public Evolution WordPress post id because
+    that is the stable identifier consumed by the official ``games/v1/start``
+    flow. The Red Tiger runtime ``gameId`` remains separate and is discovered from
+    the live settings request, then stored only in runtime metadata/artifacts.
     """
 
     def test_game(
@@ -24,7 +25,7 @@ class RedTigerProvider(RedTigerAdapter):
         stop_event: threading.Event,
         progress: Progress,
     ) -> GameTestResult:
-        table_id = self.table_id_for_game(game)
+        launch_id = self.launch_id_for_game(game)
         result = super().test_game(
             game,
             spins=spins,
@@ -32,7 +33,7 @@ class RedTigerProvider(RedTigerAdapter):
             stop_event=stop_event,
             progress=progress,
         )
-        if table_id:
-            game.symbol = table_id
-            result.symbol = table_id
+        if launch_id:
+            game.symbol = launch_id
+            result.symbol = launch_id
         return result
