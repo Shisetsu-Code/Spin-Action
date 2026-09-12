@@ -48,9 +48,13 @@ def _wait_for_live_start_contract(
     ``.game-playable[data-game-id]`` and emits two live globals before the external
     game loader script: ``evo_casino_config.api_url`` and
     ``game_api_settings.nonce``. The HAR proves that those values are sufficient
-    for ``GET /wp-json/games/v1/start``. Requiring the external
-    ``EvolutionGameLoader`` constructor made bootstrap depend on an unrelated
-    static JS asset finishing successfully.
+    for ``GET /wp-json/games/v1/start``.
+
+    The visible ``#start-game`` button is deliberately diagnostic only. Evolution's
+    loader binds to ``submit`` on ``form.start-form`` and its ``loadGame`` method
+    builds the request from the game id/API base/nonce; the button itself is not
+    part of that wire contract. Some live responses therefore expose the complete
+    start contract while omitting the button from the current DOM.
     """
     deadline = time.monotonic() + min(10.0, max(2.0, float(timeout_ms) / 1000.0))
     last: dict[str, Any] = {}
@@ -95,8 +99,6 @@ def _wait_for_live_start_contract(
                 )
             if (
                 live_id == expected_launch_id
-                and bool(state.get("form"))
-                and bool(state.get("button"))
                 and str(state.get("api_host") or "").casefold() == "games.evolution.com"
                 and str(state.get("api_path") or "").rstrip("/") == "/wp-json"
                 and bool(state.get("has_nonce"))
