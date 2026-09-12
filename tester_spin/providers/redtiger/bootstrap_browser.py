@@ -183,7 +183,6 @@ def _browser_user_agent(browser: Any) -> str:
 
 
 def _launch_browser(playwright: Any) -> tuple[Any, str, list[str]]:
-    """Prefer installed Chrome; fall back to Playwright Chromium without failing bootstrap."""
     failures: list[str] = []
     try:
         return playwright.chromium.launch(channel="chrome", headless=True), "system-chrome-headless", failures
@@ -207,20 +206,48 @@ def _embedded_entry_url(entries: dict[str, str], entry_origin: str, denied_url: 
 
 
 def _bootstrap_timeouts(timeout_s: float) -> tuple[int, int, int]:
-    """Return per-navigation, total bootstrap and post-JSON grace budgets.
-
-    The GUI/provider already supplies a per-game timeout. Historically Red Tiger
-    forced every navigation to at least 30 seconds and the whole bootstrap to at
-    least 60 seconds, which made deterministic launcher rejections painfully slow
-    across hundreds of games. Keep the caller's total budget, but prevent one
-    browser step from monopolizing it and give a resolved JSON loader a short grace
-    window to emit settings.
-    """
     requested_ms = max(15_000, int(max(1.0, float(timeout_s)) * 1000))
     navigation_ms = min(15_000, requested_ms)
     total_ms = requested_ms
     post_json_grace_ms = min(10_000, max(5_000, navigation_ms))
     return navigation_ms, total_ms, post_json_grace_ms
+
+
+def _stop_requested(stop_event: Any | None) -> bool:
+    try:
+        return bool(stop_event is not None and stop_event.is_set())
+    except Exception:
+        return False
+
+
+def _raise_if_stopped(stop_event: Any | None) -> None:
+    if _stop_requested(stop_event):
+        raise InterruptedError("Detención solicitada durante bootstrap Red Tiger.")
+
+
+def _goto_commit(
+    page: Any,
+    url: str,
+    *,
+    timeout_ms: int,
+    stop_event: Any | None,
+    referer: str | None = None,
+) -> Any:
+    """Start navigation without waiting for the whole page resource graph.
+
+    Playwright's synchronous DOMContentLoaded wait cannot observe our stop event.
+    Waiting only until the navigation commits bounds the non-interruptible section
+    to a few seconds; the surrounding loop then observes stop_event every 100 ms.
+    """
+    _raise_if_stopped(stop_event)
+    response = page.goto(
+        url,
+        wait_until="commit",
+        timeout=max(1_000, min(3_000, int(timeout_ms))),
+        referer=referer,
+    )
+    _raise_if_stopped(stop_event)
+    return response
 
 
 def bootstrap_game(
@@ -231,19 +258,14 @@ def bootstrap_game(
     artifact_dir: Path,
     endpoints: BootstrapEndpoints | None = None,
     progress: Callable[[str], None] | None = None,
+    stop_event: Any | None = None,
 ) -> RedTigerRuntime:
-    """Bootstrap Red Tiger in one provider-owned browser context, then use HTTP directly.
-
-    No title, runtime gameId, gserver host, API key or session credential is fixed.
-    The official demo route owns token issuance. We first allow its normal entry
-    navigation, then its advertised embedded entry, and finally the Evolution JSON
-    entry contract proven by the live client. All opaque session values still come
-    from the current token/demo response.
-    """
+    """Bootstrap Red Tiger in one provider-owned browser context, then use HTTP directly."""
     table = str(table_id or "").strip()
     if not table:
         raise ValueError("Red Tiger bootstrap requiere tableId del catálogo.")
 
+    _raise_if_stopped(stop_event)
     cfg = endpoints or BootstrapEndpoints()
     navigation_timeout_ms, settings_timeout_ms, post_json_grace_ms = _bootstrap_timeouts(timeout_s)
     artifact_dir.mkdir(parents=True, exist_ok=True)
@@ -276,7 +298,9 @@ def bootstrap_game(
     terminal_bootstrap_failure = False
 
     try:
+        _raise_if_stopped(stop_event)
         browser, browser_profile, browser_launch_failures = _launch_browser(playwright)
+        _raise_if_stopped(stop_event)
         context = browser.new_context(
             locale="en-GB",
             user_agent=_browser_user_agent(browser),
@@ -374,7 +398,14 @@ def bootstrap_game(
         attach_page(page)
 
         try:
-            page.goto(launch_url, wait_until="domcontentloaded", timeout=navigation_timeout_ms)
+            _goto_commit(
+                page,
+                launch_url,
+                timeout_ms=navigation_timeout_ms,
+                stop_event=stop_event,
+            )
+        except InterruptedError:
+            raise
         except Exception as navigation_exc:
             if progress is not None:
                 progress(
@@ -384,6 +415,7 @@ def bootstrap_game(
 
         deadline = time.monotonic() + (settings_timeout_ms / 1000.0)
         while not settings_box and time.monotonic() < deadline:
+            _raise_if_stopped(stop_event)
             denied = next(
                 (
                     response
@@ -405,12 +437,15 @@ def bootstrap_game(
                     fallback_page = context.new_page()
                     attach_page(fallback_page)
                     try:
-                        fallback_page.goto(
+                        _goto_commit(
+                            fallback_page,
                             embedded_url,
-                            wait_until="domcontentloaded",
-                            timeout=navigation_timeout_ms,
+                            timeout_ms=navigation_timeout_ms,
+                            stop_event=stop_event,
                             referer=launch_url,
                         )
+                    except InterruptedError:
+                        raise
                     except Exception as fallback_exc:
                         if progress is not None:
                             progress(
@@ -445,26 +480,30 @@ def bootstrap_game(
                         entry_origin=cfg.entry_origin,
                         referer=launch_url,
                         timeout_ms=navigation_timeout_ms,
+                        stop_event=stop_event,
                     )
+                    _raise_if_stopped(stop_event)
                     json_page = context.new_page()
                     attach_page(json_page)
                     try:
-                        json_page.goto(
+                        _goto_commit(
+                            json_page,
                             target_url,
-                            wait_until="domcontentloaded",
-                            timeout=navigation_timeout_ms,
+                            timeout_ms=navigation_timeout_ms,
+                            stop_event=stop_event,
                             referer=launch_url,
                         )
+                    except InterruptedError:
+                        raise
                     except Exception as json_navigation_exc:
                         if progress is not None:
                             progress(
                                 "Red Tiger bootstrap: loader resuelto por auth JSON no terminó navegación limpia "
                                 f"({type(json_navigation_exc).__name__}); damos una gracia corta a settings..."
                             )
-                    deadline = min(
-                        deadline,
-                        time.monotonic() + (post_json_grace_ms / 1000.0),
-                    )
+                    deadline = min(deadline, time.monotonic() + (post_json_grace_ms / 1000.0))
+                except InterruptedError:
+                    raise
                 except Exception as json_auth_exc:
                     json_auth_diagnostic = {
                         "error": f"{type(json_auth_exc).__name__}: {json_auth_exc}"
@@ -483,11 +522,13 @@ def bootstrap_game(
             pages = list(context.pages)
             if not pages:
                 break
+            _raise_if_stopped(stop_event)
             try:
                 pages[-1].wait_for_timeout(100)
             except Exception:
                 continue
 
+        _raise_if_stopped(stop_event)
         entry_diagnostics: list[dict[str, Any]] = []
         for response in entry_responses[-8:]:
             try:
@@ -520,6 +561,7 @@ def bootstrap_game(
                 "navigation": navigation_timeout_ms,
                 "total": settings_timeout_ms,
                 "post_json_grace": post_json_grace_ms,
+                "non_interruptible_navigation_slice": min(3_000, navigation_timeout_ms),
             },
             "terminal_bootstrap_failure": terminal_bootstrap_failure,
             "demo_token_statuses": demo_token_statuses,
@@ -689,7 +731,13 @@ def bootstrap_game(
         return runtime
     finally:
         if context is not None:
-            context.close()
+            try:
+                context.close()
+            except Exception:
+                pass
         if browser is not None:
-            browser.close()
+            try:
+                browser.close()
+            except Exception:
+                pass
         playwright.stop()
