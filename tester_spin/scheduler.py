@@ -68,13 +68,14 @@ def run_game_tests(
                 symbol=game.symbol,
                 error="Detención solicitada durante preparación de artefactos.",
             )
-        return provider.test_game(
+        result = provider.test_game(
             game,
             spins=spins_per_game,
             timeout_s=timeout_s,
             stop_event=stop_event,
             progress=game_progress,
         )
+        return provider.finalize_test_result(result, progress=game_progress)
 
     in_flight: dict[Future[GameTestResult], Game] = {}
     next_index = 0
