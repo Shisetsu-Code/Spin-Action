@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from tester_spin.models import GameTestResult, SpinAttempt
 from tester_spin.providers.bgaming.contracts import ChoiceContract, CommandContract, COMMAND_CONTRACTS
-from tester_spin.providers.bgaming.wager_policy import wager_plan_from_init
+from tester_spin.providers.bgaming_path_policy import wager_plan_from_init
 from tester_spin.sample_catalog import build_sample_catalog
 
 
