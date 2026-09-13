@@ -193,6 +193,10 @@ def _nearest_forwarding_wrapper(bundle: str, position: int, forwarded: str) -> t
     start = max(0, position - 2200)
     left = (bundle or "")[start:position]
     patterns = (
+        # Concise arrow wrappers forward options without a block body. Anchor
+        # the request-object opening to this command occurrence so a preceding
+        # unrelated arrow cannot establish execution authority.
+        re.compile(r"([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:async\s+)?\(?\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\)?\s*=>\s*[A-Za-z_$][A-Za-z0-9_$.]*\(\s*\{\s*$"),
         re.compile(r"([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*async\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=>\s*\{"),
         re.compile(r"([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*=>\s*\{"),
         re.compile(r"([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*async\s*\(\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\)\s*=>\s*\{"),
