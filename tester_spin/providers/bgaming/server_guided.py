@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import threading
 from typing import Any
@@ -24,6 +25,7 @@ _GENERIC_KEYS = {
 }
 _CACHE_LOCK = threading.Lock()
 _CLIENT_CACHE: dict[tuple[str, str, str, str], tuple[str, str, str]] = {}
+_DYNAMIC_LOCAL = threading.local()
 
 
 def _safe_token(value: Any) -> str:
@@ -99,17 +101,267 @@ def _command_occurrences(bundle: str, action: str):
     return list(pattern.finditer(bundle or ""))[:32]
 
 
-def _option_fields_near(bundle: str, occurrence) -> list[str]:
-    window = (bundle or "")[occurrence.start(): occurrence.start() + 1600]
+def _split_js_object_pairs(body: str) -> list[str]:
+    pairs: list[str] = []
+    current: list[str] = []
+    quote = ""
+    escaped = False
+    depth = 0
+    for char in body:
+        if quote:
+            current.append(char)
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = ""
+            continue
+        if char in {"\"", "'"}:
+            quote = char
+            current.append(char)
+            continue
+        if char in "([{":
+            depth += 1
+            current.append(char)
+            continue
+        if char in ")]}":
+            depth = max(0, depth - 1)
+            current.append(char)
+            continue
+        if char == "," and depth == 0:
+            text = "".join(current).strip()
+            if text:
+                pairs.append(text)
+            current = []
+            continue
+        current.append(char)
+    text = "".join(current).strip()
+    if text:
+        pairs.append(text)
+    return pairs
+
+
+def _parse_js_literal(value: str) -> tuple[bool, Any]:
+    raw = str(value or "").strip()
+    if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in {"\"", "'"}:
+        return True, raw[1:-1]
+    lowered = raw.casefold()
+    if lowered == "true":
+        return True, True
+    if lowered == "false":
+        return True, False
+    if lowered == "null":
+        return True, None
+    if re.fullmatch(r"-?\d+(?:\.\d+)?", raw):
+        return True, float(raw) if "." in raw else int(raw)
+    return False, None
+
+
+def _parse_js_object_literal(body: str) -> tuple[dict[str, Any], list[str], list[str]]:
+    literals: dict[str, Any] = {}
+    unresolved: list[str] = []
     fields: list[str] = []
-    for match in re.finditer(r"(?:[\"']?options[\"']?)\s*:\s*\{([^{}]{0,800})\}", window):
-        for pair in re.finditer(r"(?:[\"']?)([A-Za-z_][A-Za-z0-9_]*)(?:[\"']?)\s*:", match.group(1)):
-            field = pair.group(1)
+    for pair in _split_js_object_pairs(body):
+        match = re.match(
+            r"(?:[\"']?)([A-Za-z_][A-Za-z0-9_]*)(?:[\"']?)\s*:\s*(.+)$",
+            pair,
+        )
+        if not match:
+            continue
+        field = str(match.group(1))
+        if field not in fields:
+            fields.append(field)
+        ok, value = _parse_js_literal(match.group(2))
+        if ok:
+            literals[field] = value
+        elif field not in unresolved:
+            unresolved.append(field)
+    return literals, unresolved, fields
+
+
+def _variant_label(options: dict[str, Any]) -> str:
+    if not options:
+        return "__execute__"
+    return "|".join(
+        f"{key}={json.dumps(options[key], ensure_ascii=False, sort_keys=True)}"
+        for key in sorted(options)
+    )
+
+
+def _nearest_forwarding_wrapper(bundle: str, position: int, forwarded: str) -> tuple[str, str] | None:
+    start = max(0, position - 2200)
+    left = (bundle or "")[start:position]
+    patterns = (
+        re.compile(r"([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*async\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=>\s*\{"),
+        re.compile(r"([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*=>\s*\{"),
+        re.compile(r"([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*async\s*\(\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\)\s*=>\s*\{"),
+        re.compile(r"([A-Za-z_$][A-Za-z0-9_$]*)\s*\(\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\)\s*\{"),
+    )
+    candidates: list[tuple[int, str, str]] = []
+    for pattern in patterns:
+        for match in pattern.finditer(left):
+            method = str(match.group(1))
+            parameter = str(match.group(2))
+            if parameter == forwarded:
+                candidates.append((match.end(), method, parameter))
+    if not candidates:
+        return None
+    _end, method, parameter = max(candidates, key=lambda item: item[0])
+    return method, parameter
+
+
+def _forwarded_call_variants(
+    bundle: str,
+    method: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
+    executable: list[dict[str, Any]] = []
+    unresolved: list[dict[str, Any]] = []
+    fields: list[str] = []
+    pattern = re.compile(
+        r"(?:this\.)?" + re.escape(method) + r"\(\s*\{([^{}]{0,600})\}\s*\)"
+    )
+    seen_exec: set[str] = set()
+    seen_unresolved: set[str] = set()
+    for match in pattern.finditer(bundle or ""):
+        literal_options, unresolved_fields, option_fields = _parse_js_object_literal(
+            match.group(1)
+        )
+        for field in option_fields:
             if field not in fields:
                 fields.append(field)
-        if fields:
-            break
-    return fields
+        if unresolved_fields:
+            key = json.dumps(
+                {
+                    "options": literal_options,
+                    "unresolved_fields": sorted(unresolved_fields),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+            if key not in seen_unresolved:
+                seen_unresolved.add(key)
+                unresolved.append(
+                    {
+                        "literal_options": dict(literal_options),
+                        "unresolved_fields": list(unresolved_fields),
+                        "source": f"client-callsite:{method}",
+                    }
+                )
+            continue
+        label = _variant_label(literal_options)
+        if label in seen_exec:
+            continue
+        seen_exec.add(label)
+        executable.append(
+            {
+                "label": label,
+                "options": dict(literal_options),
+                "source": f"client-callsite:{method}",
+            }
+        )
+    return executable, unresolved, fields
+
+
+def _serializer_details(bundle: str, occurrence) -> dict[str, Any]:
+    window = (bundle or "")[occurrence.end(): occurrence.end() + 700]
+    direct = re.search(
+        r"(?:[\"']?options[\"']?)\s*:\s*\{([^{}]{0,500})\}",
+        window,
+    )
+    if direct:
+        literal_options, unresolved_fields, option_fields = _parse_js_object_literal(
+            direct.group(1)
+        )
+        parameterless = not option_fields and not direct.group(1).strip()
+        executable: list[dict[str, Any]] = []
+        unresolved: list[dict[str, Any]] = []
+        if parameterless:
+            executable.append(
+                {
+                    "label": "__execute__",
+                    "options": {},
+                    "source": "client-inline-options",
+                }
+            )
+        elif unresolved_fields:
+            unresolved.append(
+                {
+                    "literal_options": dict(literal_options),
+                    "unresolved_fields": list(unresolved_fields),
+                    "source": "client-inline-options",
+                }
+            )
+        else:
+            executable.append(
+                {
+                    "label": _variant_label(literal_options),
+                    "options": dict(literal_options),
+                    "source": "client-inline-options",
+                }
+            )
+        return {
+            "shape_proven": True,
+            "parameterless": parameterless,
+            "option_fields": option_fields,
+            "option_variants": executable,
+            "unresolved_option_variants": unresolved,
+            "forwarded_options_parameter": "",
+            "client_wrapper": "",
+        }
+
+    forwarded = re.search(
+        r"(?:[\"']?options[\"']?)\s*:\s*([A-Za-z_$][A-Za-z0-9_$]*)",
+        window,
+    )
+    if forwarded:
+        variable = str(forwarded.group(1))
+        wrapper = _nearest_forwarding_wrapper(bundle, occurrence.start(), variable)
+        if wrapper is None:
+            return {
+                "shape_proven": True,
+                "parameterless": False,
+                "option_fields": [],
+                "option_variants": [],
+                "unresolved_option_variants": [],
+                "forwarded_options_parameter": variable,
+                "client_wrapper": "",
+            }
+        method, _parameter = wrapper
+        executable, unresolved, option_fields = _forwarded_call_variants(
+            bundle,
+            method,
+        )
+        return {
+            "shape_proven": True,
+            "parameterless": False,
+            "option_fields": option_fields,
+            "option_variants": executable,
+            "unresolved_option_variants": unresolved,
+            "forwarded_options_parameter": variable,
+            "client_wrapper": method,
+        }
+
+    return {
+        "shape_proven": False,
+        "parameterless": False,
+        "option_fields": [],
+        "option_variants": [],
+        "unresolved_option_variants": [],
+        "forwarded_options_parameter": "",
+        "client_wrapper": "",
+    }
+
+
+def _merge_unique_variant(target: list[dict[str, Any]], item: dict[str, Any]) -> None:
+    marker = json.dumps(item, ensure_ascii=False, sort_keys=True)
+    existing = {
+        json.dumps(value, ensure_ascii=False, sort_keys=True)
+        for value in target
+        if isinstance(value, dict)
+    }
+    if marker not in existing:
+        target.append(dict(item))
 
 
 def analyze_server_response_against_bundle(data: dict[str, Any], bundle: str, *, source: str = "") -> dict[str, Any]:
@@ -132,18 +384,47 @@ def analyze_server_response_against_bundle(data: dict[str, Any], bundle: str, *,
     for action in actions:
         occurrences = _command_occurrences(bundle, action)
         fields: list[str] = []
+        option_variants: list[dict[str, Any]] = []
+        unresolved_variants: list[dict[str, Any]] = []
+        parameterless = False
+        shape_proven = False
+        wrappers: list[str] = []
+        forwarded_parameters: list[str] = []
         windows[action] = []
         for occurrence in occurrences:
-            for field in _option_fields_near(bundle, occurrence):
-                if field not in fields:
-                    fields.append(field)
+            details = _serializer_details(bundle, occurrence)
+            shape_proven = shape_proven or bool(details.get("shape_proven"))
+            parameterless = parameterless or bool(details.get("parameterless"))
+            for field in details.get("option_fields") or []:
+                text = str(field)
+                if text and text not in fields:
+                    fields.append(text)
+            for variant in details.get("option_variants") or []:
+                if isinstance(variant, dict):
+                    _merge_unique_variant(option_variants, variant)
+            for variant in details.get("unresolved_option_variants") or []:
+                if isinstance(variant, dict):
+                    _merge_unique_variant(unresolved_variants, variant)
+            wrapper = str(details.get("client_wrapper") or "")
+            if wrapper and wrapper not in wrappers:
+                wrappers.append(wrapper)
+            forwarded = str(details.get("forwarded_options_parameter") or "")
+            if forwarded and forwarded not in forwarded_parameters:
+                forwarded_parameters.append(forwarded)
             windows[action].append((bundle or "")[max(0, occurrence.start() - 1200): occurrence.start() + 1800])
+        replay_eligible = bool(shape_proven and (parameterless or option_variants))
         rows.append({
             "action": action,
             "advertised": True,
             "client_command_literal_hits": len(occurrences),
             "option_fields": fields,
-            "serializer_shape_proven": bool(occurrences and fields),
+            "parameterless": parameterless,
+            "option_variants": option_variants,
+            "unresolved_option_variants": unresolved_variants,
+            "client_wrappers": wrappers,
+            "forwarded_options_parameters": forwarded_parameters,
+            "serializer_shape_proven": bool(occurrences and shape_proven),
+            "replay_eligible": replay_eligible,
             "execution_authority": "evidence-only",
         })
 
@@ -170,6 +451,112 @@ def analyze_server_response_against_bundle(data: dict[str, Any], bundle: str, *,
         "actions": rows,
         "search_seeds": seed_rows,
     }
+
+
+def begin_dynamic_contract_run() -> None:
+    _DYNAMIC_LOCAL.specs = {}
+
+
+def end_dynamic_contract_run() -> None:
+    _DYNAMIC_LOCAL.specs = {}
+
+
+def _dynamic_specs() -> dict[str, dict[str, Any]]:
+    specs = getattr(_DYNAMIC_LOCAL, "specs", None)
+    if not isinstance(specs, dict):
+        specs = {}
+        _DYNAMIC_LOCAL.specs = specs
+    return specs
+
+
+def remember_dynamic_evidence(evidence: dict[str, Any]) -> None:
+    """Remember only fully client-proven replay payloads for this worker thread."""
+    if not isinstance(evidence, dict):
+        return
+    flow = evidence.get("flow")
+    state = str(flow.get("state") or "") if isinstance(flow, dict) else ""
+    client = evidence.get("client")
+    source = str(client.get("source") or "") if isinstance(client, dict) else ""
+    actions = evidence.get("actions")
+    if not isinstance(actions, list):
+        return
+    specs = _dynamic_specs()
+    for raw in actions:
+        if not isinstance(raw, dict) or not raw.get("replay_eligible"):
+            continue
+        action = str(raw.get("action") or "")
+        if not action or action in {"init", "spin"}:
+            continue
+        variants = raw.get("option_variants")
+        if not isinstance(variants, list) or not variants:
+            continue
+        spec = specs.setdefault(
+            action,
+            {
+                "states": set(),
+                "variants": {},
+                "source": source,
+                "option_fields": [],
+            },
+        )
+        if state:
+            spec["states"].add(state)
+        if source and not spec.get("source"):
+            spec["source"] = source
+        for field in raw.get("option_fields") or []:
+            text = str(field)
+            if text and text not in spec["option_fields"]:
+                spec["option_fields"].append(text)
+        for variant in variants:
+            if not isinstance(variant, dict):
+                continue
+            label = str(variant.get("label") or "")
+            options = variant.get("options")
+            if label and isinstance(options, dict):
+                spec["variants"][label] = dict(options)
+
+
+def dynamic_action_variants(data: dict[str, Any], action: str) -> list[dict[str, Any]]:
+    """Return replay-safe client-proven variants for an advertised action."""
+    if not isinstance(data, dict):
+        return []
+    flow = data.get("flow")
+    if not isinstance(flow, dict):
+        return []
+    actions = flow.get("available_actions")
+    advertised = {str(item) for item in actions} if isinstance(actions, list) else set()
+    command = str(action or "")
+    if command not in advertised:
+        return []
+    spec = _dynamic_specs().get(command)
+    if not isinstance(spec, dict):
+        return []
+    state = str(flow.get("state") or "")
+    states = spec.get("states")
+    if isinstance(states, set) and states and state not in states:
+        return []
+    variants = spec.get("variants")
+    if not isinstance(variants, dict):
+        return []
+    return [
+        {"label": str(label), "options": dict(options)}
+        for label, options in variants.items()
+        if str(label) and isinstance(options, dict)
+    ]
+
+
+def dynamic_action_source(action: str) -> str:
+    spec = _dynamic_specs().get(str(action or ""))
+    if not isinstance(spec, dict):
+        return "server-guided-client"
+    source = str(spec.get("source") or "")
+    return f"server-guided-client:{source}" if source else "server-guided-client"
+
+
+def dynamic_action_option_fields(action: str) -> list[str]:
+    spec = _dynamic_specs().get(str(action or ""))
+    fields = spec.get("option_fields") if isinstance(spec, dict) else None
+    return [str(item) for item in fields if str(item)] if isinstance(fields, list) else []
 
 
 def _cache_key(runtime: BGamingRuntime) -> tuple[str, str, str, str]:
@@ -221,6 +608,12 @@ def discover_server_guided_client_evidence(runtime: BGamingRuntime, data: dict[s
 __all__ = [
     "SCHEMA",
     "analyze_server_response_against_bundle",
+    "begin_dynamic_contract_run",
     "discover_server_guided_client_evidence",
+    "dynamic_action_option_fields",
+    "dynamic_action_source",
+    "dynamic_action_variants",
+    "end_dynamic_contract_run",
+    "remember_dynamic_evidence",
     "server_search_seeds",
 ]
