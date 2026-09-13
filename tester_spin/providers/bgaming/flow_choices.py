@@ -196,17 +196,23 @@ def _dynamic_prompt_for(data: dict[str, Any], command: str) -> FlowChoicePrompt 
     if not variants or context is None:
         return None
     scope, round_id, prefix = context
+
+    # Dynamically learned literal payloads come from distinct client call sites.
+    # Re-sending the same literal payload from the same round without any new
+    # client/runtime evidence can stall forever (for example repeatedly entering
+    # a selection state). Treat each proven literal variant as single-use per
+    # command/round path. If all variants were already used, the command becomes
+    # pending/unresolved instead of being dispatched again.
+    already_used = set(prefix)
     payloads = {
         str(item.get("label") or ""): dict(item.get("options") or {})
         for item in variants
         if isinstance(item, dict)
         and str(item.get("label") or "")
+        and str(item.get("label") or "") not in already_used
         and isinstance(item.get("options"), dict)
     }
     if not payloads:
-        return None
-
-    if set(payloads) == {"__execute__"} and "__execute__" in prefix:
         return None
 
     fields = dynamic_action_option_fields(command)
@@ -276,7 +282,11 @@ def _prompts_for(data: dict[str, Any]) -> list[FlowChoicePrompt]:
     cached = [
         prompt for prompt in run.candidates
         if _cached_prompt_matches(data, prompt)
+        and not prompt.option_payloads
     ]
+    # Dynamic prompts are intentionally not resurrected from cache after their
+    # literal variants are exhausted. Reusing one would recreate the exact loop
+    # the single-use rule is designed to prevent.
     run.candidates = cached
     return cached
 
