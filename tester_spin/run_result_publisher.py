@@ -115,7 +115,7 @@ def build_result_document(result: GameTestResult, *, source_commit: str = "") ->
     skipped: list[dict[str, Any]] = []
     consumed = 0
     if result.run_dir and root.is_dir():
-        priority_names = {"result.json", "path-coverage.json", "sample-catalog.json", "profile.json", "flow-choice-coverage.json"}
+        priority_names = {"result.json", "path-coverage.json", "sample-catalog.json", "profile.json", "flow-choice-coverage.json", "game-structure.json"}
         failed_roots = [Path(a.artifact_dir).resolve() for a in result.attempts
                         if a.artifact_dir and (not a.ok or not a.terminal or a.warning or a.error)]
         def priority(path: Path) -> tuple[int, str]:

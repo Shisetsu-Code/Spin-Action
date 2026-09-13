@@ -290,19 +290,27 @@ def post_command(
         "Referer": runtime.launch_url,
         runtime.csrf_header_name: runtime.csrf_header_value,
     }
-    response = runtime.session.post(
-        runtime.api_url,
-        json=payload,
-        headers=headers,
-        timeout=timeout_s,
-    )
-    response.raise_for_status()
+    from tester_spin.providers.bgaming.structural_map import record_wire
+    try:
+        response = runtime.session.post(
+            runtime.api_url,
+            json=payload,
+            headers=headers,
+            timeout=timeout_s,
+        )
+        response.raise_for_status()
+    except Exception:
+        record_wire(payload, failed=True)
+        raise
     try:
         data = response.json()
     except ValueError as exc:
+        record_wire(payload, failed=True)
         raise ValueError("BGaming: respuesta no JSON del endpoint de juego.") from exc
     if not isinstance(data, dict):
+        record_wire(payload, failed=True)
         raise ValueError("BGaming: respuesta JSON inesperada.")
+    record_wire(payload, data)
     return response, payload, data
 
 

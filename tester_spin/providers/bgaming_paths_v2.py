@@ -107,6 +107,8 @@ def _post_command_guard(
             # Promotion remains narrow: only exact client-proven, fully literal
             # payload variants become replay candidates. Text hits alone never do.
             remember_dynamic_evidence(evidence)
+            from tester_spin.providers.bgaming.structural_map import record_discovery
+            record_discovery(data, evidence)
 
             items = getattr(_policy._LOCAL, "server_guided_evidence", None)
             if not isinstance(items, list):
@@ -281,6 +283,9 @@ class BGamingProvider(_exhaustive.BGamingProvider):
         stop_event: threading.Event,
         progress: Progress,
     ) -> GameTestResult:
+        from tester_spin.providers.bgaming.structural_map import begin_capture, end_capture
+        from tester_spin.structure import atomic_write
+        capture, capture_token = begin_capture(game.slug)
         _policy.begin_policy_run()
         begin_dynamic_contract_run()
         _policy._LOCAL.dynamic_purchased_feature = False
@@ -299,8 +304,24 @@ class BGamingProvider(_exhaustive.BGamingProvider):
                 progress=progress,
             )
             _write_server_guided_artifact(result)
-            return _policy.finalize_policy_artifacts(result)
+            result = _policy.finalize_policy_artifacts(result)
+            try:
+                capture.finish(result, self.game_dir(game))
+            except Exception as exc:
+                result.structural_map = {"status": "failed", "diagnostic": type(exc).__name__}
+                if result.status == "OK":
+                    result.status = "PARCIAL"
+                result.error = (str(result.error or "") + " Structural Map: " + type(exc).__name__).strip()
+            if result.run_dir and Path(result.run_dir).is_dir():
+                try:
+                    atomic_write(Path(result.run_dir) / "result.json", result.to_dict())
+                except OSError as exc:
+                    result.structural_map["result_write_diagnostic"] = type(exc).__name__
+                    if result.status == "OK":
+                        result.status = "PARCIAL"
+            return result
         finally:
+            end_capture(capture_token)
             end_dynamic_contract_run()
             _policy.end_policy_run()
             for name in (

@@ -318,6 +318,8 @@ class BGamingProvider(_BGamingProvider):
         forced_command: str = "",
         forced_path: tuple[str, ...] = (),
     ) -> tuple[GameTestResult, list[dict[str, Any]]]:
+        from tester_spin.providers.bgaming.structural_map import reset_capture
+        reset_capture()
         begin_flow_choice_run(
             forced_scope=forced_scope,
             forced_command=forced_command,

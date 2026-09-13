@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .normalization import bounded_add, field_role, sanitize
+from .normalization import bounded_add, field_role, safe_key, sanitize
 
 
 def type_name(value: Any) -> str:
@@ -33,13 +33,18 @@ def observe_schema(node: dict, value: Any, path: str = "", roles: dict | None = 
     if isinstance(value, dict):
         properties = node.setdefault("properties", {})
         for key, child in value.items():
-            observe_schema(properties.setdefault(str(key), {}), child, f"{path}.{key}".strip("."), roles)
+            if safe_key(key) != str(key):
+                node["mapping_keys"] = "runtime identifiers"
+                observe_schema(node.setdefault("mapping_values", {}), child, path + ".*", roles)
+                continue
+            key = safe_key(key)
+            observe_schema(properties.setdefault(key, {}), child, f"{path}.{key}".strip("."), roles)
         for child in properties.values():
             child["parent_samples"] = types["object"]
             child["optional_observed"] = child["samples"] < types["object"]
             child["present_in_all_observed"] = not child["optional_observed"]
             child["required"] = None
-        node["mapping_keys"] = "observed_properties; dynamic-key semantics unresolved"
+        node.setdefault("mapping_keys", "observed_properties; dynamic-key semantics unresolved")
     elif isinstance(value, (list, tuple)):
         lengths = node.setdefault("length", {"min": len(value), "max": len(value)})
         lengths["min"] = min(lengths["min"], len(value))
@@ -89,3 +94,6 @@ def merge_schema(target: dict, source: dict) -> None:
         target.setdefault("collection_role", "unknown; does not establish choices")
     if "items" in source:
         merge_schema(target.setdefault("items", {}), source["items"])
+    if "mapping_values" in source:
+        target["mapping_keys"] = "runtime identifiers"
+        merge_schema(target.setdefault("mapping_values", {}), source["mapping_values"])

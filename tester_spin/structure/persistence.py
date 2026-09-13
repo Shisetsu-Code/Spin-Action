@@ -61,6 +61,8 @@ def persist_map(path: Path, incoming: StructuralMap, run_key: str) -> dict:
         revisions = []
         if path.exists():
             previous = StructuralMap.load(json.loads(path.read_text(encoding="utf-8")))
+            if previous.scope[:3] != incoming.scope[:3]:
+                raise ValueError("Structural map belongs to a different provider/game/protocol")
             revisions = previous.data["metadata"].get("previous_revisions", [])
             if previous.scope == incoming.scope:
                 if run_key not in previous.data["metadata"].get("merged_runs", []):

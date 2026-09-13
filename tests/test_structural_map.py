@@ -236,6 +236,41 @@ class StructuralMapTests(unittest.TestCase):
         self.assertNotEqual(value.state(State("bonus", signature="phase-a"), proof),
                             value.state(State("bonus", signature="phase-b"), proof))
 
+    def test_pending_replay_resolves_prefix_and_filters_server_only(self):
+        value = graph()
+        first = value.observe(observation())
+        state = State("freespins")
+        value.discover(state, "cashout", [Choice("cashout", {})], prefix=(first,))
+        value.discover(state, "unknown", [Choice("guess", {}, "SERVER_ADVERTISED")], prefix=(first,))
+        plans = value.pending_replays()
+        self.assertEqual(len(plans), 1)
+        self.assertEqual(plans[0]["prefix"][0]["command"], "choose_multiplier")
+        self.assertEqual(plans[0]["target"]["command"], "cashout")
+        self.assertTrue(plans[0]["current_state_validation_required"])
+
+    def test_uuid_mapping_keys_do_not_leak_and_keep_value_schema(self):
+        value = graph()
+        uuid = "01234567-1234-1234-1234-123456789abc"
+        value.observe(observation(response={"mapping": {uuid: {"x": 1}}}))
+        data = value.to_dict()
+        self.assertNotIn(uuid, json.dumps(data))
+        schema = next(iter(data["response_contracts"].values()))["schema"]
+        self.assertIn("mapping_values", schema["properties"]["mapping"])
+
+    def test_cross_provider_persistence_rejects_without_replacing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "game-structure.json"
+            persist_map(path, graph(), "a")
+            with self.assertRaises(ValueError):
+                persist_map(path, StructuralMap("rubyplay", "json", "fixture"), "b")
+            self.assertEqual(json.loads(path.read_text())["metadata"]["provider"], "bgaming")
+
+    def test_unsafe_revision_reference_is_rejected(self):
+        data = graph().to_dict()
+        data["metadata"]["previous_revisions"] = [{"path": "../../private.json"}]
+        with self.assertRaises(ValueError):
+            StructuralMap.load(data)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -26,6 +26,20 @@ class StructuralMap:
         if data.get("schema") != SCHEMA or not all(isinstance(data.get(k), dict) for k in TABLES):
             raise ValueError("Unsupported or malformed structural map")
         meta = data["metadata"]
+        for revision in meta.get("previous_revisions", []):
+            name = revision.get("path", "")
+            if not name.startswith("game-structure-") or not name.endswith(".json") or any(c in name for c in ("/", "\\", ":")):
+                raise ValueError("Unsafe structural revision reference")
+        for table in TABLES:
+            for key, row in data[table].items():
+                if not isinstance(row, dict) or row.get("id") != key:
+                    raise ValueError("Malformed structural entity: " + table)
+        for row in data["transitions"].values():
+            for field, table in (("from_state", "states"), ("to_state", "states"), ("choice", "choices"),
+                                 ("decision_point", "decision_points"), ("request_contract", "request_contracts"),
+                                 ("response_contract", "response_contracts"), ("path_context", "path_context")):
+                if row.get(field) not in data[table]:
+                    raise ValueError("Dangling transition reference: " + field)
         result = cls(meta["provider"], meta["protocol_family"], meta["game_identifier"], meta["bundle_fingerprint"])
         result.data = deepcopy(data)
         return result
@@ -192,6 +206,8 @@ class StructuralMap:
                 unresolved_fields(contract, child, f"{path}.{name}".strip("."))
             if "items" in node:
                 unresolved_fields(contract, node["items"], path + "[]")
+            if "mapping_values" in node:
+                unresolved_fields(contract, node["mapping_values"], path + ".*")
         for contract in self.data["response_contracts"].values():
             unresolved_fields(contract["id"], contract["schema"])
         for decision in self.data["decision_points"].values():
@@ -208,3 +224,28 @@ class StructuralMap:
             "unknowns": len(self.data["unknowns"]), "complete": False,
             "completeness_basis": "Observed evidence only; domains and conditional fields may be incomplete"}
         return deepcopy(self.data)
+
+    def pending_replays(self) -> list[dict]:
+        """Resolve structural prefixes to payload templates without authorizing dispatch.
+
+        The provider must bootstrap fresh runtime/session fields and revalidate
+        current legal actions. Heuristic/server-only targets are never executable.
+        """
+        plans = []
+        authority = {"WIRE_OBSERVED", "UI_OBSERVED", "CLIENT_PROVEN"}
+        for choice in self.data["choices"].values():
+            if choice["coverage"]["outcome_observed"]:
+                continue
+            sources = {self.data["evidence"][key]["kind"] for key in choice["evidence"]}
+            if not sources & authority:
+                continue
+            decision = self.data["decision_points"][choice["decision_point_id"]]
+            for prefix in decision["replay_prefixes"]:
+                if any(key not in self.data["choices"] for key in prefix):
+                    continue
+                steps = [self.data["choices"][key]["request"] for key in prefix]
+                plans.append({"choice": choice["id"], "prefix": deepcopy(steps),
+                    "target": deepcopy(choice["request"]), "runtime_binding_required": True,
+                    "current_state_validation_required": True})
+                break
+        return plans

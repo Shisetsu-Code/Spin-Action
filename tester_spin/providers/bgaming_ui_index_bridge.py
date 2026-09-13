@@ -90,6 +90,8 @@ def _post_command_with_ui_index_domain(
         if enriched != original:
             remember_dynamic_evidence(enriched)
             _replace_artifact_evidence(original, enriched)
+        from tester_spin.providers.bgaming.structural_map import record_discovery
+        record_discovery(data, enriched)
     except Exception as exc:
         _record_error(exc)
     return result

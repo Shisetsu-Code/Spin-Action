@@ -89,6 +89,7 @@ class GameTestResult:
     run_dir: str = ""
     attempts: list[SpinAttempt] = field(default_factory=list)
     samples_per_path: int = 1
+    structural_map: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -109,4 +110,5 @@ class GameTestResult:
             "run_dir": self.run_dir,
             "attempts": [attempt.to_dict() for attempt in self.attempts],
             "samples_per_path": self.samples_per_path,
+            "structural_map": self.structural_map,
         }

@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:tester-spin:game-structure:v1",
+  "title": "Tester Spin observed structural map v1",
+  "type": "object",
+  "required": ["schema", "metadata", "states", "decision_points", "choices", "transitions", "request_contracts", "response_contracts", "field_semantics", "path_context", "coverage", "unknowns", "evidence", "relations"],
+  "properties": {
+    "schema": {"const": "tester-spin/game-structure/v1"},
+    "metadata": {
+      "type": "object",
+      "required": ["provider", "protocol_family", "game_identifier", "slug", "bundle_fingerprint", "generated_at"],
+      "properties": {
+        "provider": {"type": "string"},
+        "protocol_family": {"type": "string"},
+        "game_identifier": {"type": "string"},
+        "slug": {"type": "string"},
+        "bundle_fingerprint": {"type": "string"},
+        "generated_at": {"type": "string"}
+      }
+    },
+    "states": {"$ref": "#/$defs/entities"},
+    "decision_points": {"$ref": "#/$defs/entities"},
+    "choices": {"$ref": "#/$defs/entities"},
+    "transitions": {"type": "object", "additionalProperties": {"$ref": "#/$defs/transition"}},
+    "request_contracts": {"type": "object", "additionalProperties": {"$ref": "#/$defs/contract"}},
+    "response_contracts": {"type": "object", "additionalProperties": {"$ref": "#/$defs/contract"}},
+    "field_semantics": {"$ref": "#/$defs/entities"},
+    "path_context": {"$ref": "#/$defs/entities"},
+    "unknowns": {"$ref": "#/$defs/entities"},
+    "evidence": {"$ref": "#/$defs/entities"},
+    "relations": {"$ref": "#/$defs/entities"},
+    "coverage": {"type": "object", "required": ["complete"], "properties": {"complete": {"const": false}}}
+  },
+  "$defs": {
+    "entity": {"type": "object", "required": ["id"], "properties": {"id": {"type": "string"}}},
+    "entities": {"type": "object", "additionalProperties": {"$ref": "#/$defs/entity"}},
+    "transition": {
+      "allOf": [{"$ref": "#/$defs/entity"}],
+      "required": ["from_state", "to_state", "decision_point", "choice", "request_contract", "response_contract", "path_context", "observations", "validation_results"],
+      "properties": {"observations": {"type": "integer", "minimum": 1}}
+    },
+    "contract": {
+      "allOf": [{"$ref": "#/$defs/entity"}],
+      "required": ["schema", "observations", "examples", "evidence"],
+      "properties": {"schema": {"$ref": "#/$defs/observedSchema"}, "examples": {"type": "array", "maxItems": 3}}
+    },
+    "observedSchema": {
+      "type": "object",
+      "required": ["samples", "observed_types", "nullable", "confidence", "role"],
+      "properties": {
+        "samples": {"type": "integer", "minimum": 1},
+        "observed_types": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 1}},
+        "nullable": {"type": "boolean"},
+        "required": {"type": "null"},
+        "properties": {"type": "object", "additionalProperties": {"$ref": "#/$defs/observedSchema"}},
+        "items": {"$ref": "#/$defs/observedSchema"},
+        "mapping_values": {"$ref": "#/$defs/observedSchema"}
+      }
+    }
+  }
+}
