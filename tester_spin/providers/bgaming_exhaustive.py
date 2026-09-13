@@ -12,20 +12,23 @@ from tester_spin.models import Game, GameTestResult
 from tester_spin.providers.base import Progress
 from tester_spin.providers.bgaming import BGamingProvider as _BGamingProvider
 from tester_spin.providers.bgaming import execution as _execution
-from tester_spin.providers.bgaming.bonus_choice import (
-    begin_bonus_choice_run,
-    end_bonus_choice_run,
-    install_bonus_choice_adapter,
+from tester_spin.providers.bgaming.flow_choices import (
+    begin_flow_choice_run,
+    end_flow_choice_run,
+    install_flow_choice_adapter,
 )
 
 
 MAX_OPTION_COMBINATIONS = 128
-MAX_BONUS_CHOICE_RUNS = 64
+MAX_FLOW_CHOICE_RUNS = 64
+
+# The base executor owns profile discovery. Exhaustive replays only need a
+# temporary, thread-local selector override; no per-game constants are stored.
 _OVERRIDE_LOCAL = threading.local()
 _ORIGINAL_DISCOVER_PROFILE = _execution.discover_profile
 
 
-install_bonus_choice_adapter()
+install_flow_choice_adapter()
 
 
 def _same_option(left: Any, right: Any) -> bool:
@@ -36,11 +39,17 @@ def _apply_profile_override(profile):
     override = getattr(_OVERRIDE_LOCAL, "spin_options", None)
     if not isinstance(override, dict) or not override:
         return profile
+
     for field, selected in override.items():
         choices = profile.spin_option_choices.get(field)
         if not isinstance(choices, list) or not choices:
-            raise ValueError(f"BGaming exhaustive: selector {field!r} sin dominio descubierto.")
-        match = next((value for value in choices if _same_option(value, selected)), None)
+            raise ValueError(
+                f"BGaming exhaustive: selector {field!r} sin dominio descubierto."
+            )
+        match = next(
+            (value for value in choices if _same_option(value, selected)),
+            None,
+        )
         if match is None:
             raise ValueError(
                 f"BGaming exhaustive: {field}={selected!r} no está en {choices!r}."
@@ -60,12 +69,22 @@ if getattr(_execution.discover_profile, "__name__", "") != "_discover_profile_wi
 
 def _write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def _safe_label(label: str) -> str:
+    clean = [
+        ch if ch.isalnum() or ch in {"-", "_", "."} else "_"
+        for ch in str(label)
+    ]
+    return "".join(clean)[:180] or "BASE"
 
 
 def _load_profile(result: GameTestResult) -> dict[str, Any]:
-    root = Path(str(result.run_dir or ""))
-    path = root / "profile.json"
+    path = Path(str(result.run_dir or "")) / "profile.json"
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
@@ -77,7 +96,8 @@ def _choice_domains(profile: dict[str, Any]) -> list[tuple[str, list[Any]]]:
     raw = profile.get("spin_option_choices")
     if not isinstance(raw, dict):
         return []
-    out: list[tuple[str, list[Any]]] = []
+
+    domains: list[tuple[str, list[Any]]] = []
     for field in sorted(raw):
         values = raw.get(field)
         if not isinstance(values, list):
@@ -86,11 +106,11 @@ def _choice_domains(profile: dict[str, Any]) -> list[tuple[str, list[Any]]]:
         for value in values:
             if value in (None, ""):
                 continue
-            if not any(_same_option(value, item) for item in clean):
+            if not any(_same_option(value, seen) for seen in clean):
                 clean.append(value)
         if len(clean) > 1:
-            out.append((str(field), clean))
-    return out
+            domains.append((str(field), clean))
+    return domains
 
 
 def _matrix(domains: list[tuple[str, list[Any]]]) -> list[dict[str, Any]]:
@@ -112,21 +132,21 @@ def _label(combo: dict[str, Any]) -> str:
     )
 
 
-def _safe_label(label: str) -> str:
-    out = []
-    for ch in label:
-        out.append(ch if ch.isalnum() or ch in {"-", "_", "."} else "_")
-    return "".join(out)[:180] or "BASE"
-
-
-def _base_combo(profile: dict[str, Any], domains) -> dict[str, Any]:
+def _base_combo(
+    profile: dict[str, Any],
+    domains: list[tuple[str, list[Any]]],
+) -> dict[str, Any]:
     selected = profile.get("spin_options")
     if not isinstance(selected, dict):
         selected = {}
+
     combo: dict[str, Any] = {}
     for field, values in domains:
         current = selected.get(field)
-        match = next((value for value in values if _same_option(value, current)), None)
+        match = next(
+            (value for value in values if _same_option(value, current)),
+            None,
+        )
         combo[field] = values[0] if match is None else match
     return combo
 
@@ -161,9 +181,8 @@ def _move_run(result: GameTestResult, target: Path) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
     if target.exists():
         shutil.rmtree(target)
-    old = source
     shutil.move(str(source), str(target))
-    _remap_attempt_paths(result, old, target)
+    _remap_attempt_paths(result, source, target)
     result.run_dir = str(target)
 
 
@@ -189,9 +208,15 @@ def _merge_modes(target: GameTestResult, source: GameTestResult) -> None:
         signatures.add(signature)
 
 
-def _trace_confirms(trace: list[dict[str, Any]], scope: str, path: tuple[str, ...]) -> bool:
+def _trace_confirms(
+    trace: list[dict[str, Any]],
+    scope: str,
+    command: str,
+    path: tuple[str, ...],
+) -> bool:
     return any(
         str(item.get("scope") or "") == scope
+        and str(item.get("command") or item.get("wire_command") or "") == command
         and tuple(str(value) for value in item.get("path_after") or []) == path
         for item in trace
         if isinstance(item, dict)
@@ -199,7 +224,7 @@ def _trace_confirms(trace: list[dict[str, Any]], scope: str, path: tuple[str, ..
 
 
 def _merge_choice_trace(
-    graph: dict[tuple[str, tuple[str, ...], tuple[str, ...]], dict[str, Any]],
+    graph: dict[tuple[str, str, tuple[str, ...], tuple[str, ...]], dict[str, Any]],
     trace: list[dict[str, Any]],
     *,
     complete: bool,
@@ -208,17 +233,22 @@ def _merge_choice_trace(
         if not isinstance(item, dict):
             continue
         scope = str(item.get("scope") or "SPIN")
+        command = str(item.get("command") or item.get("wire_command") or "")
         prefix = tuple(str(value) for value in item.get("prefix") or [])
         available = tuple(
             str(value) for value in item.get("available") or [] if str(value)
         )
-        if not available:
+        if not command or not available:
             continue
-        key = (scope, prefix, available)
+
+        key = (scope, command, prefix, available)
         point = graph.setdefault(
             key,
             {
                 "scope": scope,
+                "command": command,
+                "option_field": str(item.get("option_field") or ""),
+                "source": str(item.get("source") or "runtime"),
                 "prefix": prefix,
                 "available": available,
                 "covered": set(),
@@ -230,13 +260,14 @@ def _merge_choice_trace(
 
 
 def _next_missing_choice(
-    graph: dict[tuple[str, tuple[str, ...], tuple[str, ...]], dict[str, Any]],
-    attempted: set[tuple[str, tuple[str, ...]]],
-) -> tuple[str, tuple[str, ...]] | None:
+    graph: dict[tuple[str, str, tuple[str, ...], tuple[str, ...]], dict[str, Any]],
+    attempted: set[tuple[str, str, tuple[str, ...]]],
+) -> tuple[str, str, tuple[str, ...]] | None:
     ordered = sorted(
         graph.values(),
         key=lambda item: (
             str(item["scope"]),
+            str(item["command"]),
             len(item["prefix"]),
             tuple(item["prefix"]),
         ),
@@ -245,14 +276,18 @@ def _next_missing_choice(
         for option in point["available"]:
             if option in point["covered"]:
                 continue
-            target = (str(point["scope"]), (*point["prefix"], str(option)))
+            target = (
+                str(point["scope"]),
+                str(point["command"]),
+                (*point["prefix"], str(option)),
+            )
             if target not in attempted:
                 return target
     return None
 
 
 class BGamingProvider(_BGamingProvider):
-    """BGaming provider with exhaustive dynamic options and in-round choices."""
+    """BGaming with exhaustive traversal of client-proven finite choices."""
 
     def _raw_test(
         self,
@@ -263,10 +298,12 @@ class BGamingProvider(_BGamingProvider):
         stop_event: threading.Event,
         progress: Progress,
         forced_scope: str = "",
+        forced_command: str = "",
         forced_path: tuple[str, ...] = (),
     ) -> tuple[GameTestResult, list[dict[str, Any]]]:
-        begin_bonus_choice_run(
+        begin_flow_choice_run(
             forced_scope=forced_scope,
+            forced_command=forced_command,
             forced_path=forced_path,
         )
         try:
@@ -279,10 +316,10 @@ class BGamingProvider(_BGamingProvider):
                 progress=progress,
             )
         finally:
-            trace = end_bonus_choice_run()
+            trace = end_flow_choice_run()
         return result, trace
 
-    def _run_with_bonus_choice_coverage(
+    def _run_with_flow_choice_coverage(
         self,
         game: Game,
         *,
@@ -303,36 +340,40 @@ class BGamingProvider(_BGamingProvider):
         if not base_trace:
             return result
 
-        graph: dict[tuple[str, tuple[str, ...], tuple[str, ...]], dict[str, Any]] = {}
+        graph: dict[
+            tuple[str, str, tuple[str, ...], tuple[str, ...]],
+            dict[str, Any],
+        ] = {}
         _merge_choice_trace(graph, base_trace, complete=_complete(result))
 
         initial_root = Path(result.run_dir)
         master_root = initial_root.with_name(
-            initial_root.name + f"-bonus-choices-{time.time_ns() % 1_000_000_000:09d}"
+            initial_root.name + f"-flow-choices-{time.time_ns() % 1_000_000_000:09d}"
         )
         _move_run(result, master_root)
 
         added_requested = 0
         added_successes = 0
         branch_errors: list[str] = []
-        attempted: set[tuple[str, tuple[str, ...]]] = set()
+        attempted: set[tuple[str, str, tuple[str, ...]]] = set()
         executed = 0
 
         while not stop_event.is_set():
             target = _next_missing_choice(graph, attempted)
             if target is None:
                 break
-            scope, forced_path = target
+            scope, command, forced_path = target
             attempted.add(target)
-            if executed >= MAX_BONUS_CHOICE_RUNS:
+            if executed >= MAX_FLOW_CHOICE_RUNS:
                 branch_errors.append(
-                    f"select_bonus excede guard de {MAX_BONUS_CHOICE_RUNS} replays"
+                    f"elecciones de flujo exceden guard de {MAX_FLOW_CHOICE_RUNS} replays"
                 )
                 break
             executed += 1
             path_label = " → ".join(forced_path)
             progress(
-                f"[{game.name}] BGaming select_bonus: reproduciendo {scope} → {path_label}."
+                f"[{game.name}] BGaming {command}: reproduciendo "
+                f"{scope} → {path_label}."
             )
 
             try:
@@ -343,18 +384,20 @@ class BGamingProvider(_BGamingProvider):
                     stop_event=stop_event,
                     progress=progress,
                     forced_scope=scope,
+                    forced_command=command,
                     forced_path=forced_path,
                 )
             except Exception as exc:
                 branch_errors.append(
-                    f"{scope}/{path_label}: {type(exc).__name__}: {exc}"
+                    f"{scope}/{command}/{path_label}: {type(exc).__name__}: {exc}"
                 )
                 continue
 
             target_dir = (
                 master_root
-                / "bonus-choice-runs"
+                / "flow-choice-runs"
                 / _safe_label(scope)
+                / _safe_label(command)
                 / _safe_label("__".join(forced_path))
             )
             if Path(str(sub.run_dir or "")).is_dir():
@@ -362,40 +405,55 @@ class BGamingProvider(_BGamingProvider):
 
             added_requested += sub.requested_spins
             added_successes += sub.successful_spins
-            suffix = _safe_label(scope + "__" + "__".join(forced_path)).upper()
+            suffix = _safe_label(
+                scope + "__" + command + "__" + "__".join(forced_path)
+            ).upper()
             for attempt in sub.attempts:
-                attempt.mode_id = f"{attempt.mode_id}__CHOICE_{suffix}"
+                attempt.mode_id = f"{attempt.mode_id}__FLOW_{suffix}"
                 attempt.mode_kind = f"{attempt.mode_kind}_CHOICE_VARIANT"
                 result.attempts.append(attempt)
             _merge_modes(result, sub)
 
             sub_complete = _complete(sub)
             _merge_choice_trace(graph, trace, complete=sub_complete)
-            if not _trace_confirms(trace, scope, forced_path):
+            if not _trace_confirms(trace, scope, command, forced_path):
                 branch_errors.append(
-                    f"{scope}/{path_label}: la ronda fresca no volvió a alcanzar esa rama"
+                    f"{scope}/{command}/{path_label}: la ronda fresca no volvió a alcanzar esa rama"
                 )
             elif not sub_complete:
                 branch_errors.append(
-                    f"{scope}/{path_label}: {sub.status} {sub.error}".strip()
+                    f"{scope}/{command}/{path_label}: {sub.status} {sub.error}".strip()
                 )
 
         result.requested_spins += added_requested
         result.successful_spins += added_successes
-        result.failed_spins = max(0, result.requested_spins - result.successful_spins)
+        result.failed_spins = max(
+            0,
+            result.requested_spins - result.successful_spins,
+        )
 
         missing_labels: list[str] = []
         for point in sorted(
             graph.values(),
-            key=lambda item: (str(item["scope"]), len(item["prefix"]), tuple(item["prefix"])),
+            key=lambda item: (
+                str(item["scope"]),
+                str(item["command"]),
+                len(item["prefix"]),
+                tuple(item["prefix"]),
+            ),
         ):
             scope = str(point["scope"])
+            command = str(point["command"])
             prefix = tuple(str(value) for value in point["prefix"])
             required = [str(value) for value in point["available"]]
             covered = [value for value in required if value in point["covered"]]
             prefix_text = "ROOT" if not prefix else " → ".join(prefix)
-            mode_id = "BGAMING_SELECT_BONUS_" + _safe_label(
-                scope + "__" + "__".join(prefix or ("ROOT",))
+            mode_id = "BGAMING_FLOW_CHOICE_" + _safe_label(
+                scope
+                + "__"
+                + command
+                + "__"
+                + "__".join(prefix or ("ROOT",))
             ).upper()
             result.discovered_modes.append(
                 {
@@ -403,24 +461,32 @@ class BGamingProvider(_BGamingProvider):
                     "kind": "CHOICE_CONTINUATION",
                     "observed": True,
                     "executable": True,
-                    "wire_command": "select_bonus",
-                    "option_field": "name",
+                    "wire_command": command,
+                    "option_field": str(point.get("option_field") or ""),
                     "coverage_required": True,
                     "branch_signature": (
-                        "BGAMING:select_bonus:"
+                        "BGAMING:flow-choice:"
                         + scope
                         + ":"
-                        + json.dumps(list(prefix), ensure_ascii=False, separators=(",", ":"))
+                        + command
+                        + ":"
+                        + json.dumps(
+                            list(prefix),
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                        )
                     ),
                     "path_prefix": list(prefix),
                     "required_options": required,
                     "covered_options": covered,
-                    "source": "runtime.game.freespin_params.variants+provider-client.bonusChoice",
+                    "source": str(point.get("source") or "runtime"),
                 }
             )
-            missing = [value for value in required if value not in covered]
-            for value in missing:
-                missing_labels.append(f"{scope}/{prefix_text} → {value}")
+            for value in required:
+                if value not in covered:
+                    missing_labels.append(
+                        f"{scope}/{command}/{prefix_text} → {value}"
+                    )
 
         if missing_labels and result.status == "OK":
             result.status = "PARCIAL"
@@ -430,26 +496,40 @@ class BGamingProvider(_BGamingProvider):
                 details.append("faltan=" + ", ".join(missing_labels[:20]))
             if branch_errors:
                 details.append("errores=" + " | ".join(branch_errors[:8]))
-            message = "BGaming cobertura select_bonus incompleta: " + "; ".join(details) + "."
+            message = (
+                "BGaming cobertura de elecciones de flujo incompleta: "
+                + "; ".join(details)
+                + "."
+            )
             if message not in str(result.error or ""):
-                result.error = (str(result.error or "").strip() + " " + message).strip()
+                result.error = (
+                    str(result.error or "").strip() + " " + message
+                ).strip()
 
-        _write_json(master_root / "bonus-choice-coverage.json", {
-            "schema": "tester-spin/bgaming-select-bonus-coverage/v1",
-            "branch_points": [
-                {
-                    "scope": str(point["scope"]),
-                    "prefix": list(point["prefix"]),
-                    "available": list(point["available"]),
-                    "covered": [
-                        value for value in point["available"] if value in point["covered"]
-                    ],
-                }
-                for point in graph.values()
-            ],
-            "complete": not missing_labels,
-            "replays": executed,
-        })
+        _write_json(
+            master_root / "flow-choice-coverage.json",
+            {
+                "schema": "tester-spin/bgaming-flow-choice-coverage/v1",
+                "branch_points": [
+                    {
+                        "scope": str(point["scope"]),
+                        "command": str(point["command"]),
+                        "option_field": str(point.get("option_field") or ""),
+                        "prefix": list(point["prefix"]),
+                        "available": list(point["available"]),
+                        "covered": [
+                            value
+                            for value in point["available"]
+                            if value in point["covered"]
+                        ],
+                        "source": str(point.get("source") or "runtime"),
+                    }
+                    for point in graph.values()
+                ],
+                "complete": not missing_labels,
+                "replays": executed,
+            },
+        )
         _write_json(master_root / "result.json", result.to_dict())
         return result
 
@@ -462,7 +542,7 @@ class BGamingProvider(_BGamingProvider):
         stop_event: threading.Event,
         progress: Progress,
     ) -> GameTestResult:
-        result = self._run_with_bonus_choice_coverage(
+        result = self._run_with_flow_choice_coverage(
             game,
             spins=spins,
             timeout_s=timeout_s,
@@ -488,6 +568,7 @@ class BGamingProvider(_BGamingProvider):
             original_root.name + f"-exhaustive-{time.time_ns() % 1_000_000_000:09d}"
         )
         _move_run(result, master_root)
+
         added_requested = 0
         added_successes = 0
         branch_errors: list[str] = []
@@ -506,10 +587,12 @@ class BGamingProvider(_BGamingProvider):
                 )
                 break
             executed += 1
-            progress(f"[{game.name}] BGaming opciones dinámicas: probando {label}.")
+            progress(
+                f"[{game.name}] BGaming opciones dinámicas: probando {label}."
+            )
             _OVERRIDE_LOCAL.spin_options = dict(combo)
             try:
-                sub = self._run_with_bonus_choice_coverage(
+                sub = self._run_with_flow_choice_coverage(
                     game,
                     spins=max(1, int(spins)),
                     timeout_s=timeout_s,
@@ -517,7 +600,9 @@ class BGamingProvider(_BGamingProvider):
                     progress=progress,
                 )
             except Exception as exc:
-                branch_errors.append(f"{label}: {type(exc).__name__}: {exc}")
+                branch_errors.append(
+                    f"{label}: {type(exc).__name__}: {exc}"
+                )
                 continue
             finally:
                 _OVERRIDE_LOCAL.spin_options = None
@@ -537,11 +622,16 @@ class BGamingProvider(_BGamingProvider):
             if _complete(sub):
                 covered.add(label)
             else:
-                branch_errors.append(f"{label}: {sub.status} {sub.error}".strip())
+                branch_errors.append(
+                    f"{label}: {sub.status} {sub.error}".strip()
+                )
 
         result.requested_spins += added_requested
         result.successful_spins += added_successes
-        result.failed_spins = max(0, result.requested_spins - result.successful_spins)
+        result.failed_spins = max(
+            0,
+            result.requested_spins - result.successful_spins,
+        )
         result.discovered_modes.append(
             {
                 "id": "BGAMING_SPIN_OPTION_MATRIX",
@@ -559,25 +649,31 @@ class BGamingProvider(_BGamingProvider):
                 "covered_options": sorted(covered),
             }
         )
+
         missing = [value for value in required if value not in covered]
         if missing and result.status == "OK":
             result.status = "PARCIAL"
         if missing or branch_errors:
-            details = []
+            details: list[str] = []
             if missing:
                 details.append("faltan=" + ", ".join(missing[:20]))
             if branch_errors:
                 details.append("errores=" + " | ".join(branch_errors[:8]))
-            message = "BGaming cobertura de additionalSpinOptions incompleta: " + "; ".join(details) + "."
+            message = (
+                "BGaming cobertura de additionalSpinOptions incompleta: "
+                + "; ".join(details)
+                + "."
+            )
             if message not in str(result.error or ""):
-                result.error = (str(result.error or "").strip() + " " + message).strip()
+                result.error = (
+                    str(result.error or "").strip() + " " + message
+                ).strip()
+
         _write_json(master_root / "result.json", result.to_dict())
         return result
 
 
-# Existing wiring tests intentionally require the active BGaming provider to be
-# identified as package-backed. This subclass preserves that public boundary while
-# adding only provider-local exhaustive traversal above the package implementation.
+# Preserve the public provider boundary used by registry/wiring tests.
 BGamingProvider.__module__ = "tester_spin.providers.bgaming"
 
 __all__ = ["BGamingProvider"]
