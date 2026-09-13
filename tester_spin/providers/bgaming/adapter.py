@@ -18,6 +18,7 @@ from tester_spin.providers.bgaming.catalog import (
 )
 from tester_spin.providers.bgaming.emulation_contract import generate_bgaming_emulation_contract
 from tester_spin.providers.bgaming.execution import BGamingExecutionMixin
+from tester_spin.run_result_publisher import queue_result_publish
 
 
 CATALOG_SEARCH_URL = "https://bgaming.com/wp-json/bg/v1/games/search"
@@ -85,6 +86,7 @@ class BGamingProvider(BGamingExecutionMixin, ProviderAdapter):
                 f"[{result.game_name}] BGaming emulation contract ERROR: "
                 f"{type(exc).__name__}: {exc}"
             )
+            queue_result_publish(result, progress=progress)
             return result
         if contract:
             progress(
@@ -93,6 +95,10 @@ class BGamingProvider(BGamingExecutionMixin, ProviderAdapter):
                 f"wire_complete={bool(contract.get('wire_replay_complete'))}, "
                 f"math_complete={bool(contract.get('math_model_complete'))}."
             )
+        # Publish only after path coverage and emulation-contract generation have
+        # finished so GitHub receives the final request/response evidence for the
+        # run. Publication is asynchronous and can never change the test status.
+        queue_result_publish(result, progress=progress)
         return result
 
     def catalog_record_invalid_reason(self, game: Game) -> str:
