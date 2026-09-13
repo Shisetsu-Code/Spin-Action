@@ -5,12 +5,13 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from tester_spin.providers.bgaming import execution as _execution
+from tester_spin.providers.bgaming import runtime as _runtime
 
 
 _LOCAL = threading.local()
-_ORIGINAL_FLOW_CONTINUATION = _execution.flow_continuation_command
-_ORIGINAL_PENDING_FLOW_ACTIONS = _execution.pending_flow_actions
-_ORIGINAL_POST_COMMAND = _execution.post_command
+_ORIGINAL_FLOW_CONTINUATION = _runtime.flow_continuation_command
+_ORIGINAL_PENDING_FLOW_ACTIONS = _runtime.pending_flow_actions
+_ORIGINAL_POST_COMMAND = _runtime.post_command
 
 
 @dataclass(slots=True)
@@ -81,9 +82,9 @@ def bonus_choice_options(data: dict[str, Any]) -> list[str]:
 
         command=select_bonus, options={name: <variant>}
 
-    The command is considered executable only when the runtime also advertises
-    ``select_bonus`` in ``flow.available_actions`` (or is already in that state).
-    We do not derive choices from labels, translations, paytables or title names.
+    The command is executable only when runtime flow also advertises
+    ``select_bonus``. We do not derive choices from labels, translations,
+    paytables or title names.
     """
     if not isinstance(data, dict):
         return []
@@ -254,10 +255,14 @@ def _post_command_with_bonus_choice(
 
 def install_bonus_choice_adapter() -> None:
     """Install the evidence-backed parameterized continuation into API-v2 execution."""
-    if getattr(_execution.flow_continuation_command, "__name__", "") != "_flow_continuation_with_bonus_choice":
-        _execution.flow_continuation_command = _flow_continuation_with_bonus_choice
-    if getattr(_execution.pending_flow_actions, "__name__", "") != "_pending_flow_actions_with_bonus_choice":
-        _execution.pending_flow_actions = _pending_flow_actions_with_bonus_choice
+    # execution.py imported these functions by name, while validate_spin() looks
+    # them up in runtime.py. Patch both namespaces so execution and validation
+    # agree that an evidenced select_bonus state is a handled continuation.
+    for module in (_runtime, _execution):
+        if getattr(module.flow_continuation_command, "__name__", "") != "_flow_continuation_with_bonus_choice":
+            module.flow_continuation_command = _flow_continuation_with_bonus_choice
+        if getattr(module.pending_flow_actions, "__name__", "") != "_pending_flow_actions_with_bonus_choice":
+            module.pending_flow_actions = _pending_flow_actions_with_bonus_choice
     if getattr(_execution.post_command, "__name__", "") != "_post_command_with_bonus_choice":
         _execution.post_command = _post_command_with_bonus_choice
 
