@@ -197,15 +197,16 @@ def _flow_continuation_with_choices(data: dict[str, Any]) -> str:
     if prompt is None:
         return ""
     run = _current_run()
-    if run is not None:
-        run.pending = prompt
+    if run is None:
+        return ""
+    run.pending = prompt
     return command
 
 
 def _pending_flow_actions_with_choices(data: dict[str, Any]) -> list[str]:
     pending = list(_ORIGINAL_PENDING_FLOW_ACTIONS(data))
     candidate = _choice_candidate(data)
-    if candidate is not None:
+    if candidate is not None and _current_run() is not None:
         command, _available = candidate
         pending = [item for item in pending if str(item) != command]
     return pending

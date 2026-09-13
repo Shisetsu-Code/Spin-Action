@@ -87,6 +87,15 @@ def test_choice_action_requires_finite_runtime_domain():
         "reward_b",
     ]
     assert flow_choices.flow_choice_scope(payload) == "PURCHASE_FREESPIN_BUY_LEVEL_4"
+    assert execution.flow_continuation_command(payload) == ""
+    assert execution.pending_flow_actions(payload) == ["select_bonus"]
+
+    flow_choices.begin_flow_choice_run()
+    try:
+        assert execution.flow_continuation_command(payload) == "select_bonus"
+        assert execution.pending_flow_actions(payload) == []
+    finally:
+        flow_choices.end_flow_choice_run()
 
     missing_domain = {**payload, "game": {}}
     assert execution.flow_continuation_command(missing_domain) == ""
