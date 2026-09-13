@@ -12,11 +12,20 @@ from tester_spin.models import Game, GameTestResult
 from tester_spin.providers.base import Progress
 from tester_spin.providers.bgaming import BGamingProvider as _BGamingProvider
 from tester_spin.providers.bgaming import execution as _execution
+from tester_spin.providers.bgaming.bonus_choice import (
+    begin_bonus_choice_run,
+    end_bonus_choice_run,
+    install_bonus_choice_adapter,
+)
 
 
 MAX_OPTION_COMBINATIONS = 128
+MAX_BONUS_CHOICE_RUNS = 64
 _OVERRIDE_LOCAL = threading.local()
 _ORIGINAL_DISCOVER_PROFILE = _execution.discover_profile
+
+
+install_bonus_choice_adapter()
 
 
 def _same_option(left: Any, right: Any) -> bool:
@@ -158,8 +167,291 @@ def _move_run(result: GameTestResult, target: Path) -> None:
     result.run_dir = str(target)
 
 
+def _merge_modes(target: GameTestResult, source: GameTestResult) -> None:
+    signatures = {
+        (
+            str(item.get("id") or ""),
+            str(item.get("branch_signature") or ""),
+        )
+        for item in target.discovered_modes
+        if isinstance(item, dict)
+    }
+    for item in source.discovered_modes:
+        if not isinstance(item, dict):
+            continue
+        signature = (
+            str(item.get("id") or ""),
+            str(item.get("branch_signature") or ""),
+        )
+        if signature in signatures:
+            continue
+        target.discovered_modes.append(dict(item))
+        signatures.add(signature)
+
+
+def _trace_confirms(trace: list[dict[str, Any]], scope: str, path: tuple[str, ...]) -> bool:
+    return any(
+        str(item.get("scope") or "") == scope
+        and tuple(str(value) for value in item.get("path_after") or []) == path
+        for item in trace
+        if isinstance(item, dict)
+    )
+
+
+def _merge_choice_trace(
+    graph: dict[tuple[str, tuple[str, ...], tuple[str, ...]], dict[str, Any]],
+    trace: list[dict[str, Any]],
+    *,
+    complete: bool,
+) -> None:
+    for item in trace:
+        if not isinstance(item, dict):
+            continue
+        scope = str(item.get("scope") or "SPIN")
+        prefix = tuple(str(value) for value in item.get("prefix") or [])
+        available = tuple(
+            str(value) for value in item.get("available") or [] if str(value)
+        )
+        if not available:
+            continue
+        key = (scope, prefix, available)
+        point = graph.setdefault(
+            key,
+            {
+                "scope": scope,
+                "prefix": prefix,
+                "available": available,
+                "covered": set(),
+            },
+        )
+        selected = str(item.get("selected") or "")
+        if complete and selected in available:
+            point["covered"].add(selected)
+
+
+def _next_missing_choice(
+    graph: dict[tuple[str, tuple[str, ...], tuple[str, ...]], dict[str, Any]],
+    attempted: set[tuple[str, tuple[str, ...]]],
+) -> tuple[str, tuple[str, ...]] | None:
+    ordered = sorted(
+        graph.values(),
+        key=lambda item: (
+            str(item["scope"]),
+            len(item["prefix"]),
+            tuple(item["prefix"]),
+        ),
+    )
+    for point in ordered:
+        for option in point["available"]:
+            if option in point["covered"]:
+                continue
+            target = (str(point["scope"]), (*point["prefix"], str(option)))
+            if target not in attempted:
+                return target
+    return None
+
+
 class BGamingProvider(_BGamingProvider):
-    """BGaming package provider plus exhaustive additionalSpinOptions traversal."""
+    """BGaming provider with exhaustive dynamic options and in-round choices."""
+
+    def _raw_test(
+        self,
+        game: Game,
+        *,
+        spins: int,
+        timeout_s: float,
+        stop_event: threading.Event,
+        progress: Progress,
+        forced_scope: str = "",
+        forced_path: tuple[str, ...] = (),
+    ) -> tuple[GameTestResult, list[dict[str, Any]]]:
+        begin_bonus_choice_run(
+            forced_scope=forced_scope,
+            forced_path=forced_path,
+        )
+        try:
+            result = _BGamingProvider.test_game(
+                self,
+                game,
+                spins=spins,
+                timeout_s=timeout_s,
+                stop_event=stop_event,
+                progress=progress,
+            )
+        finally:
+            trace = end_bonus_choice_run()
+        return result, trace
+
+    def _run_with_bonus_choice_coverage(
+        self,
+        game: Game,
+        *,
+        spins: int,
+        timeout_s: float,
+        stop_event: threading.Event,
+        progress: Progress,
+    ) -> GameTestResult:
+        result, base_trace = self._raw_test(
+            game,
+            spins=spins,
+            timeout_s=timeout_s,
+            stop_event=stop_event,
+            progress=progress,
+        )
+        if result.status in {"ERROR", "CANCELADO", "SIN_DEMO"} or not result.run_dir:
+            return result
+        if not base_trace:
+            return result
+
+        graph: dict[tuple[str, tuple[str, ...], tuple[str, ...]], dict[str, Any]] = {}
+        _merge_choice_trace(graph, base_trace, complete=_complete(result))
+
+        initial_root = Path(result.run_dir)
+        master_root = initial_root.with_name(
+            initial_root.name + f"-bonus-choices-{time.time_ns() % 1_000_000_000:09d}"
+        )
+        _move_run(result, master_root)
+
+        added_requested = 0
+        added_successes = 0
+        branch_errors: list[str] = []
+        attempted: set[tuple[str, tuple[str, ...]]] = set()
+        executed = 0
+
+        while not stop_event.is_set():
+            target = _next_missing_choice(graph, attempted)
+            if target is None:
+                break
+            scope, forced_path = target
+            attempted.add(target)
+            if executed >= MAX_BONUS_CHOICE_RUNS:
+                branch_errors.append(
+                    f"select_bonus excede guard de {MAX_BONUS_CHOICE_RUNS} replays"
+                )
+                break
+            executed += 1
+            path_label = " → ".join(forced_path)
+            progress(
+                f"[{game.name}] BGaming select_bonus: reproduciendo {scope} → {path_label}."
+            )
+
+            try:
+                sub, trace = self._raw_test(
+                    game,
+                    spins=max(1, int(spins)),
+                    timeout_s=timeout_s,
+                    stop_event=stop_event,
+                    progress=progress,
+                    forced_scope=scope,
+                    forced_path=forced_path,
+                )
+            except Exception as exc:
+                branch_errors.append(
+                    f"{scope}/{path_label}: {type(exc).__name__}: {exc}"
+                )
+                continue
+
+            target_dir = (
+                master_root
+                / "bonus-choice-runs"
+                / _safe_label(scope)
+                / _safe_label("__".join(forced_path))
+            )
+            if Path(str(sub.run_dir or "")).is_dir():
+                _move_run(sub, target_dir)
+
+            added_requested += sub.requested_spins
+            added_successes += sub.successful_spins
+            suffix = _safe_label(scope + "__" + "__".join(forced_path)).upper()
+            for attempt in sub.attempts:
+                attempt.mode_id = f"{attempt.mode_id}__CHOICE_{suffix}"
+                attempt.mode_kind = f"{attempt.mode_kind}_CHOICE_VARIANT"
+                result.attempts.append(attempt)
+            _merge_modes(result, sub)
+
+            sub_complete = _complete(sub)
+            _merge_choice_trace(graph, trace, complete=sub_complete)
+            if not _trace_confirms(trace, scope, forced_path):
+                branch_errors.append(
+                    f"{scope}/{path_label}: la ronda fresca no volvió a alcanzar esa rama"
+                )
+            elif not sub_complete:
+                branch_errors.append(
+                    f"{scope}/{path_label}: {sub.status} {sub.error}".strip()
+                )
+
+        result.requested_spins += added_requested
+        result.successful_spins += added_successes
+        result.failed_spins = max(0, result.requested_spins - result.successful_spins)
+
+        missing_labels: list[str] = []
+        for point in sorted(
+            graph.values(),
+            key=lambda item: (str(item["scope"]), len(item["prefix"]), tuple(item["prefix"])),
+        ):
+            scope = str(point["scope"])
+            prefix = tuple(str(value) for value in point["prefix"])
+            required = [str(value) for value in point["available"]]
+            covered = [value for value in required if value in point["covered"]]
+            prefix_text = "ROOT" if not prefix else " → ".join(prefix)
+            mode_id = "BGAMING_SELECT_BONUS_" + _safe_label(
+                scope + "__" + "__".join(prefix or ("ROOT",))
+            ).upper()
+            result.discovered_modes.append(
+                {
+                    "id": mode_id,
+                    "kind": "CHOICE_CONTINUATION",
+                    "observed": True,
+                    "executable": True,
+                    "wire_command": "select_bonus",
+                    "option_field": "name",
+                    "coverage_required": True,
+                    "branch_signature": (
+                        "BGAMING:select_bonus:"
+                        + scope
+                        + ":"
+                        + json.dumps(list(prefix), ensure_ascii=False, separators=(",", ":"))
+                    ),
+                    "path_prefix": list(prefix),
+                    "required_options": required,
+                    "covered_options": covered,
+                    "source": "runtime.game.freespin_params.variants+provider-client.bonusChoice",
+                }
+            )
+            missing = [value for value in required if value not in covered]
+            for value in missing:
+                missing_labels.append(f"{scope}/{prefix_text} → {value}")
+
+        if missing_labels and result.status == "OK":
+            result.status = "PARCIAL"
+        if missing_labels or branch_errors:
+            details: list[str] = []
+            if missing_labels:
+                details.append("faltan=" + ", ".join(missing_labels[:20]))
+            if branch_errors:
+                details.append("errores=" + " | ".join(branch_errors[:8]))
+            message = "BGaming cobertura select_bonus incompleta: " + "; ".join(details) + "."
+            if message not in str(result.error or ""):
+                result.error = (str(result.error or "").strip() + " " + message).strip()
+
+        _write_json(master_root / "bonus-choice-coverage.json", {
+            "schema": "tester-spin/bgaming-select-bonus-coverage/v1",
+            "branch_points": [
+                {
+                    "scope": str(point["scope"]),
+                    "prefix": list(point["prefix"]),
+                    "available": list(point["available"]),
+                    "covered": [
+                        value for value in point["available"] if value in point["covered"]
+                    ],
+                }
+                for point in graph.values()
+            ],
+            "complete": not missing_labels,
+            "replays": executed,
+        })
+        _write_json(master_root / "result.json", result.to_dict())
+        return result
 
     def test_game(
         self,
@@ -170,7 +462,7 @@ class BGamingProvider(_BGamingProvider):
         stop_event: threading.Event,
         progress: Progress,
     ) -> GameTestResult:
-        result = super().test_game(
+        result = self._run_with_bonus_choice_coverage(
             game,
             spins=spins,
             timeout_s=timeout_s,
@@ -217,7 +509,7 @@ class BGamingProvider(_BGamingProvider):
             progress(f"[{game.name}] BGaming opciones dinámicas: probando {label}.")
             _OVERRIDE_LOCAL.spin_options = dict(combo)
             try:
-                sub = super().test_game(
+                sub = self._run_with_bonus_choice_coverage(
                     game,
                     spins=max(1, int(spins)),
                     timeout_s=timeout_s,
@@ -241,6 +533,7 @@ class BGamingProvider(_BGamingProvider):
                 attempt.mode_id = f"{attempt.mode_id}__OPTIONS_{suffix}"
                 attempt.mode_kind = f"{attempt.mode_kind}_OPTION_VARIANT"
                 result.attempts.append(attempt)
+            _merge_modes(result, sub)
             if _complete(sub):
                 covered.add(label)
             else:
@@ -284,7 +577,7 @@ class BGamingProvider(_BGamingProvider):
 
 # Existing wiring tests intentionally require the active BGaming provider to be
 # identified as package-backed. This subclass preserves that public boundary while
-# adding only the exhaustive traversal layer above the package implementation.
+# adding only provider-local exhaustive traversal above the package implementation.
 BGamingProvider.__module__ = "tester_spin.providers.bgaming"
 
 __all__ = ["BGamingProvider"]
