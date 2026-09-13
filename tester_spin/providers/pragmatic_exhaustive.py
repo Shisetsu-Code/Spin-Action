@@ -25,6 +25,7 @@ class FSOBranchPoint:
     prefix: tuple[int, ...]
     required: set[int] = field(default_factory=set)
     covered: set[int] = field(default_factory=set)
+    sample_counts: dict[int, int] = field(default_factory=dict)
 
     @property
     def signature(self) -> str:
@@ -106,15 +107,19 @@ def _ingest_attempt(
         point.required.update(required)
         if completed:
             point.covered.add(selected)
+            point.sample_counts[selected] = point.sample_counts.get(selected, 0) + 1
         prefix.append(selected)
 
 
 def _missing_prefixes(
     points: dict[tuple[str, tuple[int, ...]], FSOBranchPoint],
+    repetitions: int = 1,
 ) -> list[tuple[str, tuple[int, ...]]]:
     missing: list[tuple[str, tuple[int, ...]]] = []
     for point in points.values():
-        for option in sorted(point.required - point.covered):
+        for option in sorted(point.required):
+            if point.sample_counts.get(option, 0) >= repetitions:
+                continue
             missing.append((point.mode_id, point.prefix + (option,)))
     return sorted(missing, key=lambda item: (item[0], len(item[1]), item[1]))
 
@@ -134,6 +139,7 @@ def _next_repetition(run_root: Path, mode_id: str) -> int:
 def _upsert_metadata(
     result: GameTestResult,
     points: dict[tuple[str, tuple[int, ...]], FSOBranchPoint],
+    repetitions: int = 1,
 ) -> None:
     result.discovered_modes = [
         item
@@ -159,6 +165,8 @@ def _upsert_metadata(
                 "branch_signature": point.signature,
                 "required_options": [str(value) for value in sorted(point.required)],
                 "covered_options": [str(value) for value in sorted(point.covered)],
+                "required_samples": repetitions,
+                "sample_counts": {str(k): v for k, v in point.sample_counts.items()},
             }
         )
 
@@ -183,9 +191,11 @@ def expand_pragmatic_fso_paths(
         return result
 
     run_root = Path(result.run_dir)
-    queue = _missing_prefixes(points)
+    repetitions = max(1, int(repetitions))
+    queue = _missing_prefixes(points, repetitions)
     queued = set(queue)
     attempted_prefixes: set[tuple[str, tuple[int, ...]]] = set()
+    replay_counts: dict[tuple[str, tuple[int, ...]], int] = {}
     extra_errors: list[str] = []
     added_requested = 0
     added_successful = 0
@@ -215,9 +225,13 @@ def expand_pragmatic_fso_paths(
                 mode_id, prefix = queue.pop(0)
                 queued.discard((mode_id, prefix))
                 key = (mode_id, prefix)
-                if key in attempted_prefixes:
+                if replay_counts.get(key, 0) >= repetitions:
+                    continue
+                # Queued ancestors may already have enough samples after a leaf replay.
+                if key not in _missing_prefixes(points, repetitions):
                     continue
                 attempted_prefixes.add(key)
+                replay_counts[key] = replay_counts.get(key, 0) + 1
                 if len(prefix) > MAX_FSO_DEPTH:
                     extra_errors.append(
                         f"{mode_id}/{prefix}: excede profundidad FSO {MAX_FSO_DEPTH}"
@@ -274,19 +288,22 @@ def expand_pragmatic_fso_paths(
                     )
 
                 _ingest_attempt(points, attempt)
-                for candidate in _missing_prefixes(points):
-                    if candidate not in attempted_prefixes and candidate not in queued:
+                for candidate in _missing_prefixes(points, repetitions):
+                    if replay_counts.get(candidate, 0) < repetitions and candidate not in queued:
                         queue.append(candidate)
                         queued.add(candidate)
         except Exception as exc:
             extra_errors.append(f"expansión FSO: {type(exc).__name__}: {exc}")
 
-    _upsert_metadata(result, points)
+    _upsert_metadata(result, points, repetitions)
     result.requested_spins += added_requested
     result.successful_spins += added_successful
     result.failed_spins += added_failed
 
-    missing = _missing_prefixes(points)
+    missing = _missing_prefixes(points, repetitions)
+    if stop_event.is_set():
+        result.status = "CANCELADO"
+        extra_errors.append("detenido durante expansión FSO")
     if missing or extra_errors:
         if result.status == "OK":
             result.status = "PARCIAL"

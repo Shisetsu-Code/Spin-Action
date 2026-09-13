@@ -1,5 +1,9 @@
 # Tester-Spin
 
+La recolección y depuración de rutas está documentada en
+[Muestreo y aprendizaje del protocolo](docs/SAMPLING_AND_PROTOCOL_LEARNING.md):
+cuotas por rama, catálogo de muestras y uso de las requests publicadas en GitHub.
+
 GUI extensible en Python para catalogar juegos por proveedor y probar automáticamente todos los modos de entrada detectables de cada juego.
 
 ## Primera versión

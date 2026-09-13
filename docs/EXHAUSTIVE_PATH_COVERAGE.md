@@ -1,5 +1,11 @@
 # Exhaustive path coverage
 
+Actualización de muestreo: consultar [Muestreo y aprendizaje](SAMPLING_AND_PROTOCOL_LEARNING.md).
+Las ramas conocidas incluyen cuotas de muestras terminales; las elecciones se
+identifican por su prefijo, no por el número de paso. En BGaming se excluyen
+`purchased_feature` y `purchased_feature_level` de la matriz independiente porque
+ya están acoplados y enumerados como contratos de compra.
+
 ## Invariante
 
 `OK` significa que Tester-Spin completó todas las acciones ejecutables y todas las ramas finitas que el proveedor anunció o que fueron observadas durante la corrida.

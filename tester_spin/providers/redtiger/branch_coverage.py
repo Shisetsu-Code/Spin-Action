@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
@@ -48,6 +48,7 @@ class BranchPoint:
     prefix: tuple[str, ...]
     required: list[str]
     covered: set[str]
+    sample_counts: dict[str, int] = field(default_factory=dict)
 
     @property
     def signature(self) -> str:
@@ -149,7 +150,8 @@ def _merge_branch_point(
 def _base_attempt_ok(result: GameTestResult, attempt_root: Path) -> bool:
     target = str(attempt_root)
     return any(
-        attempt.ok and str(attempt.artifact_dir or "") == target
+        attempt.ok and attempt.terminal and not attempt.warning and not attempt.error
+        and str(attempt.artifact_dir or "") == target
         for attempt in result.attempts
     )
 
@@ -193,6 +195,7 @@ def _seed_from_base_attempt(
         )
         if base_ok and selected in available:
             point.covered.add(selected)
+            point.sample_counts[selected] = point.sample_counts.get(selected, 0) + 1
 
         for option in available:
             if base_ok and option == selected:
@@ -331,6 +334,7 @@ def _replay_prefix(
 def _upsert_branch_metadata(
     result: GameTestResult,
     branch_points: dict[tuple[str, tuple[str, ...]], BranchPoint],
+    repetitions: int = 1,
 ) -> None:
     result.discovered_modes = [
         item
@@ -354,6 +358,8 @@ def _upsert_branch_metadata(
                 "branch_signature": point.signature,
                 "required_options": list(point.required),
                 "covered_options": sorted(point.covered),
+                "required_samples": max(1, int(repetitions)),
+                "sample_counts": dict(point.sample_counts),
             }
         )
 
@@ -453,7 +459,8 @@ def expand_all_choice_branches(
                         run_root=run_root,
                     )
                 except InterruptedError:
-                    return result
+                    stop_event.set()
+                    break
                 except Exception as exc:
                     if prefix:
                         attempt_number += 1
@@ -481,12 +488,6 @@ def expand_all_choice_branches(
                         f"{base_mode}/{_path_label(prefix)}: {type(exc).__name__}: {exc}"
                     )
                     continue
-
-                if prefix:
-                    parent_prefix = prefix[:-1]
-                    parent = branch_points.get((base_mode, parent_prefix))
-                    if parent is not None:
-                        parent.covered.add(prefix[-1])
 
                 if outcome.prompt is not None:
                     point = _merge_branch_point(
@@ -517,6 +518,13 @@ def expand_all_choice_branches(
                 warnings = list(dict.fromkeys(outcome.warnings))
                 terminal = outcome.terminal
                 ok = terminal and not warnings
+                if ok:
+                    # A parent is covered only by a validated terminal descendant.
+                    for depth, option in enumerate(prefix):
+                        parent = branch_points.get((base_mode, prefix[:depth]))
+                        if parent is not None:
+                            parent.covered.add(option)
+                            parent.sample_counts[option] = parent.sample_counts.get(option, 0) + 1
                 added_successes += int(ok)
                 merged_modes = _merge_modes(*outcome.summaries)
                 result.attempts.append(
@@ -542,7 +550,7 @@ def expand_all_choice_branches(
                         + ("; ".join(warnings) if warnings else "ruta no terminal")
                     )
 
-    _upsert_branch_metadata(result, branch_points)
+    _upsert_branch_metadata(result, branch_points, repetitions)
     result.requested_spins += added_requested
     result.successful_spins += added_successes
     result.failed_spins = max(0, result.requested_spins - result.successful_spins)

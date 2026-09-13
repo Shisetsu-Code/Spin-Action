@@ -75,6 +75,7 @@ def run_game_tests(
             stop_event=stop_event,
             progress=game_progress,
         )
+        result.samples_per_path = spins_per_game
         return provider.finalize_test_result(result, progress=game_progress)
 
     in_flight: dict[Future[GameTestResult], Game] = {}

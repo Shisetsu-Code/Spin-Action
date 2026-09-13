@@ -114,8 +114,18 @@ def build_result_document(result: GameTestResult, *, source_commit: str = "") ->
     artifacts: dict[str, Any] = {}
     skipped: list[dict[str, Any]] = []
     consumed = 0
-    if root.is_dir():
-        for path in sorted(item for item in root.rglob("*") if item.is_file()):
+    if result.run_dir and root.is_dir():
+        priority_names = {"result.json", "path-coverage.json", "sample-catalog.json", "profile.json", "flow-choice-coverage.json"}
+        failed_roots = [Path(a.artifact_dir).resolve() for a in result.attempts
+                        if a.artifact_dir and (not a.ok or not a.terminal or a.warning or a.error)]
+        def priority(path: Path) -> tuple[int, str]:
+            if path.name in priority_names:
+                return (0, path.as_posix())
+            if any(path.resolve().is_relative_to(folder) for folder in failed_roots):
+                return (1, path.as_posix())
+            return (2, path.as_posix())
+        for path in sorted((item for item in root.rglob("*") if item.is_file()
+                            and item.resolve().is_relative_to(root.resolve())), key=priority):
             if path.suffix.casefold() not in _TEXT_SUFFIXES:
                 continue
             try:

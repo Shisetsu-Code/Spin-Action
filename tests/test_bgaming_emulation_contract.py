@@ -58,8 +58,8 @@ class BGamingEmulationContractTests(unittest.TestCase):
                 },
             ],
             attempts=[
-                SpinAttempt(number=1, ok=True, mode_id="SPIN", terminal=True),
-                SpinAttempt(number=1, ok=True, mode_id="PURCHASE_BONUS_BUY", terminal=True),
+                SpinAttempt(number=1, ok=True, mode_id="SPIN", terminal=True, artifact_dir=str(root / "SPIN" / "attempt-001")),
+                SpinAttempt(number=1, ok=True, mode_id="PURCHASE_BONUS_BUY", terminal=True, artifact_dir=str(root / "PURCHASE_BONUS_BUY" / "attempt-001")),
             ],
         )
 

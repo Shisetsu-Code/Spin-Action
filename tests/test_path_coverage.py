@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tester_spin.models import GameTestResult
+from tester_spin.models import GameTestResult, SpinAttempt
 from tester_spin.providers.path_coverage import (
     build_path_coverage_report,
     enforce_complete_path_coverage,
@@ -103,8 +103,9 @@ class PathCoverageTests(unittest.TestCase):
 
             self.assertEqual(result.status, "PARCIAL")
             report = build_path_coverage_report(result)
-            self.assertEqual(report["branch_points"][0]["covered"], ["LEFT"])
-            self.assertEqual(report["branch_points"][0]["missing"], ["RIGHT", "RANDOM"])
+            # Sending a request alone is not evidence of a validated branch.
+            self.assertEqual(report["branch_points"][0]["covered"], [])
+            self.assertEqual(report["branch_points"][0]["missing"], ["LEFT", "RIGHT", "RANDOM"])
 
     def test_pragmatic_fso_metadata_is_part_of_global_gate(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -198,6 +199,7 @@ class PathCoverageTests(unittest.TestCase):
             enforce_complete_path_coverage(result)
 
             # A selection at one FSO prompt must not count as covering another.
+            result.attempts.append(SpinAttempt(number=1, ok=True, terminal=True, artifact_dir=str(attempt)))
             self.assertEqual(result.status, "PARCIAL")
             report = build_path_coverage_report(result)
             artifact_points = [

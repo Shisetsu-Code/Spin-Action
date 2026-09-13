@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import itertools
+import hashlib
+import math
 import json
 import shutil
 import threading
@@ -80,7 +82,8 @@ def _safe_label(label: str) -> str:
         ch if ch.isalnum() or ch in {"-", "_", "."} else "_"
         for ch in str(label)
     ]
-    return "".join(clean)[:180] or "BASE"
+    digest = hashlib.sha256(str(label).encode("utf-8")).hexdigest()[:12]
+    return ("".join(clean)[:150] or "BASE") + "-" + digest
 
 
 def _load_profile(result: GameTestResult) -> dict[str, Any]:
@@ -99,6 +102,10 @@ def _choice_domains(profile: dict[str, Any]) -> list[tuple[str, list[Any]]]:
 
     domains: list[tuple[str, list[Any]]] = []
     for field in sorted(raw):
+        # These form one purchase contract, already enumerated by the executor.
+        # Crossing them with base spin or another feature fabricates invalid requests.
+        if field in {"purchased_feature", "purchased_feature_level"}:
+            continue
         values = raw.get(field)
         if not isinstance(values, list):
             continue
@@ -119,7 +126,10 @@ def _matrix(domains: list[tuple[str, list[Any]]]) -> list[dict[str, Any]]:
     names = [name for name, _values in domains]
     return [
         dict(zip(names, values))
-        for values in itertools.product(*(values for _name, values in domains))
+        for values in itertools.islice(
+            itertools.product(*(values for _name, values in domains)),
+            MAX_OPTION_COMBINATIONS + 1,
+        )
     ]
 
 
@@ -158,7 +168,7 @@ def _complete(result: GameTestResult) -> bool:
         and result.successful_spins == result.requested_spins
         and result.failed_spins == 0
         and bool(result.attempts)
-        and all(attempt.ok and attempt.terminal for attempt in result.attempts)
+        and all(attempt.ok and attempt.terminal and not attempt.warning and not attempt.error for attempt in result.attempts)
     )
 
 
@@ -175,12 +185,16 @@ def _remap_attempt_paths(result: GameTestResult, old_root: Path, new_root: Path)
 
 
 def _move_run(result: GameTestResult, target: Path) -> None:
+    if not result.run_dir:
+        return
     source = Path(str(result.run_dir or ""))
     if not source.is_dir():
         return
     target.parent.mkdir(parents=True, exist_ok=True)
     if target.exists():
-        shutil.rmtree(target)
+        raise FileExistsError(f"No se sobrescribe evidencia existente: {target}")
+    if source.resolve() == target.resolve() or source.resolve() in target.resolve().parents:
+        raise ValueError("El destino no puede estar dentro de la corrida de origen")
     shutil.move(str(source), str(target))
     _remap_attempt_paths(result, source, target)
     result.run_dir = str(target)
@@ -252,16 +266,19 @@ def _merge_choice_trace(
                 "prefix": prefix,
                 "available": available,
                 "covered": set(),
+                "sample_counts": {},
             },
         )
         selected = str(item.get("selected") or "")
         if complete and selected in available:
             point["covered"].add(selected)
+            point["sample_counts"][selected] = point["sample_counts"].get(selected, 0) + 1
 
 
 def _next_missing_choice(
     graph: dict[tuple[str, str, tuple[str, ...], tuple[str, ...]], dict[str, Any]],
     attempted: set[tuple[str, str, tuple[str, ...]]],
+    repetitions: int = 1,
 ) -> tuple[str, str, tuple[str, ...]] | None:
     ordered = sorted(
         graph.values(),
@@ -274,7 +291,7 @@ def _next_missing_choice(
     )
     for point in ordered:
         for option in point["available"]:
-            if option in point["covered"]:
+            if point["sample_counts"].get(option, 0) >= repetitions:
                 continue
             target = (
                 str(point["scope"]),
@@ -359,7 +376,7 @@ class BGamingProvider(_BGamingProvider):
         executed = 0
 
         while not stop_event.is_set():
-            target = _next_missing_choice(graph, attempted)
+            target = _next_missing_choice(graph, attempted, max(1, int(spins)))
             if target is None:
                 break
             scope, command, forced_path = target
@@ -446,7 +463,7 @@ class BGamingProvider(_BGamingProvider):
             command = str(point["command"])
             prefix = tuple(str(value) for value in point["prefix"])
             required = [str(value) for value in point["available"]]
-            covered = [value for value in required if value in point["covered"]]
+            covered = [value for value in required if point["sample_counts"].get(value, 0) >= max(1, int(spins))]
             prefix_text = "ROOT" if not prefix else " → ".join(prefix)
             mode_id = "BGAMING_FLOW_CHOICE_" + _safe_label(
                 scope
@@ -479,6 +496,8 @@ class BGamingProvider(_BGamingProvider):
                     "path_prefix": list(prefix),
                     "required_options": required,
                     "covered_options": covered,
+                    "required_samples": max(1, int(spins)),
+                    "sample_counts": dict(point["sample_counts"]),
                     "source": str(point.get("source") or "runtime"),
                 }
             )
@@ -488,7 +507,9 @@ class BGamingProvider(_BGamingProvider):
                         f"{scope}/{command}/{prefix_text} → {value}"
                     )
 
-        if missing_labels and result.status == "OK":
+        if stop_event.is_set():
+            result.status = "CANCELADO"
+        elif (missing_labels or branch_errors) and result.status == "OK":
             result.status = "PARCIAL"
         if missing_labels or branch_errors:
             details: list[str] = []
@@ -526,7 +547,7 @@ class BGamingProvider(_BGamingProvider):
                     }
                     for point in graph.values()
                 ],
-                "complete": not missing_labels,
+                "complete": not missing_labels and not branch_errors and not stop_event.is_set(),
                 "replays": executed,
             },
         )
@@ -558,9 +579,12 @@ class BGamingProvider(_BGamingProvider):
             return result
 
         combinations = _matrix(domains)
+        total_combinations = math.prod(len(values) for _, values in domains)
         base_combo = _base_combo(profile, domains)
         base_label = _label(base_combo)
         required = [_label(combo) for combo in combinations]
+        if total_combinations > len(combinations):
+            required.append("MATRIX_LIMIT_EXCEEDED")
         covered: set[str] = {base_label} if _complete(result) else set()
 
         original_root = Path(result.run_dir)
@@ -572,7 +596,7 @@ class BGamingProvider(_BGamingProvider):
         added_requested = 0
         added_successes = 0
         branch_errors: list[str] = []
-        executed = 0
+        executed = 1  # The original combination has already consumed a session.
 
         for combo in combinations:
             label = _label(combo)
@@ -645,13 +669,16 @@ class BGamingProvider(_BGamingProvider):
                     {"field": name, "values": values}
                     for name, values in domains
                 ],
+                "total_combinations": total_combinations,
                 "required_options": required,
                 "covered_options": sorted(covered),
             }
         )
 
         missing = [value for value in required if value not in covered]
-        if missing and result.status == "OK":
+        if stop_event.is_set():
+            result.status = "CANCELADO"
+        elif (missing or branch_errors) and result.status == "OK":
             result.status = "PARCIAL"
         if missing or branch_errors:
             details: list[str] = []

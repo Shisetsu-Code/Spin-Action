@@ -1347,6 +1347,24 @@ def http_error_evidence(response: requests.Response | None) -> dict[str, Any]:
         "status": int(getattr(response, "status_code", 0) or 0),
         "content_type": str(response.headers.get("Content-Type") or ""),
     }
+    # The response alone (e.g. invalid_options) cannot reconstruct the failed wire.
+    # Capture the actual prepared body, after the choice/profile bridges merged it.
+    request = getattr(response, "request", None)
+    if request is not None:
+        request_evidence = {
+            "method": str(getattr(request, "method", "") or ""),
+            "url": sanitize_session_url(str(getattr(request, "url", "") or "")),
+        }
+        body = getattr(request, "body", None)
+        if isinstance(body, bytes):
+            body = body.decode("utf-8", errors="replace")
+        if isinstance(body, str):
+            try:
+                request_evidence["json"] = sanitize_options(json.loads(body))
+            except ValueError:
+                request_evidence["text"] = sanitize_error_text(body)[:4000]
+                request_evidence["truncated"] = len(body) > 4000
+        evidence["request"] = request_evidence
     try:
         payload = response.json()
     except Exception:

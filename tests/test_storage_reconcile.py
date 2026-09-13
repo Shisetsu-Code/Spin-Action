@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 from tester_spin.models import Game, GameTestResult
@@ -42,7 +43,7 @@ class StorageReconcileTests(unittest.TestCase):
             self.assertIsNone(storage.get_game("pragmatic", "stale"))
             self.assertIsNotNone(storage.get_game("other", "foreign"))
 
-            with sqlite3.connect(db) as con:
+            with closing(sqlite3.connect(db)) as con:
                 history = con.execute(
                     "SELECT COUNT(*) FROM test_results WHERE provider=? AND slug=?",
                     ("pragmatic", "stale"),

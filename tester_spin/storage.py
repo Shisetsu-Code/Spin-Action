@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+from contextlib import contextmanager
+from collections.abc import Iterator
 from pathlib import Path
 
 from tester_spin.models import Game, GameTestResult, utc_now_iso
@@ -15,12 +17,17 @@ class Storage:
         self._lock = threading.RLock()
         self._initialize()
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
         con = sqlite3.connect(self.path, timeout=30.0)
-        con.row_factory = sqlite3.Row
-        con.execute("PRAGMA journal_mode=WAL")
-        con.execute("PRAGMA synchronous=NORMAL")
-        return con
+        try:
+            con.row_factory = sqlite3.Row
+            con.execute("PRAGMA journal_mode=WAL")
+            con.execute("PRAGMA synchronous=NORMAL")
+            with con:
+                yield con
+        finally:
+            con.close()
 
     def _initialize(self) -> None:
         with self._lock, self._connect() as con:

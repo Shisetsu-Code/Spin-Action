@@ -7,7 +7,6 @@ from typing import Any
 from tester_spin.models import GameTestResult
 
 
-_EMPTY_SELECTIONS = {None, ""}
 _ACTIONABLE_KINDS = {
     "SPIN",
     "PURCHASE",
@@ -60,12 +59,12 @@ def _walk_pending_choices(value: Any, *, path: str = "$"):
         if isinstance(choices, dict):
             selected = choices.get("selected")
             available = _option_list(choices.get("available"))
-            if selected in _EMPTY_SELECTIONS and available:
+            if (selected is None or selected == "") and available:
                 yield path + ".choices", available
 
         selected = value.get("selected")
         available = _option_list(value.get("availableChoices"))
-        if selected in _EMPTY_SELECTIONS and available:
+        if (selected is None or selected == "") and available:
             yield path, available
 
         for key, child in value.items():
@@ -151,6 +150,9 @@ def _explicit_branch_points(result: GameTestResult) -> list[dict[str, Any]]:
                 if mode.get("covered_options") is not None
                 else mode.get("selected_options")
             )
+            if not required:
+                required = ["DOMAIN_UNRESOLVED"]
+                covered = []
             if not covered:
                 one = _clean_option(mode.get("selected_for_validation"))
                 if one:
@@ -163,6 +165,8 @@ def _explicit_branch_points(result: GameTestResult) -> list[dict[str, Any]]:
                         "signature": str(mode.get("branch_signature") or mode_id),
                         "required": required,
                         "covered": covered,
+                        "required_samples": mode.get("required_samples", 1),
+                        "sample_counts": mode.get("sample_counts"),
                     }
                 )
         else:
@@ -185,16 +189,23 @@ def _explicit_branch_points(result: GameTestResult) -> list[dict[str, Any]]:
 
 
 def _artifact_branch_points(result: GameTestResult) -> list[dict[str, Any]]:
+    if not result.run_dir:
+        return []
     root = Path(str(result.run_dir or ""))
     if not root.is_dir():
         return []
 
-    selected_by_mode: dict[str, set[str]] = {}
     pending: dict[tuple[str, str, tuple[str, ...]], dict[str, Any]] = {}
     pragmatic_fso: dict[tuple[str, str, tuple[str, ...]], dict[str, Any]] = {}
+    prefixes: dict[Path, list[str]] = {}
+    validated = {
+        Path(a.artifact_dir).resolve()
+        for a in result.attempts
+        if a.artifact_dir and a.ok and a.terminal and not a.warning and not a.error
+    }
 
-    for path in root.rglob("*.json"):
-        if path.name in {"result.json", "path-coverage.json"}:
+    for path in sorted(root.rglob("*.json")):
+        if path.name in {"result.json", "path-coverage.json", "sample-catalog.json"}:
             continue
         mode_id = _mode_scope(root, path)
         if not mode_id:
@@ -210,11 +221,11 @@ def _artifact_branch_points(result: GameTestResult) -> list[dict[str, Any]]:
             required = _option_list(payload.get("option_indices"))
             selected = _clean_option(payload.get("selected_index"))
             if required:
-                # The wire step in the artifact name distinguishes multiple FSO
-                # prompts inside the same mode. Aggregate coverage by occurrence,
-                # not merely by mode, so a second nested selector cannot be hidden
-                # by options selected at the first one.
-                signature = f"{mode_id}:doFSOption:{path.name}"
+                # Wire-step numbers vary with random cascades. Identify a prompt
+                # by earlier selections, so sibling subtrees never share credit.
+                prefix = prefixes.setdefault(path.parent, [])
+                head = "/".join(prefix) if prefix else "ROOT"
+                signature = f"{mode_id}:FSO:{head}"
                 key = (mode_id, signature, tuple(sorted(required)))
                 item = pragmatic_fso.setdefault(
                     key,
@@ -226,18 +237,25 @@ def _artifact_branch_points(result: GameTestResult) -> list[dict[str, Any]]:
                         "covered": set(),
                     },
                 )
-                if selected:
+                if selected and path.parent.resolve() in validated:
                     item["covered"].add(selected)
+                prefix.append(selected or "<unresolved>")
             continue
 
         lowered = path.name.casefold()
         if "request" in lowered:
-            selected_by_mode.setdefault(mode_id, set()).update(_walk_selected_choices(payload))
             continue
         if "response" not in lowered and "summary" not in lowered and "attempt" not in lowered:
             continue
 
         for json_path, required in _walk_pending_choices(payload):
+            # Red Tiger supplies a typed, prefix-sensitive graph from its executor.
+            # Do not replace that graph with a mode-wide bag of request values.
+            if result.provider == "redtiger" and any(
+                m.get("kind") == "CHOICE_BRANCH" and m.get("parent") == mode_id
+                for m in result.discovered_modes if isinstance(m, dict)
+            ):
+                continue
             key = (mode_id, json_path, tuple(sorted(required)))
             pending.setdefault(
                 key,
@@ -252,8 +270,7 @@ def _artifact_branch_points(result: GameTestResult) -> list[dict[str, Any]]:
     points: list[dict[str, Any]] = []
     for item in pending.values():
         required = list(item["required"])
-        covered = sorted(selected_by_mode.get(str(item["mode_id"]), set()).intersection(required))
-        points.append({**item, "covered": covered})
+        points.append({**item, "covered": []})
     for item in pragmatic_fso.values():
         points.append(
             {
@@ -266,16 +283,28 @@ def _artifact_branch_points(result: GameTestResult) -> list[dict[str, Any]]:
 
 def build_path_coverage_report(result: GameTestResult) -> dict[str, Any]:
     points = _explicit_branch_points(result)
-    explicit_signatures = {str(item["signature"]) for item in points}
+    explicit_signatures = {str(item["signature"]): item for item in points}
     for item in _artifact_branch_points(result):
-        if str(item["signature"]) not in explicit_signatures:
+        existing = explicit_signatures.get(str(item["signature"]))
+        if existing is None:
             points.append(item)
+        else:
+            # Persisted evidence may reveal options omitted by adapter metadata.
+            existing["required"] = list(dict.fromkeys(existing["required"] + item["required"]))
+            existing["covered"] = [v for v in existing["covered"] if v in item["covered"]]
 
     normalized: list[dict[str, Any]] = []
     for item in points:
         required = list(dict.fromkeys(_option_list(item.get("required"))))
         covered = list(dict.fromkeys(_option_list(item.get("covered"))))
         missing = [value for value in required if value not in covered]
+        target = max(1, int(item.get("required_samples") or 1))
+        counts = item.get("sample_counts")
+        deficits = {
+            option: max(0, target - int(counts.get(option, 0)))
+            for option in required
+        } if isinstance(counts, dict) else {}
+        missing = list(dict.fromkeys(missing + [k for k, v in deficits.items() if v]))
         normalized.append(
             {
                 "source": str(item.get("source") or "unknown"),
@@ -285,6 +314,9 @@ def build_path_coverage_report(result: GameTestResult) -> dict[str, Any]:
                 "covered": covered,
                 "missing": missing,
                 "complete": not missing,
+                "required_samples": target,
+                "sample_counts": counts,
+                "sample_deficits": deficits,
             }
         )
 

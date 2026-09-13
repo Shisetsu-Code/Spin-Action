@@ -88,6 +88,7 @@ class GameTestResult:
     error: str = ""
     run_dir: str = ""
     attempts: list[SpinAttempt] = field(default_factory=list)
+    samples_per_path: int = 1
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -107,4 +108,5 @@ class GameTestResult:
             "error": self.error,
             "run_dir": self.run_dir,
             "attempts": [attempt.to_dict() for attempt in self.attempts],
+            "samples_per_path": self.samples_per_path,
         }

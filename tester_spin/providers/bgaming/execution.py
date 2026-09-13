@@ -708,7 +708,9 @@ class BGamingExecutionMixin:
                         timeout_s=timeout_s,
                         persisted=None,
                     )
-                    for key, value in refreshed.spin_options.items():
+                    refreshed_options = (refreshed.spin_options if command == "spin"
+                                         else refreshed.command_options.get(command, {}))
+                    for key, value in refreshed_options.items():
                         if merged_options is None or key not in merged_options:
                             missing.setdefault(key, value)
 
@@ -773,7 +775,12 @@ class BGamingExecutionMixin:
                         options=retry_options,
                         extra_data=extra_data_payload,
                     )
-                except requests.HTTPError:
+                except requests.HTTPError as retry_exc:
+                    retry_evidence = http_error_evidence(retry_exc.response)
+                    _write_json(
+                        attempt_dir / f"http-{command}-{retry_evidence.get('status') or 'error'}-retry.json",
+                        retry_evidence,
+                    )
                     # Keep explicitly inferred command options in the persisted
                     # profile even if the demo gateway fails afterwards. The
                     # next fresh session can start with the corrected wire shape.

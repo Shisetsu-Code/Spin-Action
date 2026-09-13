@@ -48,6 +48,34 @@ def pending_payload(options: tuple[str, ...], mode: str = "SuperFreeSpins") -> d
 
 
 class RedTigerExhaustiveChoicePathTests(unittest.TestCase):
+    def test_failed_leaf_is_not_credited_as_covered(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            result = self._base_result(root)
+            self._seed_validated_base_path(root, result, [{"available": ["A", "B"], "selected": "A"}])
+            outcome = ReplayOutcome(prompt=None, final_payload=terminal_payload("B"),
+                summaries=[], warnings=["invalid balance"], wire_steps=2, status_code=200,
+                selected=("B",), elapsed_ms=1, artifact_dir=root / "failed")
+            with patch("tester_spin.providers.redtiger.branch_coverage._replay_prefix", return_value=outcome):
+                expand_all_choice_branches(SimpleNamespace(), self._game(), result, launch_id="12345",
+                    repetitions=1, timeout_s=1, stop_event=threading.Event(), progress=lambda _: None)
+            branch = next(m for m in result.discovered_modes if m.get("kind") == "CHOICE_BRANCH")
+            self.assertEqual(branch["covered_options"], ["A"])
+            self.assertEqual(branch["sample_counts"], {"A": 1})
+            self.assertEqual(result.status, "PARCIAL")
+
+    def test_interrupted_expansion_keeps_coverage_and_cancellation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            result = self._base_result(root)
+            self._seed_validated_base_path(root, result, [{"available": ["A", "B"], "selected": "A"}])
+            with patch("tester_spin.providers.redtiger.branch_coverage._replay_prefix", side_effect=InterruptedError):
+                expand_all_choice_branches(SimpleNamespace(), self._game(), result, launch_id="12345",
+                    repetitions=1, timeout_s=1, stop_event=threading.Event(), progress=lambda _: None)
+            self.assertEqual(result.status, "CANCELADO")
+            self.assertTrue(any(m.get("kind") == "CHOICE_BRANCH" for m in result.discovered_modes))
+            self.assertEqual(json.loads((root / "result.json").read_text(encoding="utf-8"))["status"], "CANCELADO")
+
     @staticmethod
     def _base_result(root: Path) -> GameTestResult:
         return GameTestResult(

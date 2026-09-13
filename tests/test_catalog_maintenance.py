@@ -4,6 +4,7 @@ import json
 import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 from tester_spin.catalog_maintenance import purge_provider_catalog_artifacts
@@ -74,7 +75,7 @@ class CatalogMaintenanceTests(unittest.TestCase):
             self.assertEqual(storage.list_games("belatra"), [])
             self.assertEqual(storage.list_catalog_exclusions("belatra"), set())
 
-            with sqlite3.connect(db) as con:
+            with closing(sqlite3.connect(db)) as con:
                 history = con.execute(
                     "SELECT COUNT(*) FROM test_results WHERE provider=?",
                     ("belatra",),

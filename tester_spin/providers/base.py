@@ -88,6 +88,21 @@ class ProviderAdapter(ABC):
         """
         from tester_spin.providers.path_coverage import enforce_complete_path_coverage
 
+        from tester_spin.sample_catalog import write_sample_catalog
+
+        try:
+            samples = write_sample_catalog(result, samples_per_path=result.samples_per_path)
+            if result.run_dir and result.status == "OK" and not samples["observed_paths_sampled"]:
+                result.status = "PARCIAL"
+                message = "Muestreo pendiente: faltan rondas válidas o evidencia para las rutas observadas; ver sample-catalog.json."
+                result.error = (result.error + " " + message).strip()
+                progress(message)
+        except OSError as exc:
+            message = f"No se pudo guardar el catálogo de muestras: {exc}"
+            if result.status == "OK":
+                result.status = "PARCIAL"
+                result.error = (result.error + " " + message).strip()
+            progress(message)
         return enforce_complete_path_coverage(result, progress=progress)
 
     @abstractmethod
