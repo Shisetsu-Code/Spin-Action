@@ -9,13 +9,14 @@ from urllib.parse import urlparse
 
 import requests
 
-from tester_spin.models import Game, utc_now_iso
+from tester_spin.models import Game, GameTestResult, utc_now_iso
 from tester_spin.providers.base import GameCallback, Progress, ProviderAdapter
 from tester_spin.providers.bgaming.catalog import (
     BGamingCatalogRecord,
     filter_records_by_game_type,
     parse_catalog_html,
 )
+from tester_spin.providers.bgaming.emulation_contract import generate_bgaming_emulation_contract
 from tester_spin.providers.bgaming.execution import BGamingExecutionMixin
 
 
@@ -62,6 +63,37 @@ class BGamingProvider(BGamingExecutionMixin, ProviderAdapter):
         path = self.provider_root / _safe_folder(game.name)
         path.mkdir(parents=True, exist_ok=True)
         return path
+
+    def finalize_test_result(
+        self,
+        result: GameTestResult,
+        *,
+        progress: Progress,
+    ) -> GameTestResult:
+        result = super().finalize_test_result(result, progress=progress)
+        game = Game(
+            provider=result.provider,
+            slug=result.slug,
+            name=result.game_name,
+            url=result.game_url,
+            symbol=result.symbol,
+        )
+        try:
+            contract = generate_bgaming_emulation_contract(game, result)
+        except Exception as exc:
+            progress(
+                f"[{result.game_name}] BGaming emulation contract ERROR: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            return result
+        if contract:
+            progress(
+                f"[{result.game_name}] BGaming emulation contract: "
+                f"requests={len(contract.get('request_contracts') or [])}, "
+                f"wire_complete={bool(contract.get('wire_replay_complete'))}, "
+                f"math_complete={bool(contract.get('math_model_complete'))}."
+            )
+        return result
 
     def catalog_record_invalid_reason(self, game: Game) -> str:
         if game.provider != self.key:
@@ -350,4 +382,3 @@ class BGamingProvider(BGamingExecutionMixin, ProviderAdapter):
             f"autoridad={'sí' if self.catalog_crawl_authoritative else 'no'}."
         )
         return games
-
