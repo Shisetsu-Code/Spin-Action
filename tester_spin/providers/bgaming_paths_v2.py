@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+from pathlib import Path
 from typing import Any
 
 from tester_spin.models import Game, GameTestResult
@@ -14,6 +15,7 @@ _policy.install_policy(_exhaustive)
 
 _original_save_profile = _execution.save_profile
 _original_next_missing_choice = _exhaustive._next_missing_choice
+_original_move_run = _exhaustive._move_run
 
 
 def _coverage_active() -> bool:
@@ -93,14 +95,7 @@ def _bet_guard(data: dict[str, Any]):
 
 
 def _next_missing_choice_guard(graph, attempted, repetitions: int = 1):
-    """Retry under-sampled flow choices fairly until the module replay guard fires.
-
-    A forced run may contain N ordinary spins while a selector appears only a
-    handful of times.  Treating a path as permanently attempted after one run
-    made rare branches impossible to sample to quota.  We therefore schedule
-    every still-deficient target again, rotating by replay count so one rare
-    branch cannot monopolize all retries.
-    """
+    """Retry under-sampled flow choices fairly until the replay guard fires."""
     if not _coverage_active():
         return _original_next_missing_choice(graph, attempted, repetitions)
 
@@ -148,6 +143,20 @@ def _next_missing_choice_guard(graph, attempted, repetitions: int = 1):
     return target
 
 
+def _move_run_guard(result: GameTestResult, target: Path) -> None:
+    """Never overwrite evidence when a sparse branch needs another replay."""
+    if not _coverage_active() or not target.exists():
+        _original_move_run(result, target)
+        return
+    index = 2
+    while True:
+        candidate = target.with_name(f"{target.name}-sample-{index:03d}")
+        if not candidate.exists():
+            _original_move_run(result, candidate)
+            return
+        index += 1
+
+
 # install_policy() supplies the HyperHive wager hook and scoped option domains.
 # These guards stay inert outside a normal exhaustive provider run.
 _execution.discover_profile = _profile_guard
@@ -155,6 +164,7 @@ _execution.save_profile = _save_profile_guard
 _execution.discover_purchase_modes = _purchase_modes_guard
 _execution.resolve_base_bet = _bet_guard
 _exhaustive._next_missing_choice = _next_missing_choice_guard
+_exhaustive._move_run = _move_run_guard
 
 
 class BGamingProvider(_exhaustive.BGamingProvider):
