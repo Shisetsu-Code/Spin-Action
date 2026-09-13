@@ -22,6 +22,25 @@ _TEXT_SUFFIXES = {".json", ".jsonl", ".txt", ".raw", ".log"}
 _EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="github-result-publisher")
 
 
+def _subprocess_window_kwargs() -> dict[str, Any]:
+    """Keep helper processes invisible when Tester-Spin runs under pythonw on Windows."""
+    if os.name != "nt":
+        return {}
+
+    kwargs: dict[str, Any] = {}
+    create_no_window = int(getattr(subprocess, "CREATE_NO_WINDOW", 0) or 0)
+    if create_no_window:
+        kwargs["creationflags"] = create_no_window
+
+    startupinfo_factory = getattr(subprocess, "STARTUPINFO", None)
+    if startupinfo_factory is not None:
+        startupinfo = startupinfo_factory()
+        startupinfo.dwFlags |= int(getattr(subprocess, "STARTF_USESHOWWINDOW", 0) or 0)
+        startupinfo.wShowWindow = int(getattr(subprocess, "SW_HIDE", 0) or 0)
+        kwargs["startupinfo"] = startupinfo
+    return kwargs
+
+
 def _safe_component(value: str) -> str:
     clean = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value or "").strip()).strip("._")
     return clean[:140] or "unknown"
@@ -36,6 +55,7 @@ def _repo_root() -> Path | None:
             capture_output=True,
             text=True,
             timeout=10,
+            **_subprocess_window_kwargs(),
         )
     except Exception:
         return None
@@ -59,6 +79,7 @@ def _git(repo: Path, *args: str, input_text: str | None = None, env: dict[str, s
         check=check,
         timeout=45,
         env=merged,
+        **_subprocess_window_kwargs(),
     )
 
 
