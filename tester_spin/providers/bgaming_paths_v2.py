@@ -12,7 +12,10 @@ import tester_spin.providers.bgaming_exhaustive as _exhaustive
 import tester_spin.providers.bgaming_path_policy as _policy
 from tester_spin.providers.bgaming import execution as _execution
 from tester_spin.providers.bgaming.server_guided import (
+    begin_dynamic_contract_run,
     discover_server_guided_client_evidence,
+    end_dynamic_contract_run,
+    remember_dynamic_evidence,
 )
 
 
@@ -101,6 +104,10 @@ def _post_command_guard(
             timeout_s=timeout_s,
         )
         if isinstance(evidence, dict):
+            # Promotion remains narrow: only exact client-proven, fully literal
+            # payload variants become replay candidates. Text hits alone never do.
+            remember_dynamic_evidence(evidence)
+
             items = getattr(_policy._LOCAL, "server_guided_evidence", None)
             if not isinstance(items, list):
                 items = []
@@ -141,8 +148,9 @@ def _write_server_guided_artifact(result: GameTestResult) -> None:
         "states": rows,
         "diagnostics": error_rows,
         "execution_policy": (
-            "search evidence only; server advertisement or textual client hits "
-            "do not authorize unknown wire requests"
+            "server advertisement or textual client hits alone do not authorize "
+            "unknown requests; only exact client-proven fully literal payload "
+            "variants marked replay_eligible may be replayed"
         ),
     }
     path = run_dir / "server-guided-discovery.json"
@@ -274,6 +282,7 @@ class BGamingProvider(_exhaustive.BGamingProvider):
         progress: Progress,
     ) -> GameTestResult:
         _policy.begin_policy_run()
+        begin_dynamic_contract_run()
         _policy._LOCAL.dynamic_purchased_feature = False
         _policy._LOCAL.purchase_feature_level_supported = False
         _policy._LOCAL.proven_command_options = {}
@@ -292,6 +301,7 @@ class BGamingProvider(_exhaustive.BGamingProvider):
             _write_server_guided_artifact(result)
             return _policy.finalize_policy_artifacts(result)
         finally:
+            end_dynamic_contract_run()
             _policy.end_policy_run()
             for name in (
                 "dynamic_purchased_feature",
