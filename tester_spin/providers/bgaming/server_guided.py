@@ -2,17 +2,28 @@ from __future__ import annotations
 
 import hashlib
 import re
+import threading
 from typing import Any
+
+from tester_spin.providers.bgaming.runtime import (
+    BGamingRuntime,
+    _collect_provider_script_contracts,
+    _runtime_bundle_candidates,
+    sanitize_session_url,
+)
 
 
 SCHEMA = "tester-spin/bgaming-server-guided-discovery/v1"
 MAX_SEEDS = 96
 MAX_ACTIONS = 24
+MAX_CACHE_ENTRIES = 64
 
 _GENERIC_KEYS = {
     "api_version", "balance", "command", "features", "flow", "game",
     "id", "name", "options", "outcome", "state", "type", "value",
 }
+_CACHE_LOCK = threading.Lock()
+_CLIENT_CACHE: dict[tuple[str, str, str, str], tuple[str, str, str]] = {}
 
 
 def _safe_token(value: Any) -> str:
@@ -38,7 +49,7 @@ def _add_seed(out, seen, *, token: Any, path: str, kind: str) -> None:
 
 
 def server_search_seeds(data: dict[str, Any]) -> list[dict[str, str]]:
-    """Extract bounded search terms from an authoritative server response."""
+    """Extract bounded client-search terms from an authoritative server response."""
     if not isinstance(data, dict):
         return []
     out: list[dict[str, str]] = []
@@ -102,7 +113,7 @@ def _option_fields_near(bundle: str, occurrence) -> list[str]:
 
 
 def analyze_server_response_against_bundle(data: dict[str, Any], bundle: str, *, source: str = "") -> dict[str, Any]:
-    """Use server tokens to locate matching client serializer evidence."""
+    """Correlate server-advertised actions with provider-client wire evidence."""
     seeds = server_search_seeds(data)
     flow = data.get("flow") if isinstance(data, dict) else None
     flow = flow if isinstance(flow, dict) else {}
@@ -153,7 +164,7 @@ def analyze_server_response_against_bundle(data: dict[str, Any], bundle: str, *,
             "available_actions": actions,
         },
         "client": {
-            "source": source,
+            "source": sanitize_session_url(source) if source else "",
             "bundle_sha256": hashlib.sha256((bundle or "").encode("utf-8", errors="replace")).hexdigest() if bundle else "",
         },
         "actions": rows,
@@ -161,4 +172,55 @@ def analyze_server_response_against_bundle(data: dict[str, Any], bundle: str, *,
     }
 
 
-__all__ = ["SCHEMA", "analyze_server_response_against_bundle", "server_search_seeds"]
+def _cache_key(runtime: BGamingRuntime) -> tuple[str, str, str, str]:
+    return (
+        str(runtime.identifier or ""),
+        str(runtime.options.get("resources_path") or ""),
+        str(runtime.options.get("game_bundle_source") or ""),
+        str(runtime.options.get("games_loader_source") or ""),
+    )
+
+
+def _load_client_bundle(runtime: BGamingRuntime, *, timeout_s: float) -> tuple[str, str]:
+    key = _cache_key(runtime)
+    with _CACHE_LOCK:
+        cached = _CLIENT_CACHE.get(key)
+    if cached is not None:
+        return cached[0], cached[1]
+
+    diagnostics: list[dict[str, Any]] = []
+    seeds = _runtime_bundle_candidates(runtime, timeout_s=timeout_s, diagnostics=diagnostics)
+    parts = _collect_provider_script_contracts(runtime, timeout_s=timeout_s, seeds=seeds, diagnostics=diagnostics)
+    parts.sort(key=lambda item: item[0], reverse=True)
+    bundle = "\n".join(item[2] for item in parts)
+    source = parts[0][1] if parts else ""
+    digest = hashlib.sha256(bundle.encode("utf-8", errors="replace")).hexdigest() if bundle else ""
+    if bundle:
+        with _CACHE_LOCK:
+            if len(_CLIENT_CACHE) >= MAX_CACHE_ENTRIES:
+                _CLIENT_CACHE.pop(next(iter(_CLIENT_CACHE)))
+            _CLIENT_CACHE[key] = (bundle, source, digest)
+    return bundle, source
+
+
+def discover_server_guided_client_evidence(runtime: BGamingRuntime, data: dict[str, Any], *, timeout_s: float) -> dict[str, Any] | None:
+    """Use a server response as an index for searching the official client bundle."""
+    if not isinstance(data, dict):
+        return None
+    flow = data.get("flow")
+    actions = flow.get("available_actions") if isinstance(flow, dict) else None
+    if not isinstance(actions, list) or not actions:
+        return None
+    bundle, source = _load_client_bundle(runtime, timeout_s=timeout_s)
+    evidence = analyze_server_response_against_bundle(data, bundle, source=source)
+    if not bundle:
+        evidence["warning"] = "provider client bundle unavailable for server-guided search"
+    return evidence
+
+
+__all__ = [
+    "SCHEMA",
+    "analyze_server_response_against_bundle",
+    "discover_server_guided_client_evidence",
+    "server_search_seeds",
+]
