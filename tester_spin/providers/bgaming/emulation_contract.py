@@ -4,7 +4,7 @@ import json
 import re
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 from tester_spin.models import Game, GameTestResult, utc_now_iso
 
@@ -13,6 +13,7 @@ CONTRACT_SCHEMA = "tester-spin/bgaming-emulation-contract/v1"
 STATE_SCHEMA = "tester-spin/bgaming-state-machine/v1"
 OUTCOME_SCHEMA = "tester-spin/bgaming-outcome-catalog/v1"
 CONFORMANCE_SCHEMA = "tester-spin/bgaming-backend-conformance/v1"
+RESPONSE_PLAN_SCHEMA = "tester-spin/bgaming-backend-response-plan/v1"
 
 _TRANSIENT_KEY_HINTS = {
     "round_series_id",
@@ -51,6 +52,13 @@ def _safe_id(value: str) -> str:
     clean = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value or "").strip())
     clean = clean.strip("_")
     return clean[:180] or "UNKNOWN"
+
+
+def _stable_key(value: Any) -> str:
+    try:
+        return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    except TypeError:
+        return repr(value)
 
 
 def _json_type(value: Any) -> str:
@@ -129,11 +137,7 @@ def _dynamic_paths(samples: list[dict[str, Any]]) -> list[str]:
     by_path: dict[str, set[str]] = defaultdict(set)
     for sample in samples:
         for path, value in _flatten_scalars(sample).items():
-            try:
-                encoded = json.dumps(value, sort_keys=True, ensure_ascii=False)
-            except TypeError:
-                encoded = repr(value)
-            by_path[path].add(encoded)
+            by_path[path].add(_stable_key(value))
 
     dynamic: set[str] = {path for path, values in by_path.items() if len(values) > 1}
     for path in by_path:
@@ -161,8 +165,7 @@ def _request_variant(request: dict[str, Any]) -> tuple[str, dict[str, Any]]:
             parts.append("PURCHASE_" + purchased.upper())
         if level not in (None, ""):
             parts.append("LEVEL_" + str(level).upper())
-        variant = "__".join(parts)
-        return variant, {
+        return "__".join(parts), {
             "transport": "HTTP_JSON",
             "wire_action": command,
             "selectors": selectors,
@@ -202,6 +205,26 @@ def _request_variant(request: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     }
 
 
+def _selector_summary(samples: list[dict[str, Any]]) -> tuple[dict[str, list[Any]], list[dict[str, Any]]]:
+    domains: dict[str, list[Any]] = defaultdict(list)
+    vectors: list[dict[str, Any]] = []
+    vector_seen: set[str] = set()
+    for sample in samples:
+        _variant, meta = _request_variant(sample)
+        selectors = meta.get("selectors")
+        if not isinstance(selectors, dict):
+            continue
+        vector = dict(selectors)
+        vector_key = _stable_key(vector)
+        if vector_key not in vector_seen:
+            vector_seen.add(vector_key)
+            vectors.append(vector)
+        for field, value in vector.items():
+            if not any(_stable_key(existing) == _stable_key(value) for existing in domains[field]):
+                domains[field].append(value)
+    return {key: values for key, values in sorted(domains.items())}, vectors
+
+
 def _api_response_state(response: dict[str, Any]) -> dict[str, Any] | None:
     flow = response.get("flow")
     if not isinstance(flow, dict):
@@ -216,9 +239,10 @@ def _api_response_state(response: dict[str, Any]) -> dict[str, Any] | None:
         if isinstance(purchased, dict)
         else ""
     )
+    normalized = "READY" if state == "ready" or terminal else f"FLOW:{state}"
     return {
         "provider_state": state,
-        "normalized_state": "READY" if terminal else f"FLOW:{state}",
+        "normalized_state": normalized,
         "terminal": terminal,
         "flow_command": str(flow.get("command") or ""),
         "available_actions": available,
@@ -335,8 +359,6 @@ def _attempt_pairs(root: Path) -> list[tuple[Path, dict[str, Any], dict[str, Any
             seen.add(key)
             pairs.append((request_path, request, response))
 
-    # Some executors preserve only request.json/response.json. Add those only
-    # when the same attempt has no step-001 pair.
     for request_path in sorted(root.rglob("request.json")):
         response_path = request_path.with_name("response.json")
         if not response_path.is_file():
@@ -389,16 +411,8 @@ def _mode_contracts(result: GameTestResult) -> list[dict[str, Any]]:
     return out
 
 
-def generate_bgaming_emulation_contract(
-    game: Game,
-    result: GameTestResult,
-) -> dict[str, Any]:
-    """Build backend-facing BGaming wire/state artifacts from runtime evidence.
-
-    The generated files deliberately do not infer RNG probabilities. They describe
-    only request contracts, observed response families, and state transitions that
-    Tester-Spin can support with persisted runtime/client evidence.
-    """
+def generate_bgaming_emulation_contract(game: Game, result: GameTestResult) -> dict[str, Any]:
+    """Build backend-facing BGaming wire/state artifacts from persisted evidence."""
     root = Path(str(result.run_dir or ""))
     if not root.is_dir():
         return {}
@@ -418,6 +432,7 @@ def generate_bgaming_emulation_contract(
     outcome_meta: dict[str, dict[str, Any]] = {}
     transition_counts: dict[tuple[str, str, str, str], int] = defaultdict(int)
     transition_evidence: dict[tuple[str, str, str, str], list[str]] = defaultdict(list)
+    transition_selectors: dict[tuple[str, str, str, str], list[dict[str, Any]]] = defaultdict(list)
     state_actions: dict[str, set[str]] = defaultdict(set)
     state_provider_names: dict[str, set[str]] = defaultdict(set)
     state_terminal: dict[str, bool] = defaultdict(bool)
@@ -435,6 +450,8 @@ def generate_bgaming_emulation_contract(
             state = _response_state(response)
             target_state = str(state.get("normalized_state") or "UNKNOWN")
             action = str(request_meta.get("wire_action") or "UNKNOWN")
+            selectors = request_meta.get("selectors")
+            selectors = dict(selectors) if isinstance(selectors, dict) else {}
             evidence = str(request_path.relative_to(root)).replace("\\", "/")
 
             request_samples[variant].append(request)
@@ -467,6 +484,9 @@ def generate_bgaming_emulation_contract(
             transition_counts[transition_key] += 1
             if evidence not in transition_evidence[transition_key]:
                 transition_evidence[transition_key].append(evidence)
+            selector_key = _stable_key(selectors)
+            if all(_stable_key(item) != selector_key for item in transition_selectors[transition_key]):
+                transition_selectors[transition_key].append(selectors)
             state_actions[source_state].add(action)
             state_provider_names[target_state].add(str(state.get("provider_state") or "unknown"))
             state_terminal[target_state] = bool(state_terminal[target_state] or state.get("terminal"))
@@ -492,20 +512,23 @@ def generate_bgaming_emulation_contract(
         )
 
     request_contracts: list[dict[str, Any]] = []
+    request_contract_map: dict[str, dict[str, Any]] = {}
     for contract_id, samples in sorted(request_samples.items()):
         _variant, meta = _request_variant(samples[0])
-        request_contracts.append(
-            {
-                "id": contract_id,
-                "transport": meta["transport"],
-                "wire_action": meta["wire_action"],
-                "selectors": meta["selectors"],
-                "authority": "RUNTIME_OBSERVED",
-                "sample_count": len(samples),
-                "request_schema": _merge_schema(samples),
-                "dynamic_paths": _dynamic_paths(samples),
-            }
-        )
+        selector_domains, selector_vectors = _selector_summary(samples)
+        contract = {
+            "id": contract_id,
+            "transport": meta["transport"],
+            "wire_action": meta["wire_action"],
+            "selector_domains_observed": selector_domains,
+            "selector_vectors_observed": selector_vectors,
+            "authority": "RUNTIME_OBSERVED",
+            "sample_count": len(samples),
+            "request_schema": _merge_schema(samples),
+            "dynamic_paths": _dynamic_paths(samples),
+        }
+        request_contracts.append(contract)
+        request_contract_map[contract_id] = contract
 
     outcomes: list[dict[str, Any]] = []
     for outcome_id, raw in sorted(outcome_meta.items()):
@@ -537,6 +560,7 @@ def generate_bgaming_emulation_contract(
             {
                 "source": source,
                 "request_contract": request_contract,
+                "request_selector_vectors_observed": transition_selectors[key],
                 "outcome": outcome_id,
                 "target": target,
                 "observed_count": count,
@@ -564,11 +588,12 @@ def generate_bgaming_emulation_contract(
         for state, actions in sorted(dispatch.items())
     }
 
+    modes = _mode_contracts(result)
     unresolved = [
         item
-        for item in _mode_contracts(result)
+        for item in modes
         if (
-            (item["kind"] in {"SPIN", "PURCHASE", "FEATURE", "CONTINUATION", "CHOICE_BRANCH"})
+            item["kind"] in {"SPIN", "PURCHASE", "FEATURE", "CONTINUATION", "CHOICE_BRANCH"}
             and (
                 not item["executable"]
                 or (
@@ -606,12 +631,13 @@ def generate_bgaming_emulation_contract(
         "math_model_complete": False,
         "rng_probabilities_known": False,
         "request_contracts": request_contracts,
-        "modes": _mode_contracts(result),
+        "modes": modes,
         "unresolved_modes": unresolved,
         "dispatch": dispatch_payload,
         "artifacts": {
             "state_machine": "state-machine.json",
             "outcome_catalog": "outcome-catalog.json",
+            "backend_response_plan": "backend-response-plan.json",
             "backend_conformance": "backend-conformance.json",
             "response_schemas": "response-schemas/",
         },
@@ -628,10 +654,42 @@ def generate_bgaming_emulation_contract(
     outcome_catalog = {
         "schema": OUTCOME_SCHEMA,
         **common,
-        "note": (
-            "Observed counts are protocol evidence only; they are not RNG weights or probabilities."
-        ),
+        "note": "Observed counts are protocol evidence only; they are not RNG weights or probabilities.",
         "outcomes": outcomes,
+    }
+
+    response_plan_states: dict[str, Any] = {}
+    outcomes_by_id = {item["id"]: item for item in outcomes}
+    for source_state, actions in sorted(dispatch_payload.items()):
+        response_plan_states[source_state] = {}
+        for contract_id, outcome_ids in sorted(actions.items()):
+            contract = request_contract_map.get(contract_id, {})
+            response_plan_states[source_state][contract_id] = {
+                "wire_action": contract.get("wire_action", ""),
+                "selector_domains_observed": contract.get("selector_domains_observed", {}),
+                "selector_vectors_observed": contract.get("selector_vectors_observed", []),
+                "outcomes": [
+                    {
+                        "id": outcome_id,
+                        "target_state": sorted(outcomes_by_id[outcome_id]["target_states"]),
+                        "response_schema": outcomes_by_id[outcome_id]["response_schema"],
+                        "terminal_observed": outcomes_by_id[outcome_id]["terminal_observed"],
+                        "math_probability_known": False,
+                    }
+                    for outcome_id in outcome_ids
+                    if outcome_id in outcomes_by_id
+                ],
+            }
+
+    response_plan = {
+        "schema": RESPONSE_PLAN_SCHEMA,
+        **common,
+        "purpose": (
+            "Backend dispatch table: current state + received request contract -> "
+            "allowed response/outcome families."
+        ),
+        "probability_policy": "Do not derive RNG weights from observed_count; probabilities remain unknown.",
+        "states": response_plan_states,
     }
 
     conformance_cases = [
@@ -639,6 +697,7 @@ def generate_bgaming_emulation_contract(
             "id": f"CASE_{index:04d}",
             "source_state": transition["source"],
             "request_contract": transition["request_contract"],
+            "request_selector_vectors_observed": transition["request_selector_vectors_observed"],
             "accepted_outcome": transition["outcome"],
             "expected_target_state": transition["target"],
             "response_schema": response_schema_refs.get(transition["outcome"], ""),
@@ -664,6 +723,7 @@ def generate_bgaming_emulation_contract(
     _write_json(root / "protocol-contract.json", protocol_contract)
     _write_json(root / "state-machine.json", state_machine)
     _write_json(root / "outcome-catalog.json", outcome_catalog)
+    _write_json(root / "backend-response-plan.json", response_plan)
     _write_json(root / "backend-conformance.json", backend_conformance)
     _write_json(root / "emulation-contract.json", protocol_contract)
     return protocol_contract
