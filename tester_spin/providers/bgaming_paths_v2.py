@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import threading
 from pathlib import Path
 from typing import Any
@@ -9,11 +11,15 @@ from tester_spin.providers.base import Progress
 import tester_spin.providers.bgaming_exhaustive as _exhaustive
 import tester_spin.providers.bgaming_path_policy as _policy
 from tester_spin.providers.bgaming import execution as _execution
+from tester_spin.providers.bgaming.server_guided import (
+    discover_server_guided_client_evidence,
+)
 
 
 _policy.install_policy(_exhaustive)
 
 _original_save_profile = _execution.save_profile
+_original_post_command = _execution.post_command
 _original_next_missing_choice = _exhaustive._next_missing_choice
 _original_move_run = _exhaustive._move_run
 
@@ -57,6 +63,93 @@ def _save_profile_guard(path, profile) -> None:
         if isinstance(proven, dict):
             _merge_command_options(profile.command_options, proven)
     _original_save_profile(path, profile)
+
+
+def _evidence_key(value: dict[str, Any]) -> str:
+    raw = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _post_command_guard(
+    runtime,
+    command: str,
+    *,
+    timeout_s: float,
+    options: dict[str, Any] | None = None,
+    extra_data: dict[str, Any] | None = None,
+):
+    result = _original_post_command(
+        runtime,
+        command,
+        timeout_s=timeout_s,
+        options=options,
+        extra_data=extra_data,
+    )
+    if not _coverage_active():
+        return result
+
+    try:
+        data = result[2]
+        evidence = discover_server_guided_client_evidence(
+            runtime,
+            data,
+            timeout_s=timeout_s,
+        )
+        if isinstance(evidence, dict):
+            items = getattr(_policy._LOCAL, "server_guided_evidence", None)
+            if not isinstance(items, list):
+                items = []
+                _policy._LOCAL.server_guided_evidence = items
+            seen = getattr(_policy._LOCAL, "server_guided_seen", None)
+            if not isinstance(seen, set):
+                seen = set()
+                _policy._LOCAL.server_guided_seen = seen
+            key = _evidence_key(evidence)
+            if key not in seen:
+                seen.add(key)
+                items.append(evidence)
+    except Exception as exc:
+        diagnostics = getattr(_policy._LOCAL, "server_guided_errors", None)
+        if not isinstance(diagnostics, list):
+            diagnostics = []
+            _policy._LOCAL.server_guided_errors = diagnostics
+        message = f"{type(exc).__name__}: {exc}"
+        if message not in diagnostics:
+            diagnostics.append(message[:800])
+    return result
+
+
+def _write_server_guided_artifact(result: GameTestResult) -> None:
+    run_dir = Path(str(result.run_dir or ""))
+    if not run_dir.is_dir():
+        return
+    evidence = getattr(_policy._LOCAL, "server_guided_evidence", None)
+    errors = getattr(_policy._LOCAL, "server_guided_errors", None)
+    rows = list(evidence) if isinstance(evidence, list) else []
+    error_rows = list(errors) if isinstance(errors, list) else []
+    if not rows and not error_rows:
+        return
+    payload = {
+        "schema": "tester-spin/bgaming-server-guided-run/v1",
+        "provider": "bgaming",
+        "game": result.slug,
+        "states": rows,
+        "diagnostics": error_rows,
+        "execution_policy": (
+            "search evidence only; server advertisement or textual client hits "
+            "do not authorize unknown wire requests"
+        ),
+    }
+    path = run_dir / "server-guided-discovery.json"
+    path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
 
 
 def _purchase_mode_authorized(mode: dict[str, Any]) -> bool:
@@ -161,6 +254,7 @@ def _move_run_guard(result: GameTestResult, target: Path) -> None:
 # These guards stay inert outside a normal exhaustive provider run.
 _execution.discover_profile = _profile_guard
 _execution.save_profile = _save_profile_guard
+_execution.post_command = _post_command_guard
 _execution.discover_purchase_modes = _purchase_modes_guard
 _execution.resolve_base_bet = _bet_guard
 _exhaustive._next_missing_choice = _next_missing_choice_guard
@@ -184,6 +278,9 @@ class BGamingProvider(_exhaustive.BGamingProvider):
         _policy._LOCAL.purchase_feature_level_supported = False
         _policy._LOCAL.proven_command_options = {}
         _policy._LOCAL.choice_replay_counts = {}
+        _policy._LOCAL.server_guided_evidence = []
+        _policy._LOCAL.server_guided_seen = set()
+        _policy._LOCAL.server_guided_errors = []
         try:
             result = super().test_game(
                 game,
@@ -192,6 +289,7 @@ class BGamingProvider(_exhaustive.BGamingProvider):
                 stop_event=stop_event,
                 progress=progress,
             )
+            _write_server_guided_artifact(result)
             return _policy.finalize_policy_artifacts(result)
         finally:
             _policy.end_policy_run()
@@ -200,6 +298,9 @@ class BGamingProvider(_exhaustive.BGamingProvider):
                 "purchase_feature_level_supported",
                 "proven_command_options",
                 "choice_replay_counts",
+                "server_guided_evidence",
+                "server_guided_seen",
+                "server_guided_errors",
             ):
                 try:
                     delattr(_policy._LOCAL, name)
