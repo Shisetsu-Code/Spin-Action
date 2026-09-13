@@ -7,6 +7,7 @@ from typing import Any
 from tester_spin.providers.bgaming import execution as _execution
 from tester_spin.providers.bgaming import runtime as _runtime
 from tester_spin.providers.bgaming.contracts import (
+    choice_costs,
     choice_values,
     command_contract,
 )
@@ -16,6 +17,7 @@ _LOCAL = threading.local()
 _ORIGINAL_FLOW_CONTINUATION = _runtime.flow_continuation_command
 _ORIGINAL_PENDING_FLOW_ACTIONS = _runtime.pending_flow_actions
 _ORIGINAL_POST_COMMAND = _runtime.post_command
+_ORIGINAL_VALIDATE_SPIN = _execution.validate_spin
 
 
 @dataclass(slots=True)
@@ -27,10 +29,11 @@ class FlowChoicePrompt:
     source: str
     prefix: tuple[str, ...]
     available: tuple[str, ...]
+    option_costs: dict[str, float] = field(default_factory=dict)
     selected: str = ""
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "scope": self.scope,
             "round_id": self.round_id,
             "command": self.command,
@@ -44,6 +47,11 @@ class FlowChoicePrompt:
             "option_field": self.option_field,
             "source": self.source,
         }
+        if self.option_costs:
+            payload["option_costs"] = dict(self.option_costs)
+        if self.selected and self.selected in self.option_costs:
+            payload["expected_debit"] = self.option_costs[self.selected]
+        return payload
 
 
 @dataclass(slots=True)
@@ -54,6 +62,8 @@ class _ChoiceRun:
     prompts: list[FlowChoicePrompt] = field(default_factory=list)
     round_paths: dict[tuple[str, str, str], list[str]] = field(default_factory=dict)
     pending: FlowChoicePrompt | None = None
+    candidate: FlowChoicePrompt | None = None
+    validation_debits: dict[str, list[float]] = field(default_factory=dict)
 
 
 def _clean(value: Any) -> str:
@@ -108,7 +118,7 @@ def _choice_candidate(data: dict[str, Any]) -> tuple[str, list[str]] | None:
     if not isinstance(actions, list):
         return None
 
-    # Server advertisement is the dispatch authority.  The state name never
+    # Server advertisement is the dispatch authority. The state name never
     # becomes a command by itself (important for state=select_bonus with
     # available action=play_bonus_game).
     for raw_action in actions:
@@ -171,6 +181,7 @@ def _prompt_for(
         prefix = tuple(
             run.round_paths.get((scope, round_id, command), [])
         )
+    costs = choice_costs(data, command)
     return FlowChoicePrompt(
         scope=scope,
         round_id=round_id,
@@ -179,36 +190,117 @@ def _prompt_for(
         source=contract.source,
         prefix=prefix,
         available=tuple(available),
+        option_costs={
+            value: float(costs[value])
+            for value in available
+            if value in costs
+        },
     )
 
 
+def _cached_prompt_matches(data: dict[str, Any], prompt: FlowChoicePrompt) -> bool:
+    flow = data.get("flow") if isinstance(data, dict) else None
+    if not isinstance(flow, dict):
+        return False
+    actions = flow.get("available_actions")
+    action_names = {
+        _clean(item) for item in actions
+    } if isinstance(actions, list) else set()
+    round_id = _clean(flow.get("round_id")) or "<unknown-round>"
+    return (
+        prompt.command in action_names
+        and prompt.round_id == round_id
+        and prompt.scope == flow_choice_scope(data)
+    )
+
+
+def _candidate_prompt(data: dict[str, Any]) -> FlowChoicePrompt | None:
+    run = _current_run()
+    candidate = _choice_candidate(data)
+    if candidate is not None:
+        command, available = candidate
+        prompt = _prompt_for(data, command, available)
+        if run is not None:
+            run.candidate = prompt
+        return prompt
+
+    if run is not None and run.candidate is not None:
+        if _cached_prompt_matches(data, run.candidate):
+            return run.candidate
+    return None
+
+
+def _forced_choice_needed(run: _ChoiceRun, prompt: FlowChoicePrompt) -> bool:
+    if run.forced_scope != prompt.scope:
+        return False
+    if run.forced_command and run.forced_command != prompt.command:
+        return False
+    depth = len(prompt.prefix)
+    if depth >= len(run.forced_path):
+        return False
+    if tuple(run.forced_path[:depth]) != prompt.prefix:
+        return False
+    return run.forced_path[depth] in prompt.available
+
+
 def _flow_continuation_with_choices(data: dict[str, Any]) -> str:
-    # Keep the normal parameterless protocol first.  Choice handling only fills
-    # the gap when a provider-advertised action has a finite proven domain.
+    # A normal parameterless continuation remains the default path. A forced
+    # exhaustive replay may override it only for a client-proven finite choice
+    # that was observed in the same round. This is what lets buy_extra_bonus be
+    # sampled even when freespin is simultaneously available.
     command = _ORIGINAL_FLOW_CONTINUATION(data)
+    run = _current_run()
+    prompt = _candidate_prompt(data)
+
+    if run is not None and prompt is not None and _forced_choice_needed(run, prompt):
+        run.pending = prompt
+        return prompt.command
+
     if command:
         return command
 
-    candidate = _choice_candidate(data)
-    if candidate is None:
-        return ""
-    command, available = candidate
-    prompt = _prompt_for(data, command, available)
-    if prompt is None:
-        return ""
-    run = _current_run()
-    if run is None:
+    if run is None or prompt is None:
         return ""
     run.pending = prompt
-    return command
+    return prompt.command
+
+
+def _same_prompt(left: FlowChoicePrompt | None, right: FlowChoicePrompt) -> bool:
+    return bool(
+        left is not None
+        and left.scope == right.scope
+        and left.round_id == right.round_id
+        and left.command == right.command
+        and left.prefix == right.prefix
+        and left.available == right.available
+    )
 
 
 def _pending_flow_actions_with_choices(data: dict[str, Any]) -> list[str]:
     pending = list(_ORIGINAL_PENDING_FLOW_ACTIONS(data))
+    run = _current_run()
     candidate = _choice_candidate(data)
-    if candidate is not None and _current_run() is not None:
-        command, _available = candidate
-        pending = [item for item in pending if str(item) != command]
+    if run is None:
+        return pending
+
+    if candidate is None:
+        run.candidate = None
+        return pending
+
+    command, available = candidate
+    prompt = _prompt_for(data, command, available)
+    if prompt is None:
+        run.candidate = None
+        return pending
+
+    run.candidate = prompt
+    pending = [item for item in pending if str(item) != command]
+
+    # Preserve the branch point in the trace even when the normal path chooses
+    # a simultaneous parameterless continuation (for example freespin). The
+    # exhaustive wrapper can then replay this round and force each legal option.
+    if not _same_prompt(run.pending, prompt):
+        run.prompts.append(prompt)
     return pending
 
 
@@ -274,15 +366,33 @@ def _post_command_with_choices(
         *prompt.prefix,
         selected,
     ]
+    if selected in prompt.option_costs:
+        run.validation_debits.setdefault(command, []).append(
+            float(prompt.option_costs[selected])
+        )
     run.pending = None
     return result
+
+
+def _validate_spin_with_choices(data: dict[str, Any], **kwargs):
+    run = _current_run()
+    command = str(kwargs.get("command") or "spin")
+    if run is not None:
+        queue = run.validation_debits.get(command)
+        if isinstance(queue, list) and queue:
+            # The official client supplied this price in the response that made
+            # the choice available. Validate the resulting balance against that
+            # advertised debit instead of treating every continuation as free.
+            kwargs["expected_debit"] = float(queue.pop(0))
+            kwargs["allow_observed_debit"] = False
+    return _ORIGINAL_VALIDATE_SPIN(data, **kwargs)
 
 
 def install_flow_choice_adapter() -> None:
     """Install one generic bridge for finite in-round choices.
 
     execution.py imported runtime helpers by name, so both namespaces need the
-    same bridge.  The bridge does not add commands or state aliases; it only
+    same bridge. The bridge does not add commands or state aliases; it only
     supplies options for commands already proven by the contract registry and
     advertised by the current server response.
     """
@@ -293,6 +403,8 @@ def install_flow_choice_adapter() -> None:
             module.pending_flow_actions = _pending_flow_actions_with_choices
     if getattr(_execution.post_command, "__name__", "") != "_post_command_with_choices":
         _execution.post_command = _post_command_with_choices
+    if getattr(_execution.validate_spin, "__name__", "") != "_validate_spin_with_choices":
+        _execution.validate_spin = _validate_spin_with_choices
 
 
 __all__ = [
