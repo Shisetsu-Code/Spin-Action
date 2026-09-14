@@ -73,6 +73,66 @@ class SamplingCatalogV2Tests(unittest.TestCase):
             paths = {item["path"] for item in catalog["groups"][0]["samples"][0]["evidence"]}
             self.assertIn("PURCHASE_1/attempt-001/fso-selection-003.json", paths)
 
+    def test_rare_state_sequence_is_recorded_as_unclassified_wire_variant(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            attempts = []
+            for number in range(1, 5):
+                directory = root / "SPIN" / f"attempt-{number:03d}"
+                directory.mkdir(parents=True)
+                payload = (
+                    {"state": "closed", "st": 0}
+                    if number < 4
+                    else {"state": "feature_entry", "st": 3}
+                )
+                (directory / "response.json").write_text(
+                    json.dumps(payload),
+                    encoding="utf-8",
+                )
+                attempts.append(
+                    SpinAttempt(
+                        number=number,
+                        ok=True,
+                        terminal=True,
+                        mode_id="SPIN",
+                        mode_kind="SPIN",
+                        artifact_dir=str(directory),
+                    )
+                )
+
+            result = GameTestResult(
+                provider="synthetic",
+                slug="natural-event",
+                game_name="Natural Event",
+                game_url="https://example.invalid",
+                requested_spins=4,
+                successful_spins=4,
+                failed_spins=0,
+                status="OK",
+                run_dir=str(root),
+                attempts=attempts,
+            )
+            catalog = build_sample_catalog(result)
+            group = catalog["groups"][0]
+
+            self.assertTrue(catalog["observed_paths_sampled"])
+            self.assertEqual(len(group["observed_state_sequences"]), 2)
+            dominant = next(
+                row for row in group["observed_state_sequences"]
+                if row["id"] == group["dominant_state_sequence_id"]
+            )
+            self.assertEqual(dominant["validated_occurrences"], 3)
+
+            self.assertEqual(len(group["unclassified_wire_variants"]), 1)
+            variant = group["unclassified_wire_variants"][0]
+            self.assertEqual(variant["classification"], "UNCLASSIFIED_WIRE_VARIANT")
+            self.assertTrue(variant["id"].startswith("UNCLASSIFIED_WIRE_VARIANT_"))
+            self.assertEqual(variant["validated_occurrences"], 1)
+            self.assertEqual(variant["first_attempt"], 4)
+            self.assertEqual(variant["evidence"][0]["attempt"], 4)
+            self.assertTrue(variant["evidence"][0]["files"][0]["sha256"])
+            self.assertNotIn("semantic", variant)
+
     def test_wager_plan_prefers_minimum_provider_advertised_bet(self) -> None:
         plan = wager_plan_from_init({
             "options": {"default_bet": 200, "available_bets": [200, 20, 100]},
