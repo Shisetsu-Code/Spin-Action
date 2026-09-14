@@ -5,9 +5,13 @@ import threading
 import unittest
 
 from tester_spin.providers.redtiger import evolution_launch
+from tester_spin.providers.redtiger import execution
 
 
 class RedTigerEvolutionLaunchTests(unittest.TestCase):
+    def test_execution_uses_live_evolution_launch_bootstrap(self) -> None:
+        self.assertIs(execution.bootstrap_game, evolution_launch.bootstrap_game)
+
     def test_live_start_contract_does_not_require_button_or_loader(self) -> None:
         class FakePage:
             def evaluate(self, _script):
