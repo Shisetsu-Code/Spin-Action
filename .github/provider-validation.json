@@ -1,5 +1,5 @@
 {
-  "provider": "1spin4win",
+  "provider": "belatra",
   "slug": "",
   "game_url": "",
   "game_name": "",
@@ -11,5 +11,5 @@
   "max_pages": 1,
   "allow_har_fallback": false,
   "install_browser": false,
-  "run_sequence": 7
+  "run_sequence": 8
 }
