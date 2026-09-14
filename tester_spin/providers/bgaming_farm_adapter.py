@@ -8,6 +8,7 @@ from tester_spin.providers.bgaming.farm_contract import (
     validate_bgaming_farm_contract,
 )
 from tester_spin.providers.bgaming_paths_v2 import BGamingProvider as _BGamingProvider
+from tester_spin.providers.farm_structure import attach_execution_structure, select_domains
 
 
 class BGamingProvider(_BGamingProvider):
@@ -21,7 +22,19 @@ class BGamingProvider(_BGamingProvider):
         game: Game,
         result: GameTestResult,
     ) -> dict:
-        return build_bgaming_farm_contract(game, result, self.game_dir(game))
+        contract = build_bgaming_farm_contract(game, result, self.game_dir(game))
+        protocol = contract.get("protocol")
+        profile = protocol.get("profile") if isinstance(protocol, dict) else {}
+        domains = select_domains(
+            profile,
+            (
+                "spin_option_choices",
+                "effective_bet_selector",
+                "effective_bet_multipliers",
+                "purchase_features",
+            ),
+        )
+        return attach_execution_structure(contract, provider_domains=domains)
 
     def validate_farm_contract(self, contract: dict) -> list[str]:
         return validate_bgaming_farm_contract(contract)
