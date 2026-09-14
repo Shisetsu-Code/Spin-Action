@@ -6,6 +6,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
+from scripts.provider_catalog_manifest import enumerate_provider_targets
 from tester_spin.action_audit import build_action_audit
 from tester_spin.farm_contract import export_farm_contract
 from tester_spin.models import Game, GameTestResult
@@ -44,6 +45,23 @@ def provider_class_for(key: str):
         return _PROVIDER_CLASSES[normalized]
     except KeyError as exc:
         raise ValueError(f"Proveedor no soportado: {key!r}") from exc
+
+
+def enumerate_catalog_for_probe(
+    provider,
+    *,
+    requested_pages: int,
+    stop_event: threading.Event,
+    progress,
+) -> list[Game]:
+    """Enumerate provider targets through the lab-only low-traffic path."""
+    return enumerate_provider_targets(
+        provider,
+        provider_key=provider.key,
+        requested_pages=requested_pages,
+        stop_event=stop_event,
+        progress=progress,
+    )
 
 
 def build_direct_game(
@@ -193,7 +211,6 @@ def run_probe(args: argparse.Namespace) -> tuple[str, dict[str, Any]]:
     requested_pages = int(args.max_pages)
     if requested_pages < 0:
         raise ValueError("--max-pages debe ser 0 o positivo")
-    crawl_pages = 10_000 if requested_pages == 0 else max(1, requested_pages)
     direct_target = bool(str(args.game_url or "").strip())
 
     progress(
@@ -227,17 +244,17 @@ def run_probe(args: argparse.Namespace) -> tuple[str, dict[str, Any]]:
         progress("Catálogo omitido: usando target directo conocido para evitar tráfico innecesario.")
     else:
         provider.set_catalog_authority(True, "")
-        games = provider.crawl_catalog(
+        games = enumerate_catalog_for_probe(
+            provider,
+            requested_pages=requested_pages,
             stop_event=stop_event,
             progress=progress,
-            max_pages=crawl_pages,
-            on_game=None,
         )
         _write_json(
             output_dir / "catalog.json",
             {
                 "provider": provider.key,
-                "mode": "crawl",
+                "mode": "crawl-low-traffic",
                 "count": len(games),
                 "authoritative": bool(provider.catalog_crawl_authoritative),
                 "authority_reason": str(provider.catalog_crawl_reason or ""),
