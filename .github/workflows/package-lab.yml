@@ -1,0 +1,108 @@
+name: Package Lab Build
+
+on:
+  push:
+    branches:
+      - lab/actions-validation
+    paths:
+      - '.github/workflows/package-lab.yml'
+      - 'tester_spin/**'
+      - 'scripts/**'
+      - 'run.py'
+      - 'run_ui_index.py'
+      - 'launcher.py'
+      - 'requirements.txt'
+      - 'README.md'
+      - 'Abrir-Tester-Spin.cmd'
+      - 'Abrir-Tester-Spin-Silencioso.vbs'
+      - 'Abrir-Tester-Spin-UI-Index.cmd'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify Python sources
+        shell: pwsh
+        run: |
+          python -m compileall -q tester_spin scripts run.py launcher.py run_ui_index.py
+
+      - name: Build package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $out = Join-Path $env:RUNNER_TEMP 'Spin-Action-Lab'
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          $items = @(
+            'tester_spin',
+            'scripts',
+            'schema',
+            'docs',
+            'run.py',
+            'run_ui_index.py',
+            'launcher.py',
+            'requirements.txt',
+            'README.md',
+            'Abrir-Tester-Spin.cmd',
+            'Abrir-Tester-Spin-Silencioso.vbs',
+            'Abrir-Tester-Spin-UI-Index.cmd'
+          )
+          foreach ($item in $items) {
+            if (Test-Path $item) {
+              Copy-Item -Recurse -Force $item $out
+            }
+          }
+          @"
+          Spin-Action lab build
+          Branch: $env:GITHUB_REF_NAME
+          Commit: $env:GITHUB_SHA
+          Built: $(Get-Date -Format o)
+          "@ | Set-Content -Encoding UTF8 (Join-Path $out 'BUILD.txt')
+
+          @'
+          @echo off
+          setlocal
+          cd /d "%~dp0"
+          where py >nul 2>nul
+          if errorlevel 1 (
+            echo Python no encontrado. Instala Python 3.12+ y vuelve a ejecutar.
+            pause
+            exit /b 1
+          )
+          if not exist .venv (
+            py -3 -m venv .venv
+          )
+          call .venv\Scripts\activate.bat
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python run.py
+          pause
+          '@ | Set-Content -Encoding ASCII (Join-Path $out 'INICIAR-LAB.cmd')
+
+          @'
+          @echo off
+          setlocal
+          cd /d "%~dp0"
+          if not exist .venv (
+            py -3 -m venv .venv
+          )
+          call .venv\Scripts\activate.bat
+          python -m pip install -r requirements.txt
+          python -m unittest discover -s tests -v
+          pause
+          '@ | Set-Content -Encoding ASCII (Join-Path $out 'EJECUTAR-TESTS.cmd')
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: Spin-Action-Lab-${{ github.sha }}
+          path: ${{ runner.temp }}/Spin-Action-Lab
+          if-no-files-found: error
+          retention-days: 7
