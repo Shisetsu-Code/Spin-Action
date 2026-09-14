@@ -203,3 +203,68 @@ def promote_contract_if_ready(game_dir: Path, contract: dict[str, Any]) -> bool:
     target = Path(game_dir) / "farm-contract.json"
     _atomic_write_json(target, contract)
     return True
+
+
+def _merge_unresolved(contract: dict[str, Any], reasons: list[str]) -> None:
+    existing = contract.get("unresolved")
+    unresolved = [str(value) for value in existing] if isinstance(existing, list) else []
+    for reason in reasons:
+        value = str(reason or "").strip()
+        # UNRESOLVED_ITEMS only summarizes that semantic reasons already exist;
+        # persisting it would create noise and self-amplify on later validation.
+        if not value or value == "UNRESOLVED_ITEMS":
+            continue
+        if value not in unresolved:
+            unresolved.append(value)
+    contract["unresolved"] = unresolved
+
+
+def export_farm_contract(provider, game, result, *, progress) -> None:
+    """Persist a provider-built contract candidate after final discovery gates.
+
+    Export is deliberately best-effort: this artifact is for later headless farm
+    execution and must never change the already-finalized protocol test status.
+    """
+
+    try:
+        game_dir = provider.farm_contract_dir(game)
+        if game_dir is None:
+            return
+
+        contract = provider.build_farm_contract(game, result)
+        if not isinstance(contract, dict):
+            raise TypeError("build_farm_contract debe devolver dict")
+
+        provider_errors = provider.validate_farm_contract(contract)
+        provider_errors = (
+            [str(value) for value in provider_errors]
+            if isinstance(provider_errors, list)
+            else ["INVALID_PROVIDER_VALIDATION_RESULT"]
+        )
+        _merge_unresolved(contract, provider_errors)
+
+        common_errors = validate_common_contract(contract)
+        validation_errors = [
+            error
+            for error in common_errors
+            if error not in {"UNRESOLVED_ITEMS"}
+        ]
+        _merge_unresolved(contract, validation_errors)
+
+        if provider_errors or common_errors:
+            contract["ready"] = False
+
+        write_contract_candidate(Path(game_dir), contract)
+        promoted = promote_contract_if_ready(Path(game_dir), contract)
+        if promoted:
+            progress("farm contract: PROMOTED")
+            return
+
+        unresolved = contract.get("unresolved")
+        reasons = ", ".join(str(value) for value in unresolved or []) or "NOT_READY"
+        progress(f"farm contract: candidate ready=false; unresolved={reasons}")
+    except Exception as exc:
+        progress(
+            f"farm contract ERROR: {type(exc).__name__}: {exc}; "
+            "el estado del protocolo no cambia."
+        )
