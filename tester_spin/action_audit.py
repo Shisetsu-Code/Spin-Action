@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from tester_spin.audit_wire_evidence import successful_wire_commands
 from tester_spin.models import GameTestResult
 
 
@@ -98,7 +99,11 @@ def _is_actionable(mode: dict[str, Any]) -> bool:
     return mode.get("coverage_required") is True or mode.get("executable") is True
 
 
-def _audit_mode(mode: dict[str, Any], terminal_counts: dict[str, int]) -> dict[str, Any]:
+def _audit_mode(
+    mode: dict[str, Any],
+    terminal_counts: dict[str, int],
+    wire_counts: dict[str, int],
+) -> dict[str, Any]:
     mode_id = str(mode.get("id") or "UNKNOWN").strip() or "UNKNOWN"
     kind = str(mode.get("kind") or "UNKNOWN").strip().upper() or "UNKNOWN"
     required = _clean_list(
@@ -135,6 +140,8 @@ def _audit_mode(mode: dict[str, Any], terminal_counts: dict[str, int]) -> dict[s
         }
 
     direct_count = int(terminal_counts.get(mode_id, 0))
+    wire_command = str(mode.get("wire_command") or "").strip()
+    wire_count = int(wire_counts.get(wire_command, 0)) if wire_command else 0
     parent = str(mode.get("parent") or "").strip()
     parent_count = int(terminal_counts.get(parent, 0)) if parent else 0
     provider_marked_proven = (
@@ -144,7 +151,13 @@ def _audit_mode(mode: dict[str, Any], terminal_counts: dict[str, int]) -> dict[s
             or str(mode.get("evidence_level") or "").strip().upper() in _PROVEN_EVIDENCE
         )
     )
-    if direct_count > 0 or provider_marked_proven:
+    if direct_count > 0 or wire_count > 0 or provider_marked_proven:
+        if direct_count:
+            evidence = f"terminal remote attempts={direct_count}"
+        elif wire_count:
+            evidence = f"remote wire executions={wire_count}"
+        else:
+            evidence = "provider terminal remote proof"
         return {
             "id": mode_id,
             "kind": kind,
@@ -152,11 +165,7 @@ def _audit_mode(mode: dict[str, Any], terminal_counts: dict[str, int]) -> dict[s
             "required_options": required,
             "covered_options": covered,
             "missing_options": [],
-            "evidence": (
-                f"terminal remote attempts={direct_count}"
-                if direct_count
-                else "provider terminal remote proof"
-            ),
+            "evidence": evidence,
         }
 
     if parent_count > 0 and kind in {"CONTINUATION", "FEATURE"} and mode.get("observed") is True:
@@ -245,12 +254,13 @@ def build_action_audit(result: GameTestResult) -> dict[str, Any]:
     inventory_state, inventory, unknown_reasons = _inventory(result)
     missing_reasons: list[str] = []
     terminal_counts = _terminal_attempts(result)
+    wire_counts = successful_wire_commands(result)
     modes = [
         mode
         for mode in result.discovered_modes
         if isinstance(mode, dict) and _is_actionable(mode)
     ]
-    actions = [_audit_mode(mode, terminal_counts) for mode in modes]
+    actions = [_audit_mode(mode, terminal_counts, wire_counts) for mode in modes]
 
     if not actions:
         unknown_reasons.append("No hay ninguna acción jugable registrada con evidencia auditable.")
