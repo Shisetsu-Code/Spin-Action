@@ -1,5 +1,5 @@
 {
-  "provider": "rubyplay",
+  "provider": "redtiger",
   "slug": "",
   "game_url": "",
   "game_name": "",
@@ -11,5 +11,5 @@
   "max_pages": 1,
   "allow_har_fallback": false,
   "install_browser": true,
-  "run_sequence": 17
+  "run_sequence": 18
 }
