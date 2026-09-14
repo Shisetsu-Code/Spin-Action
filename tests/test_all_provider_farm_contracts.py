@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
 
+from tester_spin.farm_contract import export_farm_contract
 from tester_spin.models import Game, GameTestResult, SpinAttempt
 from tester_spin.providers import (
     BGamingProvider,
@@ -13,6 +15,7 @@ from tester_spin.providers import (
     RedTigerProvider,
     RubyPlayProvider,
 )
+from tester_spin.providers.bgaming.profile import API_V2, PROFILE_SCHEMA
 
 
 class AllProviderFarmContractTests(unittest.TestCase):
@@ -54,6 +57,19 @@ class AllProviderFarmContractTests(unittest.TestCase):
 
     @staticmethod
     def _result(provider_key: str, *, status: str = "OK") -> GameTestResult:
+        spin_mode = {
+            "id": "SPIN",
+            "kind": "SPIN",
+            "wire_command": "spin",
+            "observed": True,
+            "executable": True,
+        }
+        if provider_key == "bgaming" and status == "OK":
+            spin_mode.update(
+                evidence_level="REMOTE_EXECUTION",
+                execution_state="PROVEN_TERMINAL",
+                validated=True,
+            )
         return GameTestResult(
             provider=provider_key,
             slug="synthetic",
@@ -71,15 +87,7 @@ class AllProviderFarmContractTests(unittest.TestCase):
                 "rubyplay": "Synthetic",
                 "redtiger": "123456",
             }[provider_key],
-            discovered_modes=[
-                {
-                    "id": "SPIN",
-                    "kind": "SPIN",
-                    "wire_command": "spin",
-                    "observed": True,
-                    "executable": True,
-                }
-            ],
+            discovered_modes=[spin_mode],
             attempts=[
                 SpinAttempt(
                     number=1,
@@ -91,6 +99,45 @@ class AllProviderFarmContractTests(unittest.TestCase):
                 )
             ],
             finished_at="2026-09-14T07:00:00+00:00",
+        )
+
+    @staticmethod
+    def _prepare_bgaming_profile(game_dir: Path) -> None:
+        (game_dir / "game.json").write_text(
+            json.dumps(
+                {
+                    "provider": "bgaming",
+                    "slug": "synthetic",
+                    "name": "Synthetic",
+                    "public_url": "https://bgaming.com/games/synthetic/",
+                    "identifier": "Synthetic",
+                    "provider_protocol": {
+                        "schema": PROFILE_SCHEMA,
+                        "capability_version": 2,
+                        "family": API_V2,
+                        "confidence": 1.0,
+                        "evidence": ["init.api_version=2"],
+                        "spin_options": {},
+                        "command_options": {},
+                        "request_extra_data": {},
+                        "spin_option_choices": {},
+                        "effective_bet_selector": "",
+                        "effective_bet_multipliers": {},
+                        "dynamic_purchased_feature": False,
+                        "purchase_feature_level_supported": False,
+                        "purchase_features": [],
+                        "rows_required": False,
+                        "line_count": 0,
+                        "variable_layout": False,
+                        "allowed_continuations": [],
+                        "source": "init",
+                        "bundle_sha256": "",
+                        "discovery_diagnostics": [],
+                        "validated": True,
+                    },
+                }
+            ),
+            encoding="utf-8",
         )
 
     def test_every_active_provider_opts_into_farm_export(self) -> None:
@@ -150,6 +197,29 @@ class AllProviderFarmContractTests(unittest.TestCase):
                         ),
                         contract["unresolved"],
                     )
+
+    def test_every_active_provider_promotes_ready_contract_through_exporter(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            for provider in self._providers(root):
+                with self.subTest(provider=provider.key):
+                    game = self._game(provider.key)
+                    game_dir = provider.game_dir(game)
+                    if provider.key == "bgaming":
+                        self._prepare_bgaming_profile(game_dir)
+                    log: list[str] = []
+                    export_farm_contract(
+                        provider,
+                        game,
+                        self._result(provider.key),
+                        progress=log.append,
+                    )
+                    self.assertTrue(
+                        (game_dir / "analysis" / "farm-contract-candidate.json").is_file(),
+                        log,
+                    )
+                    self.assertTrue((game_dir / "farm-contract.json").is_file(), log)
+                    self.assertIn("farm contract: PROMOTED", log)
 
 
 if __name__ == "__main__":
