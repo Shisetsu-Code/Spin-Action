@@ -6,8 +6,9 @@ from pathlib import Path
 from unittest import mock
 
 from tester_spin.models import Game
-from tester_spin.providers.belatra import BelatraProvider
-from tester_spin.providers.one_spin4win import OneSpin4WinProvider
+from tester_spin.providers.belatra_farm_adapter import BelatraProvider
+from tester_spin.providers.one_spin4win import OneSpin4WinProvider as BaseOneSpin4WinProvider
+from tester_spin.providers.one_spin4win_farm_adapter import OneSpin4WinProvider
 
 
 class _FakeWS:
@@ -59,7 +60,7 @@ class ProviderWireRateLimitTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp:
             with mock.patch.object(provider, "_discover_runtime_spec", return_value=spec), \
-                 mock.patch.object(provider, "_open_websocket", return_value=ws), \
+                 mock.patch.object(BaseOneSpin4WinProvider, "_open_websocket", return_value=ws), \
                  mock.patch.object(provider, "_recv_protocol_json", side_effect=[init_payload, terminal_payload]):
                 ok, terminal, *_rest = provider._execute_direct_ws_spin(
                     Game(provider="1spin4win", slug="demo", name="Demo", url="https://example.invalid"),
@@ -93,7 +94,7 @@ class ProviderWireRateLimitTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp:
             with mock.patch.object(provider, "_discover_runtime_spec", return_value=spec), \
-                 mock.patch.object(provider, "_open_websocket", return_value=ws), \
+                 mock.patch.object(BaseOneSpin4WinProvider, "_open_websocket", return_value=ws), \
                  mock.patch.object(provider, "_recv_protocol_json", side_effect=responses):
                 provider._execute_direct_ws_spin(
                     Game(provider="1spin4win", slug="demo", name="Demo", url="https://example.invalid"),
