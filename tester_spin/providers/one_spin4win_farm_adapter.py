@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
 from tester_spin.models import Game, GameTestResult
+from tester_spin.providers.base import Progress
 from tester_spin.providers.farm_structure import attach_execution_structure
 from tester_spin.providers.one_spin4win_exhaustive import OneSpin4WinProvider as _OneSpin4WinProvider
 from tester_spin.providers.result_farm_contract import (
@@ -35,6 +37,25 @@ _SPEC = ProviderFarmSpec(
 
 class OneSpin4WinProvider(_OneSpin4WinProvider):
     """Active D1 provider with post-discovery farm export hooks."""
+
+    def test_natural_spins(
+        self,
+        game: Game,
+        *,
+        spins: int,
+        timeout_s: float,
+        stop_event: threading.Event,
+        progress: Progress,
+    ) -> GameTestResult:
+        # D1 test_game already contains only natural playGame spins and their
+        # server-directed feature continuations; it has no purchase/ante matrix.
+        return self.test_game(
+            game,
+            spins=spins,
+            timeout_s=timeout_s,
+            stop_event=stop_event,
+            progress=progress,
+        )
 
     def farm_contract_dir(self, game: Game) -> Path | None:
         return self.game_dir(game)
