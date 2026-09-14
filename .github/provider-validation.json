@@ -6,10 +6,10 @@
   "symbol": "classicchilliplus",
   "game_offset": 0,
   "game_limit": 1,
-  "spins": 50,
+  "spins": 1,
   "timeout": 60,
   "max_pages": 1,
   "allow_har_fallback": false,
   "install_browser": true,
-  "run_sequence": 28
+  "run_sequence": 29
 }
