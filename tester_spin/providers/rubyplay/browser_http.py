@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
 import requests
 
@@ -9,7 +9,7 @@ class RubyPlayVerifiedBrowserTransport:
     """Verified Chromium GET transport used only after requests TLS failure.
 
     TLS verification remains enabled: no ``ignore_https_errors`` and no
-    certificate/hostname bypasses are configured.  Chromium is launched lazily
+    certificate/hostname bypasses are configured. Chromium is launched lazily
     on the first fallback request and is closed with the owning provider session.
     """
 
@@ -63,7 +63,7 @@ class RubyPlayVerifiedBrowserTransport:
             response.url = str(page.url or url)
             response.headers.update({str(k): str(v) for k, v in headers.items()})
             response._content = bytes(body)
-            response.encoding = browser_response.headers.get("content-encoding") or "utf-8"
+            response.encoding = "utf-8"
             return response
         finally:
             try:
@@ -96,21 +96,28 @@ class RubyPlayVerifiedBrowserTransport:
 class RubyPlayTlsFallbackSession:
     """requests-shaped session with a lazy, verified Chromium GET fallback."""
 
-    def __init__(self, base_session: Any) -> None:
+    def __init__(
+        self,
+        base_session: Any,
+        *,
+        transport_factory: Callable[[], RubyPlayVerifiedBrowserTransport] = RubyPlayVerifiedBrowserTransport,
+    ) -> None:
         self._base = base_session
         self._browser: RubyPlayVerifiedBrowserTransport | None = None
+        self._transport_factory = transport_factory
         self.headers = base_session.headers
 
     def _browser_transport(self) -> RubyPlayVerifiedBrowserTransport:
         if self._browser is None:
-            self._browser = RubyPlayVerifiedBrowserTransport()
+            self._browser = self._transport_factory()
         return self._browser
 
     @staticmethod
     def _timeout_seconds(kwargs: dict[str, Any]) -> float:
         raw = kwargs.get("timeout", 30.0)
         if isinstance(raw, tuple):
-            raw = max(float(value) for value in raw if value is not None)
+            values = [float(value) for value in raw if value is not None]
+            raw = max(values) if values else 30.0
         try:
             return max(1.0, float(raw))
         except (TypeError, ValueError):
