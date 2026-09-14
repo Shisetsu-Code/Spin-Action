@@ -57,16 +57,15 @@ class ProviderWireRateLimitTests(unittest.TestCase):
         init_payload = {"type": 1, "l": 20, "b3": 1}
         terminal_payload = {"type": 3, "st": 0, "l": 20, "b3": 1}
 
-        with tempfile.TemporaryDirectory() as temp, (
-            mock.patch.object(provider, "_discover_runtime_spec", return_value=spec),
-            mock.patch.object(provider, "_open_websocket", return_value=ws),
-            mock.patch.object(provider, "_recv_protocol_json", side_effect=[init_payload, terminal_payload]),
-        ):
-            ok, terminal, *_rest = provider._execute_direct_ws_spin(
-                Game(provider="1spin4win", slug="demo", name="Demo", url="https://example.invalid"),
-                timeout_s=1.0,
-                attempt_dir=Path(temp),
-            )
+        with tempfile.TemporaryDirectory() as temp:
+            with mock.patch.object(provider, "_discover_runtime_spec", return_value=spec), \
+                 mock.patch.object(provider, "_open_websocket", return_value=ws), \
+                 mock.patch.object(provider, "_recv_protocol_json", side_effect=[init_payload, terminal_payload]):
+                ok, terminal, *_rest = provider._execute_direct_ws_spin(
+                    Game(provider="1spin4win", slug="demo", name="Demo", url="https://example.invalid"),
+                    timeout_s=1.0,
+                    attempt_dir=Path(temp),
+                )
 
         self.assertTrue(ok)
         self.assertTrue(terminal)
@@ -92,16 +91,15 @@ class ProviderWireRateLimitTests(unittest.TestCase):
             {"type": 3, "st": 0, "l": 20, "b3": 1},
         ]
 
-        with tempfile.TemporaryDirectory() as temp, (
-            mock.patch.object(provider, "_discover_runtime_spec", return_value=spec),
-            mock.patch.object(provider, "_open_websocket", return_value=ws),
-            mock.patch.object(provider, "_recv_protocol_json", side_effect=responses),
-        ):
-            provider._execute_direct_ws_spin(
-                Game(provider="1spin4win", slug="demo", name="Demo", url="https://example.invalid"),
-                timeout_s=1.0,
-                attempt_dir=Path(temp),
-            )
+        with tempfile.TemporaryDirectory() as temp:
+            with mock.patch.object(provider, "_discover_runtime_spec", return_value=spec), \
+                 mock.patch.object(provider, "_open_websocket", return_value=ws), \
+                 mock.patch.object(provider, "_recv_protocol_json", side_effect=responses):
+                provider._execute_direct_ws_spin(
+                    Game(provider="1spin4win", slug="demo", name="Demo", url="https://example.invalid"),
+                    timeout_s=1.0,
+                    attempt_dir=Path(temp),
+                )
 
         # init + spin + continuation + close
         self.assertEqual(len(ws.sent), 4)
