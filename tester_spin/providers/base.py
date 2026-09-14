@@ -19,14 +19,8 @@ class ProviderAdapter(ABC):
     # Optional provider-side cap. Some public/demo backends invalidate or reject
     # concurrent sessions even when Tester-Spin can technically run more workers.
     max_test_concurrency: int | None = None
-    # Catalog crawlers may explicitly downgrade a run to non-authoritative when
-    # they use a degraded/fallback source. Non-authoritative runs can add/update
-    # validated rows but must never delete existing catalog rows.
     catalog_crawl_authoritative: bool = True
     catalog_crawl_reason: str = ""
-    # Reconciliation safety threshold. A provider may tighten this when its
-    # catalogue is large/stable and temporary WAF/parser failures are more likely
-    # than large legitimate removals.
     min_catalog_reconcile_ratio: float = 0.60
 
     def set_catalog_authority(self, authoritative: bool, reason: str = "") -> None:
@@ -42,12 +36,7 @@ class ProviderAdapter(ABC):
         *,
         stop_event: threading.Event | None = None,
     ) -> bool:
-        """Reserve one outbound provider-protocol request when a limiter is attached.
-
-        Normal Tester-Spin operation remains unchanged when no limiter is attached.
-        Soak/load runners attach exactly one limiter per provider instance so all
-        concurrent games share the same ceiling.
-        """
+        """Reserve one outbound provider-protocol request when a limiter is attached."""
         limiter = getattr(self, "_provider_request_rate_limiter", None)
         if limiter is None:
             return True
@@ -61,12 +50,6 @@ class ProviderAdapter(ABC):
         return dict(snapshot) if isinstance(snapshot, dict) else {}
 
     def catalog_record_invalid_reason(self, game: Game) -> str:
-        """Return a reason only for records that are provably malformed.
-
-        This hook is intentionally conservative. It is not a replacement for
-        provider reconciliation and must never be used to infer that a merely
-        old/unreachable game has been removed from the provider.
-        """
         return ""
 
     def effective_test_concurrency(self, requested: int) -> int:
@@ -84,28 +67,12 @@ class ProviderAdapter(ABC):
         stop_event: threading.Event,
         progress: Progress,
     ) -> None:
-        """Best-effort pre-test artifact preparation.
-
-        Providers may override this to capture reusable diagnostics such as HARs.
-        The default is intentionally a no-op so provider implementations remain
-        autonomous.
-        """
         return None
 
     def har_artifact_dir(self, game: Game) -> Path | None:
-        """Return the folder containing this game's HAR/diagnostics, if any.
-
-        The GUI uses this hook instead of knowing provider-specific storage layouts.
-        Providers that do not maintain HAR artifacts keep the default no-op.
-        """
         return None
 
     def farm_contract_dir(self, game: Game) -> Path | None:
-        """Return the per-game folder that may receive farm contract artifacts.
-
-        Providers opt in explicitly. Returning ``None`` keeps existing providers
-        completely unchanged until they implement a stable farm-facing contract.
-        """
         return None
 
     def build_farm_contract(
@@ -113,11 +80,6 @@ class ProviderAdapter(ABC):
         game: Game,
         result: GameTestResult,
     ) -> dict[str, Any]:
-        """Build a non-executable candidate for providers not adapted to the farm.
-
-        The common exporter can persist this diagnostic shape only when a provider
-        opts in via ``farm_contract_dir``. It never invents provider protocol data.
-        """
         from tester_spin.farm_contract import SCHEMA
 
         return {
@@ -143,7 +105,6 @@ class ProviderAdapter(ABC):
         }
 
     def validate_farm_contract(self, contract: dict[str, Any]) -> list[str]:
-        """Return provider-specific farm-contract validation errors."""
         return []
 
     def finalize_test_result(
@@ -152,16 +113,7 @@ class ProviderAdapter(ABC):
         *,
         progress: Progress,
     ) -> GameTestResult:
-        """Apply provider-neutral completeness gates after the adapter finishes.
-
-        An adapter owns the wire protocol and is the only layer allowed to execute
-        provider-specific continuations. The neutral finalizer verifies that any
-        selectable branch exposed by adapter metadata or persisted JSON evidence was
-        actually covered. Unknown wire contracts therefore stay PARCIAL instead of
-        being silently reported as OK.
-        """
         from tester_spin.providers.path_coverage import enforce_complete_path_coverage
-
         from tester_spin.sample_catalog import write_sample_catalog
 
         try:
@@ -178,6 +130,25 @@ class ProviderAdapter(ABC):
                 result.error = (result.error + " " + message).strip()
             progress(message)
         return enforce_complete_path_coverage(result, progress=progress)
+
+    def test_natural_spins(
+        self,
+        game: Game,
+        *,
+        spins: int,
+        timeout_s: float,
+        stop_event: threading.Event,
+        progress: Progress,
+    ) -> GameTestResult:
+        """Run only the natural/base-spin entry path for soak validation.
+
+        Providers must opt in explicitly. The default is fail-closed because
+        delegating to ``test_game`` could multiply purchases, ante bets, selector
+        matrices or other explicit coverage paths by the natural-spin budget.
+        """
+        raise NotImplementedError(
+            f"{self.key}: natural-spin-only execution is not implemented"
+        )
 
     @abstractmethod
     def crawl_catalog(
