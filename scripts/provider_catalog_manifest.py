@@ -15,7 +15,7 @@ Progress = Callable[[str], None]
 def _suppress_catalog_asset_downloads(provider: Any):
     """Temporarily disable catalog-only asset downloads on a lab provider instance.
 
-    The production crawlers remain unchanged.  This only prevents thumbnail/image
+    The production crawlers remain unchanged. This only prevents thumbnail/image
     traffic while Actions is enumerating targets for validation.
     """
     saved: dict[str, Any] = {}
@@ -66,9 +66,9 @@ def enumerate_provider_targets(
 ) -> list[Game]:
     """Enumerate validation targets with catalog asset traffic suppressed.
 
-    ``requested_pages=0`` means full catalog.  Pragmatic uses its dedicated
+    ``requested_pages=0`` means full catalog. Pragmatic uses its dedicated
     sequential lab enumerator so it does not enter the production artifact
-    persistence stage at all.  Other providers reuse their own catalog parser
+    persistence stage at all. Other providers reuse their own catalog parser
     with only thumbnail/image download hooks disabled on this lab instance.
     """
     key = str(provider_key or getattr(provider, "key", "")).strip().lower()
@@ -111,4 +111,26 @@ def remaining_targets(
     ]
 
 
-__all__ = ["enumerate_provider_targets", "remaining_targets"]
+def build_validation_shards(
+    games: Iterable[Game],
+    previous_verdicts: Mapping[str, str] | None,
+    *,
+    shard_size: int,
+) -> list[list[Game]]:
+    """Split unresolved targets deterministically, exactly once per slug."""
+    size = int(shard_size)
+    if size < 1:
+        raise ValueError("shard_size debe ser >= 1")
+
+    pending = sorted(
+        remaining_targets(games, previous_verdicts),
+        key=lambda game: (game.slug.casefold(), game.name.casefold(), game.url),
+    )
+    return [pending[index:index + size] for index in range(0, len(pending), size)]
+
+
+__all__ = [
+    "build_validation_shards",
+    "enumerate_provider_targets",
+    "remaining_targets",
+]
