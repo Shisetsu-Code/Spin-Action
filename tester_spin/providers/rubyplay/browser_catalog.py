@@ -16,13 +16,14 @@ class BrowserBricksResponse:
 
 
 class RubyPlayBrowserCatalogClient:
-    """Lazy Playwright transport for Bricks catalogue requests.
+    """Lazy Playwright transport for RubyPlay catalogue requests.
 
-    The normal catalogue path stays HTTP-first. This client is only started when
-    RubyPlay rejects a direct ``load_query_page`` replay (currently observed as
-    HTTP 403). Executing the same fetch from the page origin lets the browser
-    supply the exact cookie/origin context while keeping the Bricks payload and
-    response validation unchanged.
+    The normal catalogue path stays HTTP-first. This client is started only
+    when the direct requests transport cannot establish a verified TLS session
+    or when RubyPlay rejects a direct Bricks ``load_query_page`` replay.
+
+    Playwright keeps its normal certificate and hostname verification.  This
+    class never enables ``ignore_https_errors`` and never weakens TLS checks.
     """
 
     def __init__(self, catalog_url: str, *, timeout_s: float = 30.0) -> None:
@@ -53,7 +54,6 @@ class RubyPlayBrowserCatalogClient:
                 wait_until="domcontentloaded",
                 timeout=self.timeout_ms,
             )
-            # Wait for the same global used by Bricks' own load-page JavaScript.
             self._page.wait_for_function(
                 "() => !!(window.bricksData && window.bricksData.nonce)",
                 timeout=self.timeout_ms,
@@ -82,6 +82,12 @@ class RubyPlayBrowserCatalogClient:
                 playwright.stop()
             except Exception:
                 pass
+
+    def fetch_catalog_html(self) -> tuple[str, str]:
+        """Return the rendered catalogue HTML from a verified browser session."""
+        self.start()
+        assert self._page is not None
+        return str(self._page.content() or ""), str(self._page.url or self.catalog_url)
 
     def fetch_page(self, state: BricksCatalogState, page: int) -> BrowserBricksResponse:
         self.start()
