@@ -245,6 +245,27 @@ def _img_source(img) -> str:
     return ""
 
 
+def _generic_game_link_text(value: str) -> bool:
+    return " ".join(str(value or "").split()).casefold() == "read more"
+
+
+def _nearby_game_heading(anchor) -> str:
+    """Return the nearest card heading without relying on generated classes."""
+    containers_seen = 0
+    for parent in anchor.parents:
+        if getattr(parent, "name", None) not in {"article", "li", "div"}:
+            continue
+        containers_seen += 1
+        heading = parent.find(re.compile(r"^h[1-6]$", re.I))
+        if heading is not None:
+            text = " ".join(heading.stripped_strings).strip()
+            if text and not _generic_game_link_text(text):
+                return text
+        if containers_seen >= 4:
+            break
+    return ""
+
+
 def parse_catalog_html(html: str, base_url: str) -> list[RubyPlayCatalogRecord]:
     soup = BeautifulSoup(html or "", "html.parser")
     raw: dict[str, dict[str, Any]] = {}
@@ -265,8 +286,11 @@ def parse_catalog_html(html: str, base_url: str) -> list[RubyPlayCatalogRecord]:
             },
         )
         text = " ".join(anchor.stripped_strings).strip()
-        if text and len(text) > len(record["name"]):
-            record["name"] = text
+        candidate_name = text if text and not _generic_game_link_text(text) else ""
+        if not candidate_name:
+            candidate_name = _nearby_game_heading(anchor)
+        if candidate_name and len(candidate_name) > len(record["name"]):
+            record["name"] = candidate_name
         img = anchor.find("img")
         if img is not None:
             source = _img_source(img)
