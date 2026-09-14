@@ -100,16 +100,23 @@ def annotate_pragmatic_action_inventory(result: GameTestResult) -> GameTestResul
         "protocol_observations": root / artifacts["protocol_observations"],
         "path_coverage": root / artifacts["path_coverage"],
     }
-    for key in ("do_init", "mode_catalog", "protocol_observations", "path_coverage"):
-        path = paths[key]
-        if not path.is_file():
-            _artifact_unknown(
-                result,
-                reason=f"Falta {artifacts[key]}; no se puede cerrar el inventario de acciones.",
-                artifacts=artifacts,
-            )
-            _persist_result(result)
-            return result
+    missing_artifacts = [
+        artifacts[key]
+        for key in ("do_init", "mode_catalog", "protocol_observations", "path_coverage")
+        if not paths[key].is_file()
+    ]
+    if missing_artifacts:
+        _artifact_unknown(
+            result,
+            reason=(
+                "Falta evidencia de esta corrida: "
+                + ", ".join(missing_artifacts)
+                + "; no se puede cerrar el inventario de acciones."
+            ),
+            artifacts=artifacts,
+        )
+        _persist_result(result)
+        return result
 
     try:
         do_init = _load_json(paths["do_init"])
