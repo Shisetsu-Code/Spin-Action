@@ -23,15 +23,20 @@ def _decode_frame(provider: _OneSpin4WinProvider, frame: dict[str, Any]) -> dict
     return None
 
 
+def _load_attempt_artifact(attempt) -> dict[str, Any]:
+    path = Path(str(attempt.artifact_dir or "")) / "ws-attempt.json"
+    try:
+        artifact = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return artifact if isinstance(artifact, dict) else {}
+
+
 def _observed_result_states(provider: _OneSpin4WinProvider, result: GameTestResult) -> set[int]:
     states: set[int] = set()
     for attempt in result.attempts:
-        path = Path(str(attempt.artifact_dir or "")) / "ws-attempt.json"
-        try:
-            artifact = json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
-            continue
-        frames = artifact.get("frames") if isinstance(artifact, dict) else None
+        artifact = _load_attempt_artifact(attempt)
+        frames = artifact.get("frames")
         if not isinstance(frames, list):
             continue
         for frame in frames:
@@ -53,6 +58,59 @@ def _observed_result_states(provider: _OneSpin4WinProvider, result: GameTestResu
     return states
 
 
+def _proven_terminal_result_states(
+    provider: _OneSpin4WinProvider,
+    result: GameTestResult,
+) -> set[int]:
+    """Return type=3 states proven terminal by the executor artifact itself.
+
+    A state is not promoted merely because it was observed.  The same attempt
+    must have completed successfully, its artifact must declare terminal=true,
+    and final_result must name that type=3 state.  We also require the exact
+    state to be present in a received frame so a stale or fabricated summary
+    cannot close the audit on its own.
+    """
+
+    proven: set[int] = set()
+    for attempt in result.attempts:
+        if not (attempt.ok and attempt.terminal):
+            continue
+        artifact = _load_attempt_artifact(attempt)
+        if artifact.get("terminal") is not True:
+            continue
+        final_result = artifact.get("final_result")
+        if not isinstance(final_result, dict):
+            continue
+        try:
+            message_type = int(final_result.get("type"))
+            state = int(final_result.get("st"))
+        except (TypeError, ValueError):
+            continue
+        if message_type != 3:
+            continue
+
+        observed_in_frames = False
+        frames = artifact.get("frames")
+        if isinstance(frames, list):
+            for frame in frames:
+                if not isinstance(frame, dict) or frame.get("direction") != "received":
+                    continue
+                payload = _decode_frame(provider, frame)
+                if not isinstance(payload, dict):
+                    continue
+                try:
+                    frame_type = int(payload.get("type"))
+                    frame_state = int(payload.get("st"))
+                except (TypeError, ValueError):
+                    continue
+                if frame_type == 3 and frame_state == state:
+                    observed_in_frames = True
+                    break
+        if observed_in_frames:
+            proven.add(state)
+    return proven
+
+
 def apply_d1_path_audit(
     provider: _OneSpin4WinProvider,
     result: GameTestResult,
@@ -63,8 +121,10 @@ def apply_d1_path_audit(
         return result
 
     states = _observed_result_states(provider, result)
+    proven_terminal = _proven_terminal_result_states(provider, result)
     active = sorted(states & KNOWN_ACTIVE_STATES)
-    unknown = sorted(states - KNOWN_ACTIVE_STATES - KNOWN_TERMINAL_STATES)
+    terminal = sorted((states & KNOWN_TERMINAL_STATES) | proven_terminal)
+    unknown = sorted(states - KNOWN_ACTIVE_STATES - KNOWN_TERMINAL_STATES - proven_terminal)
 
     if active:
         result.discovered_modes.append(
@@ -97,8 +157,9 @@ def apply_d1_path_audit(
                 "required_options": [str(value) for value in unknown],
                 "covered_options": [],
                 "reason": (
-                    "st no pertenece a los estados activos HAR-confirmados {5,6,11,12} "
-                    "ni al terminal 0; no se inventa una transición"
+                    "st no pertenece a los estados activos HAR-confirmados {5,6,11,12}, "
+                    "al terminal conocido 0, ni fue demostrado como final_result terminal "
+                    "por una ejecución remota exitosa; no se inventa una transición"
                 ),
             }
         )
@@ -110,6 +171,20 @@ def apply_d1_path_audit(
         progress(message)
 
     try:
+        Path(result.run_dir, "d1-state-coverage.json").write_text(
+            json.dumps(
+                {
+                    "observed_states": sorted(states),
+                    "active_states": active,
+                    "terminal_states": terminal,
+                    "evidence_backed_terminal_states": sorted(proven_terminal),
+                    "unknown_states": unknown,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
         Path(result.run_dir, "result.json").write_text(
             json.dumps(result.to_dict(), ensure_ascii=False, indent=2),
             encoding="utf-8",
