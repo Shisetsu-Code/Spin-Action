@@ -23,6 +23,7 @@ _CONTROLLER_PROTOTYPE_REFERENCE = re.compile(
     rf"\b({_IDENTIFIER}Controller)\s*\.\s*prototype\s*(?:\.\s*({_IDENTIFIER})|\[\s*['\"]({_IDENTIFIER})['\"]\s*\])",
     re.I,
 )
+_JS_META_REFERENCES = frozenset({"prototype"})
 
 
 def extract_client_action_evidence(source: str) -> dict[str, Any]:
@@ -41,10 +42,12 @@ def extract_client_action_evidence(source: str) -> dict[str, Any]:
     references.update(
         str(match.group(1))
         for match in _GAME_CONTROLLER_DOT_REFERENCE.finditer(text)
+        if str(match.group(1)).casefold() not in _JS_META_REFERENCES
     )
     references.update(
         str(match.group(1))
         for match in _GAME_CONTROLLER_BRACKET_REFERENCE.finditer(text)
+        if str(match.group(1)).casefold() not in _JS_META_REFERENCES
     )
 
     prototype_methods: dict[str, set[str]] = defaultdict(set)
