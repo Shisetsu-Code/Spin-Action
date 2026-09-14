@@ -11,7 +11,7 @@ import requests
 from tester_spin.providers.rubyplay.exhaustive import RubyPlayProvider
 
 
-HTML = r'''
+BRICKS_HTML = r'''
 <script>
 window.bricksData = {
   restApiUrl: "https://rubyplay.com/wp-json/bricks/v1/",
@@ -29,6 +29,15 @@ window.bricksData = {
 <!--brx-loop-end-alpha-->
 '''
 
+DOM_HTML = r'''
+<html><body>
+  <article><a href="https://rubyplay.com/games/volcano-rising-se/">Volcano Rising SE</a></article>
+  <article><a href="/games/go-high-panda/">Go High Panda</a></article>
+  <a href="https://rubyplay.com/es/games/">ES</a>
+  <a href="https://example.com/games/not-rubyplay/">Other</a>
+</body></html>
+'''
+
 
 class _TlsFailSession:
     def get(self, *_args, **_kwargs):
@@ -37,6 +46,7 @@ class _TlsFailSession:
 
 class _BrowserCatalog:
     instances = []
+    html = BRICKS_HTML
 
     def __init__(self, catalog_url: str, *, timeout_s: float = 30.0):
         self.catalog_url = catalog_url
@@ -54,7 +64,7 @@ class _BrowserCatalog:
     def fetch_catalog_html(self) -> tuple[str, str]:
         if not self.started:
             raise AssertionError("browser must be started before reading catalog HTML")
-        return HTML, self.catalog_url
+        return self.__class__.html, self.catalog_url
 
     def request_json(self, *_args, **_kwargs):
         raise AssertionError("one-page catalog must not paginate")
@@ -64,21 +74,27 @@ class _BrowserCatalog:
 
 
 class RubyPlayCatalogTlsFallbackTests(unittest.TestCase):
-    def test_initial_requests_tls_failure_uses_browser_without_disabling_tls(self) -> None:
+    def setUp(self) -> None:
         _BrowserCatalog.instances.clear()
+        _BrowserCatalog.html = BRICKS_HTML
+
+    def _crawl(self, provider: RubyPlayProvider, messages: list[str]):
+        with patch(
+            "tester_spin.providers.rubyplay.exhaustive.RubyPlayBrowserCatalogClient",
+            _BrowserCatalog,
+        ):
+            return provider.crawl_catalog(
+                stop_event=threading.Event(),
+                progress=messages.append,
+                max_pages=0,
+            )
+
+    def test_initial_requests_tls_failure_uses_browser_without_disabling_tls(self) -> None:
         messages: list[str] = []
         with tempfile.TemporaryDirectory() as temp:
             provider = RubyPlayProvider(Path(temp))
             provider.http = _TlsFailSession()  # type: ignore[assignment]
-            with patch(
-                "tester_spin.providers.rubyplay.exhaustive.RubyPlayBrowserCatalogClient",
-                _BrowserCatalog,
-            ):
-                games = provider.crawl_catalog(
-                    stop_event=threading.Event(),
-                    progress=messages.append,
-                    max_pages=0,
-                )
+            games = self._crawl(provider, messages)
 
         self.assertEqual([game.slug for game in games], ["alpha-1"])
         self.assertEqual(len(_BrowserCatalog.instances), 1)
@@ -88,6 +104,22 @@ class RubyPlayCatalogTlsFallbackTests(unittest.TestCase):
         self.assertTrue(any("TLS" in message for message in messages))
         self.assertTrue(any("Chromium" in message for message in messages))
         self.assertTrue(provider.catalog_crawl_authoritative)
+
+    def test_current_dom_without_bricks_query_yields_strict_game_targets_fail_closed(self) -> None:
+        _BrowserCatalog.html = DOM_HTML
+        messages: list[str] = []
+        with tempfile.TemporaryDirectory() as temp:
+            provider = RubyPlayProvider(Path(temp))
+            provider.http = _TlsFailSession()  # type: ignore[assignment]
+            games = self._crawl(provider, messages)
+
+        self.assertEqual(
+            sorted(game.slug for game in games),
+            ["go-high-panda", "volcano-rising-se"],
+        )
+        self.assertFalse(provider.catalog_crawl_authoritative)
+        self.assertIn("DOM", provider.catalog_crawl_reason)
+        self.assertTrue(any("DOM" in message for message in messages))
 
 
 if __name__ == "__main__":
