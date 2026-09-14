@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import re
 import threading
 from pathlib import Path
 from typing import Any
+from urllib.parse import urljoin, urlparse
 
 import requests
+from bs4 import BeautifulSoup
 
 from tester_spin.models import Game, GameTestResult
 from tester_spin.providers.base import GameCallback, Progress
@@ -14,6 +17,7 @@ from tester_spin.providers.rubyplay.browser_catalog import RubyPlayBrowserCatalo
 
 
 INDEX_BRANCH_ACTIONS = {"select", "pick"}
+_GAME_PATH_RE = re.compile(r"^/games/([a-z0-9][a-z0-9-]*)/?$")
 
 
 class _BrowserHTTPResponse:
@@ -98,6 +102,44 @@ class _BrowserCatalogSession:
         )
 
 
+def _strict_dom_games(html: str, base_url: str, provider_key: str) -> list[Game]:
+    """Extract only canonical RubyPlay /games/<slug>/ targets from rendered DOM."""
+    base = urlparse(base_url)
+    allowed_host = (base.hostname or "rubyplay.com").lower()
+    if allowed_host.startswith("www."):
+        allowed_host = allowed_host[4:]
+
+    soup = BeautifulSoup(html or "", "html.parser")
+    by_slug: dict[str, Game] = {}
+    for anchor in soup.find_all("a", href=True):
+        href = str(anchor.get("href") or "").strip()
+        if not href:
+            continue
+        absolute = urljoin(base_url, href)
+        parsed = urlparse(absolute)
+        host = (parsed.hostname or "").lower()
+        if host.startswith("www."):
+            host = host[4:]
+        if host != allowed_host:
+            continue
+        match = _GAME_PATH_RE.fullmatch(parsed.path or "")
+        if not match:
+            continue
+        slug = match.group(1)
+        if slug in by_slug:
+            continue
+        raw_name = " ".join(anchor.stripped_strings).strip()
+        name = raw_name or slug.replace("-", " ").title()
+        by_slug[slug] = Game(
+            provider=provider_key,
+            slug=slug,
+            name=name,
+            url=f"{parsed.scheme or 'https'}://{parsed.netloc}/games/{slug}/",
+            symbol="",
+        )
+    return sorted(by_slug.values(), key=lambda game: (game.slug.casefold(), game.name.casefold()))
+
+
 def _load_json(path: Path) -> dict[str, Any] | None:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
@@ -135,14 +177,6 @@ def apply_rubyplay_path_audit(
     *,
     progress: Progress,
 ) -> GameTestResult:
-    """Refuse OK when RubyPlay reached an indexed choice without a finite domain.
-
-    The HAR/client contract proves that ``select`` and ``pick`` carry an ``index``.
-    Current runtime evidence does not prove the complete set of legal indexes, so
-    choosing index 0 (or the sequential pick cursor) validates transport but not
-    exhaustive branch coverage. We preserve the observed indexes and leave the
-    domain explicitly unresolved instead of guessing an upper bound.
-    """
     if result.status in {"ERROR", "CANCELADO"} or not result.run_dir:
         return result
 
@@ -225,12 +259,33 @@ class RubyPlayProvider(_RubyPlayProvider):
         try:
             browser.start()
             self.http = _BrowserCatalogSession(browser, original_http)  # type: ignore[assignment]
-            return super().crawl_catalog(
-                stop_event=stop_event,
-                progress=progress,
-                max_pages=max_pages,
-                on_game=on_game,
-            )
+            try:
+                return super().crawl_catalog(
+                    stop_event=stop_event,
+                    progress=progress,
+                    max_pages=max_pages,
+                    on_game=on_game,
+                )
+            except ValueError as exc:
+                if "no se encontró query Bricks post_type=games" not in str(exc):
+                    raise
+                html, resolved_url = browser.fetch_catalog_html()
+                games = _strict_dom_games(html, resolved_url, self.key)
+                if not games:
+                    raise
+                reason = (
+                    "DOM fallback: el catálogo actual expone targets /games/<slug>/ "
+                    "pero no publica metadatos Bricks que demuestren exhaustividad"
+                )
+                self.set_catalog_authority(False, reason)
+                progress(
+                    f"RubyPlay catálogo DOM fallback: {len(games)} targets estrictos; "
+                    "autoridad=no hasta demostrar cierre del listado."
+                )
+                if on_game is not None:
+                    for game in games:
+                        on_game(game)
+                return games
         finally:
             self.http = original_http
             browser.close()
