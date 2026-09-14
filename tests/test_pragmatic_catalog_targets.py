@@ -35,25 +35,35 @@ class _Provider:
 
 
 class PragmaticCatalogTargetsTests(unittest.TestCase):
-    def test_short_initial_page_stops_without_ajax(self) -> None:
+    def test_short_initial_page_still_validates_ajax_page_two_before_declaring_end(self) -> None:
         provider = _Provider(
             [Game("pragmatic", "one", "One", "https://example.invalid/one")],
             per_page=2,
         )
         calls: list[int] = []
 
+        def fetch(_provider, page: int) -> AjaxPage:
+            calls.append(page)
+            return AjaxPage(
+                page=page,
+                url=f"https://example.invalid/games/?page={page}",
+                status=200,
+                elapsed_ms=1.0,
+                games=[Game("pragmatic", "two", "Two", "https://example.invalid/two")],
+            )
+
         games = enumerate_pragmatic_targets(
             provider,
             stop_event=threading.Event(),
             progress=lambda _message: None,
             items_per_page_override=2,
-            fetch_ajax=lambda _provider, page: calls.append(page),
+            fetch_ajax=fetch,
         )
 
-        self.assertEqual([game.slug for game in games], ["one"])
-        self.assertEqual(calls, [])
+        self.assertEqual(calls, [2])
+        self.assertEqual([game.slug for game in games], ["one", "two"])
 
-    def test_enumerates_sequentially_until_first_short_page_without_persisting(self) -> None:
+    def test_enumerates_sequentially_until_first_short_ajax_page_without_persisting(self) -> None:
         provider = _Provider(
             [
                 Game("pragmatic", "b", "B", "https://example.invalid/b"),
