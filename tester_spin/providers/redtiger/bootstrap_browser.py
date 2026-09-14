@@ -115,6 +115,27 @@ def _safe_trace_url(value: str) -> str:
     return urlunparse((parsed.scheme, parsed.netloc, "/".join(parts), "", query, ""))
 
 
+def _safe_response_headers(headers: dict[str, str]) -> dict[str, str]:
+    """Keep only non-credential response metadata useful for launcher diagnostics."""
+    allowed = {
+        "content-security-policy",
+        "content-type",
+        "cross-origin-embedder-policy",
+        "cross-origin-resource-policy",
+        "server",
+        "x-frame-options",
+    }
+    result: dict[str, str] = {}
+    for key, value in (headers or {}).items():
+        name = str(key or "").strip().casefold()
+        if name not in allowed:
+            continue
+        clean = re.sub(r"\s+", " ", str(value or "")).strip()
+        if clean:
+            result[name] = clean[:2000]
+    return dict(sorted(result.items()))
+
+
 def _header_shape(headers: dict[str, str]) -> dict[str, Any]:
     names = sorted({str(key).casefold() for key in (headers or {})})
     cookie_names: list[str] = []
@@ -377,14 +398,16 @@ def bootstrap_game(
                     or "/platform/game/" in parsed.path
                 )
                 if interesting and len(trace) < 600:
-                    trace.append(
-                        {
-                            "method": str(request.method or ""),
-                            "status": int(response.status),
-                            "resource_type": str(getattr(request, "resource_type", "") or ""),
-                            "url": _safe_trace_url(url),
-                        }
-                    )
+                    item: dict[str, Any] = {
+                        "method": str(request.method or ""),
+                        "status": int(response.status),
+                        "resource_type": str(getattr(request, "resource_type", "") or ""),
+                        "url": _safe_trace_url(url),
+                    }
+                    response_headers = _safe_response_headers(dict(response.headers or {}))
+                    if response_headers:
+                        item["response_headers"] = response_headers
+                    trace.append(item)
 
                 if _is_start_response(response):
                     start_statuses.append(int(response.status))
