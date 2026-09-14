@@ -4,6 +4,7 @@ from pathlib import Path
 
 from tester_spin.models import Game, GameTestResult
 from tester_spin.providers.belatra_exhaustive import BelatraProvider as _BelatraProvider
+from tester_spin.providers.farm_structure import attach_execution_structure
 from tester_spin.providers.result_farm_contract import (
     ProviderFarmSpec,
     build_result_farm_contract,
@@ -46,7 +47,8 @@ class BelatraProvider(_BelatraProvider):
         return self.game_dir(game)
 
     def build_farm_contract(self, game: Game, result: GameTestResult) -> dict:
-        return build_result_farm_contract(game, result, self.game_dir(game), _SPEC)
+        contract = build_result_farm_contract(game, result, self.game_dir(game), _SPEC)
+        return attach_execution_structure(contract)
 
     def validate_farm_contract(self, contract: dict) -> list[str]:
         return validate_result_farm_contract(contract, _SPEC)
