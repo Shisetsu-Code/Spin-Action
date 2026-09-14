@@ -33,6 +33,33 @@ class ProviderAdapter(ABC):
         self.catalog_crawl_authoritative = bool(authoritative)
         self.catalog_crawl_reason = str(reason or "")
 
+    def set_request_rate_limiter(self, limiter) -> None:
+        """Attach one limiter shared by every game worker for this provider instance."""
+        self._provider_request_rate_limiter = limiter
+
+    def acquire_provider_request_slot(
+        self,
+        *,
+        stop_event: threading.Event | None = None,
+    ) -> bool:
+        """Reserve one outbound provider-protocol request when a limiter is attached.
+
+        Normal Tester-Spin operation remains unchanged when no limiter is attached.
+        Soak/load runners attach exactly one limiter per provider instance so all
+        concurrent games share the same ceiling.
+        """
+        limiter = getattr(self, "_provider_request_rate_limiter", None)
+        if limiter is None:
+            return True
+        return bool(limiter.acquire(stop_event=stop_event))
+
+    def provider_request_rate_snapshot(self) -> dict[str, Any]:
+        limiter = getattr(self, "_provider_request_rate_limiter", None)
+        if limiter is None:
+            return {}
+        snapshot = limiter.snapshot()
+        return dict(snapshot) if isinstance(snapshot, dict) else {}
+
     def catalog_record_invalid_reason(self, game: Game) -> str:
         """Return a reason only for records that are provably malformed.
 
