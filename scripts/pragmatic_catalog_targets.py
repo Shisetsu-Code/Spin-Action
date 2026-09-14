@@ -30,12 +30,16 @@ def enumerate_pragmatic_targets(
     This lab-only enumerator deliberately performs only the catalog requests needed
     to identify game URLs. It does not call ``_persist_catalog_artifacts`` and it
     requests AJAX pages sequentially so it never over-fetches pages beyond the
-    first official short page.
+    first official short AJAX page.
 
-    ``max_pages=0`` means continue until the official terminal page. A positive
+    The initial HTML page is not authoritative for catalog termination. Pragmatic's
+    production crawler validates AJAX page 2 even when the initial page contains
+    fewer cards than ``items-per-page``; the lab enumerator mirrors that behavior.
+
+    ``max_pages=0`` means continue until the official terminal AJAX page. A positive
     value is a hard total-page cap and is useful only for sampling; reaching that
-    cap before a short page returns the games seen so far without claiming catalog
-    authority.
+    cap before a short AJAX page returns the games seen so far without claiming
+    catalog authority.
     """
     page_cap = max(0, int(max_pages))
     response = provider.http.get(provider.catalog_url, timeout=30.0)
@@ -60,7 +64,7 @@ def enumerate_pragmatic_targets(
         f"sin descargar miniaturas."
     )
 
-    if stop_event.is_set() or len(initial) < per_page or page_cap == 1:
+    if stop_event.is_set() or page_cap == 1:
         return sorted(by_slug.values(), key=lambda game: (game.slug.casefold(), game.name.casefold()))
 
     page = 2
