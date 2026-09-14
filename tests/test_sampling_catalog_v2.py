@@ -133,6 +133,70 @@ class SamplingCatalogV2Tests(unittest.TestCase):
             self.assertTrue(variant["evidence"][0]["files"][0]["sha256"])
             self.assertNotIn("semantic", variant)
 
+    def test_rubyplay_next_action_chain_is_part_of_wire_sequence_inventory(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            attempts = []
+            for number in range(1, 4):
+                directory = root / "SPIN" / f"attempt-{number:03d}"
+                directory.mkdir(parents=True)
+                if number < 3:
+                    (directory / "response.json").write_text(
+                        json.dumps({"status": "ok", "data": {"next_action": "spin"}}),
+                        encoding="utf-8",
+                    )
+                else:
+                    (directory / "response.json").write_text(
+                        json.dumps({"status": "ok", "data": {"next_action": "freespin"}}),
+                        encoding="utf-8",
+                    )
+                    (directory / "step-002-response.json").write_text(
+                        json.dumps({"status": "ok", "data": {"next_action": "spin"}}),
+                        encoding="utf-8",
+                    )
+                attempts.append(
+                    SpinAttempt(
+                        number=number,
+                        ok=True,
+                        terminal=True,
+                        mode_id="SPIN",
+                        mode_kind="SPIN",
+                        artifact_dir=str(directory),
+                    )
+                )
+
+            result = GameTestResult(
+                provider="rubyplay",
+                slug="natural-rubyplay-event",
+                game_name="Natural RubyPlay Event",
+                game_url="https://example.invalid",
+                requested_spins=3,
+                successful_spins=3,
+                failed_spins=0,
+                status="OK",
+                run_dir=str(root),
+                attempts=attempts,
+            )
+
+            catalog = build_sample_catalog(result)
+            group = catalog["groups"][0]
+
+            self.assertEqual(len(group["observed_state_sequences"]), 2)
+            self.assertEqual(len(group["unclassified_wire_variants"]), 1)
+            variant = group["unclassified_wire_variants"][0]
+            self.assertEqual(variant["first_attempt"], 3)
+            sequence = next(
+                row for row in group["observed_state_sequences"]
+                if row["id"] == variant["sequence_id"]
+            )
+            observed = [
+                tag["value"]
+                for state in sequence["observed_state_sequence"]
+                for tag in state
+                if tag["field"].endswith(".next_action")
+            ]
+            self.assertEqual(observed, ["freespin", "spin"])
+
     def test_wager_plan_prefers_minimum_provider_advertised_bet(self) -> None:
         plan = wager_plan_from_init({
             "options": {"default_bet": 200, "available_bets": [200, 20, 100]},
