@@ -61,3 +61,449 @@ def _sanitize_direct_http_headers(runtime: RedTigerRuntime) -> None:
             or any(ch in name for ch in "\r\n\t ")
         ):
             runtime.session.headers.pop(key, None)
+
+
+def _post_spin(
+    runtime: RedTigerRuntime,
+    *,
+    stake: Decimal,
+    feature_buy: FeatureBuy | None,
+    timeout_s: float,
+    stop_event,
+) -> tuple[int, dict[str, Any], dict[str, Any], list[str]]:
+    if stop_event.is_set():
+        raise InterruptedError("Detención solicitada antes del spin Red Tiger.")
+    payload = build_spin_payload(
+        runtime,
+        stake=stake,
+        feature_buy=feature_buy,
+        game_mode=0,
+    )
+    _sanitize_direct_http_headers(runtime)
+    request_timeout = min(5.0, max(1.0, float(timeout_s)))
+    response = runtime.session.post(runtime.spin_url, json=payload, timeout=request_timeout)
+    if stop_event.is_set():
+        raise InterruptedError("Detención solicitada durante el spin Red Tiger.")
+    status = int(response.status_code)
+    response.raise_for_status()
+    data = response.json()
+    if not isinstance(data, dict):
+        raise ValueError("Red Tiger spin no devolvió objeto JSON.")
+    valid, warnings = validate_spin_response(data)
+    if not valid:
+        raise ValueError("Red Tiger spin inválido: " + "; ".join(warnings))
+    apply_response_token(runtime, data)
+    return status, payload, data, warnings
+
+
+def _post_choice(
+    runtime: RedTigerRuntime,
+    *,
+    prompt: ChoicePrompt,
+    choice: str,
+    timeout_s: float,
+    stop_event,
+) -> tuple[int, str, dict[str, Any], dict[str, Any], list[str]]:
+    if stop_event.is_set():
+        raise InterruptedError("Detención solicitada antes del selector Red Tiger.")
+    endpoint = choice_url_from_spin_url(runtime.spin_url)
+    payload = build_choice_payload(runtime, prompt=prompt, choice=choice)
+    _sanitize_direct_http_headers(runtime)
+    request_timeout = min(5.0, max(1.0, float(timeout_s)))
+    response = runtime.session.post(endpoint, json=payload, timeout=request_timeout)
+    if stop_event.is_set():
+        raise InterruptedError("Detención solicitada durante el selector Red Tiger.")
+    status = int(response.status_code)
+    response.raise_for_status()
+    data = response.json()
+    if not isinstance(data, dict):
+        raise ValueError("Red Tiger choice no devolvió objeto JSON.")
+    valid, warnings = validate_spin_response(data)
+    if not valid:
+        raise ValueError("Red Tiger choice inválido: " + "; ".join(warnings))
+    apply_response_token(runtime, data)
+    return status, endpoint, payload, data, warnings
+
+
+def _merge_modes(*summaries: dict[str, Any]) -> list[str]:
+    found: list[str] = []
+    for summary in summaries:
+        values = summary.get("spin_modes") if isinstance(summary, dict) else None
+        if not isinstance(values, list):
+            continue
+        for value in values:
+            clean = str(value or "").strip()
+            if clean and clean not in found:
+                found.append(clean)
+    return found
+
+
+def _persist_runtime_metadata(provider, game: Game, runtime: RedTigerRuntime) -> None:
+    path = provider.game_dir(game) / "game.json"
+    current: dict[str, Any] = {}
+    if path.is_file():
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                current = loaded
+        except Exception:
+            current = {}
+    settings_game = runtime.settings_response.get("result", {}).get("game", {})
+    current.update(
+        {
+            "provider": provider.key,
+            "slug": game.slug,
+            "name": game.name,
+            "url": game.url,
+            "launch_id": game.symbol,
+            "runtime_game_id": runtime.game_id,
+            "runtime_transport": "http_json_platform_game",
+            "runtime_bootstrap": "games_evolution_start_iframe_observed_settings",
+            "settings_url": runtime.settings_url,
+            "spin_url": runtime.spin_url,
+            "stakes": [str(value) for value in runtime.stakes],
+            "default_stake": str(runtime.default_stake),
+            "feature_buys": [
+                {"name": feature.name, "multiplier": str(feature.multiplier)}
+                for feature in runtime.feature_buys
+            ],
+            "game_modes": settings_game.get("gameModes") if isinstance(settings_game, dict) else None,
+            "math_modes": settings_game.get("mathModes") if isinstance(settings_game, dict) else None,
+            "updated_at": utc_now_iso(),
+        }
+    )
+    path.write_text(json.dumps(current, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+class RedTigerExecutionMixin:
+    def test_game(
+        self,
+        game: Game,
+        *,
+        spins: int,
+        timeout_s: float,
+        stop_event,
+        progress: Progress,
+    ) -> GameTestResult:
+        repetitions = max(1, int(spins))
+        started_at = utc_now_iso()
+        started = time.monotonic()
+        run_dir = self.game_dir(game) / "tests" / _timestamp()
+        run_dir.mkdir(parents=True, exist_ok=True)
+
+        attempts: list[SpinAttempt] = []
+        errors: list[str] = []
+        warnings_all: list[str] = []
+        coverage_gaps: set[str] = set()
+        discovered_modes: list[dict[str, Any]] = []
+        successes = 0
+        responded = 0
+        runtime: RedTigerRuntime | None = None
+        cancelled = bool(stop_event.is_set())
+        mode_specs: list[tuple[str, str, FeatureBuy | None]] = []
+
+        launch_id = self.launch_id_for_game(game)
+        if not launch_id:
+            message = "Red Tiger: Evolution post id ausente; el catálogo debe descubrirlo antes de probar."
+            return GameTestResult(
+                provider=self.key,
+                slug=game.slug,
+                game_name=game.name,
+                game_url=game.url,
+                requested_spins=repetitions,
+                successful_spins=0,
+                failed_spins=repetitions,
+                status="ERROR",
+                symbol=game.symbol,
+                started_at=started_at,
+                finished_at=utc_now_iso(),
+                elapsed_ms=(time.monotonic() - started) * 1000.0,
+                error=message,
+                run_dir=str(run_dir),
+            )
+
+        try:
+            if cancelled:
+                raise InterruptedError("Detención solicitada antes de iniciar Red Tiger.")
+            progress(f"[{game.name}] Red Tiger: creando demo fresco para launchId={launch_id}...")
+            runtime = bootstrap_game(
+                game.url,
+                launch_id,
+                timeout_s=max(15.0, float(timeout_s)),
+                artifact_dir=run_dir / "bootstrap",
+                endpoints=self.bootstrap_endpoints,
+                progress=progress,
+                stop_event=stop_event,
+            )
+            if stop_event.is_set():
+                raise InterruptedError("Detención solicitada al terminar bootstrap Red Tiger.")
+            game.symbol = launch_id
+            _persist_runtime_metadata(self, game, runtime)
+
+            settings_game = runtime.settings_response.get("result", {}).get("game", {})
+            discovered_modes.append(
+                {
+                    "id": "SPIN",
+                    "kind": "SPIN",
+                    "observed": True,
+                    "executable": True,
+                    "wire_command": "platform/game/spin",
+                    "stake": str(runtime.default_stake),
+                    "stakes": [str(value) for value in runtime.stakes],
+                }
+            )
+            mode_specs = [("SPIN", "SPIN", None)]
+
+            for feature in runtime.feature_buys:
+                mode_id = f"PURCHASE_{_mode_id(feature.name)}"
+                discovered_modes.append(
+                    {
+                        "id": mode_id,
+                        "kind": "PURCHASE",
+                        "observed": True,
+                        "executable": True,
+                        "wire_command": "platform/game/spin",
+                        "feature_buy": feature.name,
+                        "feature_multiplier": str(feature.multiplier),
+                        "stake": str(runtime.default_stake),
+                        "cost": str(runtime.default_stake * feature.multiplier),
+                    }
+                )
+                mode_specs.append((mode_id, "PURCHASE", feature))
+
+            has_feature_buy = bool(settings_game.get("hasFeatureBuy")) if isinstance(settings_game, dict) else False
+            if has_feature_buy and not runtime.feature_buys:
+                coverage_gaps.add("FEATURE_BUY_CONTRACT")
+
+            game_modes = settings_game.get("gameModes") if isinstance(settings_game, dict) else None
+            if isinstance(game_modes, list) and game_modes:
+                discovered_modes.append(
+                    {
+                        "id": "GAME_MODES",
+                        "kind": "DISCOVERED_ONLY",
+                        "observed": True,
+                        "executable": False,
+                        "values": game_modes,
+                    }
+                )
+                coverage_gaps.add("GAME_MODES_WIRE_CONTRACT")
+
+            progress(
+                f"[{game.name}] Red Tiger SETTINGS OK: gameId={runtime.game_id}, "
+                f"stakes={len(runtime.stakes)}, default={runtime.default_stake}, "
+                f"compras={len(runtime.feature_buys)}, endpoint={runtime.spin_url}."
+            )
+        except InterruptedError as exc:
+            cancelled = True
+            progress(f"[{game.name}] Red Tiger CANCELADO: {exc}")
+            mode_specs = []
+        except Exception as exc:
+            if stop_event.is_set():
+                cancelled = True
+                progress(f"[{game.name}] Red Tiger CANCELADO durante cierre: {type(exc).__name__}: {exc}")
+            else:
+                message = f"{type(exc).__name__}: {exc}"
+                errors.append(message)
+                progress(f"[{game.name}] Red Tiger bootstrap/settings ERROR: {message}")
+            mode_specs = []
+
+        requested_total = repetitions * len(mode_specs) if mode_specs else repetitions
+
+        if runtime is not None and mode_specs and not cancelled:
+            try:
+                for mode_id, mode_kind, feature in mode_specs:
+                    if cancelled:
+                        break
+                    for repetition in range(1, repetitions + 1):
+                        if stop_event.is_set():
+                            cancelled = True
+                            break
+                        attempt_dir = run_dir / mode_id / f"attempt-{repetition:05d}"
+                        attempt_dir.mkdir(parents=True, exist_ok=True)
+                        attempt_started = time.monotonic()
+                        try:
+                            status_code, request_payload, response_payload, warnings = _post_spin(
+                                runtime,
+                                stake=runtime.default_stake,
+                                feature_buy=feature,
+                                timeout_s=timeout_s,
+                                stop_event=stop_event,
+                            )
+                            initial_summary = response_summary(response_payload)
+                            _write_json(attempt_dir / "request.json", sanitize_payload(request_payload))
+                            _write_json(attempt_dir / "response.json", sanitize_payload(response_payload))
+
+                            summaries = [initial_summary]
+                            continuation_records: list[dict[str, Any]] = []
+                            wire_steps = 1
+                            final_payload = response_payload
+
+                            for continuation_index in range(1, 9):
+                                prompt = pending_choice_from_response(final_payload)
+                                if prompt is None:
+                                    break
+                                selected_choice = prompt.available[0]
+                                choice_status, choice_endpoint, choice_request, choice_response, choice_warnings = _post_choice(
+                                    runtime,
+                                    prompt=prompt,
+                                    choice=selected_choice,
+                                    timeout_s=timeout_s,
+                                    stop_event=stop_event,
+                                )
+                                wire_steps += 1
+                                warnings.extend(choice_warnings)
+                                choice_summary = response_summary(choice_response)
+                                summaries.append(choice_summary)
+                                choice_dir = attempt_dir / f"choice-{continuation_index:02d}-{_mode_id(selected_choice)}"
+                                _write_json(choice_dir / "request.json", sanitize_payload(choice_request))
+                                _write_json(choice_dir / "response.json", sanitize_payload(choice_response))
+                                _write_json(choice_dir / "summary.json", choice_summary)
+                                continuation_records.append(
+                                    {
+                                        "round_id": prompt.round_id,
+                                        "available": list(prompt.available),
+                                        "selected": selected_choice,
+                                        "endpoint": choice_endpoint,
+                                        "status_code": choice_status,
+                                    }
+                                )
+                                choice_mode_id = f"{mode_id}__CHOICE_{continuation_index}"
+                                if not any(item.get("id") == choice_mode_id for item in discovered_modes):
+                                    discovered_modes.append(
+                                        {
+                                            "id": choice_mode_id,
+                                            "kind": "CHOICE_CONTINUATION",
+                                            "parent": mode_id,
+                                            "observed": True,
+                                            "executable": True,
+                                            "wire_command": "platform/game/choice",
+                                            "available": list(prompt.available),
+                                            "selected_for_validation": selected_choice,
+                                        }
+                                    )
+                                progress(
+                                    f"[{game.name}] {mode_id}: selector requerido; "
+                                    f"opciones={list(prompt.available)}, seleccionado={selected_choice}."
+                                )
+                                final_payload = choice_response
+                            else:
+                                warnings.append("selector Red Tiger no terminó tras 8 continuaciones")
+
+                            if pending_choice_from_response(final_payload) is not None:
+                                warnings.append("selector Red Tiger quedó pendiente")
+
+                            final_summary = response_summary(final_payload)
+                            merged_modes = _merge_modes(*summaries)
+                            combined_summary = dict(final_summary)
+                            combined_summary["spin_modes"] = merged_modes
+                            combined_summary["wire_steps"] = wire_steps
+                            combined_summary["choice_continuations"] = continuation_records
+                            _write_json(attempt_dir / "summary.json", combined_summary)
+
+                            responded += 1
+                            terminal = bool(final_summary.get("success")) and pending_choice_from_response(final_payload) is None
+                            validated = terminal and not warnings
+                            successes += int(validated)
+                            warnings_all.extend(warnings)
+                            elapsed_ms = (time.monotonic() - attempt_started) * 1000.0
+                            attempts.append(
+                                SpinAttempt(
+                                    number=repetition,
+                                    ok=validated,
+                                    mode_id=mode_id,
+                                    mode_kind=mode_kind,
+                                    status_code=status_code,
+                                    elapsed_ms=elapsed_ms,
+                                    symbol=runtime.game_id,
+                                    endpoint=runtime.spin_url,
+                                    na=",".join(merged_modes),
+                                    terminal=terminal,
+                                    wire_steps=wire_steps,
+                                    warning="; ".join(warnings),
+                                    artifact_dir=str(attempt_dir),
+                                )
+                            )
+                            progress(
+                                f"[{game.name}] {mode_id} {repetition}/{repetitions}: "
+                                f"{'OK' if validated else 'PARCIAL'} {elapsed_ms:.0f} ms, "
+                                f"spinModes={merged_modes or ['—']}, wireSteps={wire_steps}."
+                            )
+                        except InterruptedError as exc:
+                            cancelled = True
+                            progress(f"[{game.name}] {mode_id} CANCELADO: {exc}")
+                            break
+                        except Exception as exc:
+                            if stop_event.is_set():
+                                cancelled = True
+                                progress(
+                                    f"[{game.name}] {mode_id} CANCELADO durante I/O: "
+                                    f"{type(exc).__name__}: {exc}"
+                                )
+                                break
+                            message = f"{type(exc).__name__}: {exc}"
+                            errors.append(message)
+                            elapsed_ms = (time.monotonic() - attempt_started) * 1000.0
+                            attempts.append(
+                                SpinAttempt(
+                                    number=repetition,
+                                    ok=False,
+                                    mode_id=mode_id,
+                                    mode_kind=mode_kind,
+                                    elapsed_ms=elapsed_ms,
+                                    symbol=runtime.game_id,
+                                    endpoint=runtime.spin_url,
+                                    terminal=False,
+                                    wire_steps=0,
+                                    error=message,
+                                    artifact_dir=str(attempt_dir),
+                                )
+                            )
+                            progress(
+                                f"[{game.name}] {mode_id} {repetition}/{repetitions}: ERROR {message}"
+                            )
+            finally:
+                runtime.session.close()
+
+        elapsed_total = (time.monotonic() - started) * 1000.0
+        if cancelled or stop_event.is_set():
+            status = "CANCELADO"
+            error = "Detención solicitada por el usuario."
+        elif requested_total and successes == requested_total and not errors and not coverage_gaps:
+            status = "OK"
+            error = ""
+        elif responded:
+            status = "PARCIAL"
+            parts = [
+                f"Red Tiger respondió {responded}/{requested_total}; validados={successes}/{requested_total}."
+            ]
+            if coverage_gaps:
+                parts.append("Cobertura pendiente: " + ", ".join(sorted(coverage_gaps)) + ".")
+            if warnings_all:
+                parts.append("Diagnóstico: " + " | ".join(list(dict.fromkeys(warnings_all))[:6]))
+            if errors:
+                parts.append("Errores: " + " | ".join(list(dict.fromkeys(errors))[:4]))
+            error = " ".join(parts)
+        else:
+            status = "ERROR"
+            error = errors[0] if errors else "Red Tiger no completó ninguna acción."
+
+        result = GameTestResult(
+            provider=self.key,
+            slug=game.slug,
+            game_name=game.name,
+            game_url=game.url,
+            requested_spins=requested_total,
+            successful_spins=successes,
+            failed_spins=max(0, requested_total - successes),
+            status=status,
+            symbol=(runtime.game_id if runtime is not None else game.symbol),
+            discovered_modes=discovered_modes,
+            started_at=started_at,
+            finished_at=utc_now_iso(),
+            elapsed_ms=elapsed_total,
+            error=error,
+            run_dir=str(run_dir),
+            attempts=attempts,
+        )
+        _write_json(run_dir / "result.json", result.to_dict())
+        return result
