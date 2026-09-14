@@ -4,6 +4,7 @@ import threading
 import unittest
 
 from scripts.provider_catalog_manifest import (
+    build_validation_shards,
     enumerate_provider_targets,
     remaining_targets,
 )
@@ -72,6 +73,30 @@ class ProviderCatalogManifestTests(unittest.TestCase):
         }
         remaining = remaining_targets(games, previous)
         self.assertEqual([game.slug for game in remaining], ["beta", "gamma"])
+
+    def test_validation_shards_are_deterministic_and_cover_every_remaining_game_once(self) -> None:
+        games = [
+            Game("p", "delta", "Delta", "https://example.invalid/d"),
+            Game("p", "alpha", "Alpha", "https://example.invalid/a"),
+            Game("p", "charlie", "Charlie", "https://example.invalid/c"),
+            Game("p", "bravo", "Bravo", "https://example.invalid/b"),
+            Game("p", "echo", "Echo", "https://example.invalid/e"),
+        ]
+        previous = {"bravo": "COMPLETE", "delta": "UNKNOWN"}
+
+        shards = build_validation_shards(games, previous, shard_size=2)
+
+        self.assertEqual(
+            [[game.slug for game in shard] for shard in shards],
+            [["alpha", "charlie"], ["delta", "echo"]],
+        )
+        flattened = [game.slug for shard in shards for game in shard]
+        self.assertEqual(len(flattened), len(set(flattened)))
+        self.assertEqual(set(flattened), {"alpha", "charlie", "delta", "echo"})
+
+    def test_validation_shards_reject_non_positive_size(self) -> None:
+        with self.assertRaises(ValueError):
+            build_validation_shards([], {}, shard_size=0)
 
 
 if __name__ == "__main__":
