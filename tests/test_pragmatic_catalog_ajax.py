@@ -6,6 +6,7 @@ from tester_spin.models import Game
 from tester_spin.providers.pragmatic_catalog_ajax import (
     AjaxPage,
     _ajax_url,
+    _catalog_artifacts_enabled,
     _items_per_page,
     _looks_like_ajax_catalog,
 )
@@ -24,6 +25,18 @@ class PragmaticAjaxCatalogTests(unittest.TestCase):
     def test_reads_official_items_per_page_hidden_input(self) -> None:
         html = '<input type="hidden" name="items-per-page" value="9" />'
         self.assertEqual(_items_per_page(html), 9)
+
+    def test_catalog_artifact_persistence_defaults_on(self) -> None:
+        class Provider:
+            pass
+
+        self.assertTrue(_catalog_artifacts_enabled(Provider()))
+
+    def test_catalog_artifact_persistence_can_be_disabled_for_lab_enumeration(self) -> None:
+        class Provider:
+            catalog_persist_artifacts = False
+
+        self.assertFalse(_catalog_artifacts_enabled(Provider()))
 
     def test_ajax_page_with_game_is_valid(self) -> None:
         game = Game(
