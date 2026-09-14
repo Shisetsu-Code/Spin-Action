@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 
 from scripts.actions_provider_probe import (
+    build_direct_game,
     build_parser,
     provider_class_for,
     select_games,
@@ -28,6 +29,36 @@ class ActionsProviderProbeTests(unittest.TestCase):
         resolved = {key: provider_class_for(key).key for key in expected}
         self.assertEqual(resolved, {key: key for key in expected})
         self.assertEqual(provider_class_for("one_spin4win").key, "1spin4win")
+
+    def test_direct_target_builds_game_without_catalog(self) -> None:
+        game = build_direct_game(
+            provider_key="pragmatic",
+            slug="777-wheel-blitz",
+            name="777 Wheel Blitz",
+            url="https://www.pragmaticplay.com/en/games/777-wheel-blitz/",
+            symbol="vs5wheel7s",
+        )
+        self.assertEqual(game.provider, "pragmatic")
+        self.assertEqual(game.slug, "777-wheel-blitz")
+        self.assertEqual(game.symbol, "vs5wheel7s")
+
+    def test_direct_target_requires_slug_and_url(self) -> None:
+        with self.assertRaises(ValueError):
+            build_direct_game(
+                provider_key="pragmatic",
+                slug="",
+                name="Demo",
+                url="https://example.invalid/demo",
+                symbol="",
+            )
+        with self.assertRaises(ValueError):
+            build_direct_game(
+                provider_key="pragmatic",
+                slug="demo",
+                name="Demo",
+                url="",
+                symbol="",
+            )
 
     def test_game_selection_is_stable_and_supports_one_by_one_offsets(self) -> None:
         games = [
