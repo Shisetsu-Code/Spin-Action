@@ -46,6 +46,30 @@ def provider_class_for(key: str):
         raise ValueError(f"Proveedor no soportado: {key!r}") from exc
 
 
+def build_direct_game(
+    *,
+    provider_key: str,
+    slug: str,
+    name: str,
+    url: str,
+    symbol: str,
+) -> Game:
+    clean_slug = str(slug or "").strip()
+    clean_url = str(url or "").strip()
+    if not clean_slug:
+        raise ValueError("Un target directo requiere --slug")
+    if not clean_url:
+        raise ValueError("Un target directo requiere --game-url")
+    clean_name = str(name or "").strip() or clean_slug
+    return Game(
+        provider=str(provider_key or "").strip(),
+        slug=clean_slug,
+        name=clean_name,
+        url=clean_url,
+        symbol=str(symbol or "").strip(),
+    )
+
+
 def select_games(
     games: list[Game],
     *,
@@ -85,6 +109,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--provider", required=True, choices=sorted(_PROVIDER_CLASSES))
     parser.add_argument("--slug", default="", help="Slug exacto; vacío usa offset/limit.")
+    parser.add_argument(
+        "--game-url",
+        default="",
+        help="Si se informa, usa target directo y omite por completo el crawl de catálogo.",
+    )
+    parser.add_argument("--game-name", default="")
+    parser.add_argument("--symbol", default="")
     parser.add_argument("--game-offset", type=int, default=0)
     parser.add_argument("--game-limit", type=int, default=1)
     parser.add_argument("--spins", type=int, default=1)
@@ -163,35 +194,63 @@ def run_probe(args: argparse.Namespace) -> tuple[str, dict[str, Any]]:
     if requested_pages < 0:
         raise ValueError("--max-pages debe ser 0 o positivo")
     crawl_pages = 10_000 if requested_pages == 0 else max(1, requested_pages)
+    direct_target = bool(str(args.game_url or "").strip())
 
     progress(
-        f"LAB provider={provider.key} pages={requested_pages} spins={max(1, int(args.spins))} "
+        f"LAB provider={provider.key} target={'direct' if direct_target else 'catalog'} "
+        f"pages={requested_pages} spins={max(1, int(args.spins))} "
         f"har_fallback={'enabled' if args.allow_har_fallback else 'disabled'}"
     )
-    provider.set_catalog_authority(True, "")
-    games = provider.crawl_catalog(
-        stop_event=stop_event,
-        progress=progress,
-        max_pages=crawl_pages,
-        on_game=None,
-    )
-    _write_json(
-        output_dir / "catalog.json",
-        {
-            "provider": provider.key,
-            "count": len(games),
-            "authoritative": bool(provider.catalog_crawl_authoritative),
-            "authority_reason": str(provider.catalog_crawl_reason or ""),
-            "games": [_game_dict(game) for game in games],
-        },
-    )
 
-    selected = select_games(
-        games,
-        slug=args.slug,
-        offset=args.game_offset,
-        limit=args.game_limit,
-    )
+    if direct_target:
+        selected = [
+            build_direct_game(
+                provider_key=provider.key,
+                slug=args.slug,
+                name=args.game_name,
+                url=args.game_url,
+                symbol=args.symbol,
+            )
+        ]
+        games = list(selected)
+        _write_json(
+            output_dir / "catalog.json",
+            {
+                "provider": provider.key,
+                "mode": "direct-target",
+                "count": 1,
+                "authoritative": False,
+                "authority_reason": "catalog crawl intentionally skipped to minimize traffic",
+                "games": [_game_dict(selected[0])],
+            },
+        )
+        progress("Catálogo omitido: usando target directo conocido para evitar tráfico innecesario.")
+    else:
+        provider.set_catalog_authority(True, "")
+        games = provider.crawl_catalog(
+            stop_event=stop_event,
+            progress=progress,
+            max_pages=crawl_pages,
+            on_game=None,
+        )
+        _write_json(
+            output_dir / "catalog.json",
+            {
+                "provider": provider.key,
+                "mode": "crawl",
+                "count": len(games),
+                "authoritative": bool(provider.catalog_crawl_authoritative),
+                "authority_reason": str(provider.catalog_crawl_reason or ""),
+                "games": [_game_dict(game) for game in games],
+            },
+        )
+        selected = select_games(
+            games,
+            slug=args.slug,
+            offset=args.game_offset,
+            limit=args.game_limit,
+        )
+
     progress(
         "Selección: "
         + (", ".join(game.slug for game in selected) if selected else "<vacía>")
@@ -269,6 +328,10 @@ def run_probe(args: argparse.Namespace) -> tuple[str, dict[str, Any]]:
         "overall_verdict": overall,
         "settings": {
             "slug": str(args.slug or ""),
+            "game_url": str(args.game_url or ""),
+            "game_name": str(args.game_name or ""),
+            "symbol": str(args.symbol or ""),
+            "direct_target": direct_target,
             "game_offset": int(args.game_offset),
             "game_limit": int(args.game_limit),
             "spins": spins,
