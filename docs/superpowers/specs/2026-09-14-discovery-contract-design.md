@@ -4,7 +4,7 @@
 
 Al terminar el descubrimiento de un juego, cada proveedor debe generar un archivo estable y legible por scripts que describa únicamente lo que ya quedó resuelto y validado para ese juego.
 
-El archivo se llamará `farm-contract.json`. Su función en esta fase es exportar conocimiento; no ejecuta juegos ni vuelve a descubrir nada.
+El archivo se llama `farm-contract.json`. Tester-Spin **no ejecuta el farm masivo**: su responsabilidad termina al descubrir, validar y persistir la estructura. El farm será otro programa que consuma estos archivos sin GUI y sin volver a descubrir apuestas, compras o elecciones.
 
 ## Ubicación
 
@@ -17,6 +17,19 @@ data/providers/<provider>/<juego>/
 ```
 
 `farm-contract-candidate.json` representa el último discovery aunque sea parcial. `farm-contract.json` representa el último contrato completo y validado. Un discovery parcial nunca pisa un contrato bueno anterior.
+
+## Proveedores activos
+
+Los seis proveedores activos generan este formato:
+
+- Pragmatic Play
+- BGaming
+- RubyPlay
+- Red Tiger
+- Belatra
+- 1spin4win / D1
+
+Cada uno conserva su protocolo autónomo. El core no inventa un DSL universal de HTTP/WS ni mezcla reglas entre proveedores.
 
 ## Sobre común
 
@@ -32,9 +45,90 @@ Todos los proveedores exportan:
 - `continuations`: conocidas y no resueltas
 - `terminal_contract`: semántica terminal identificada por el proveedor
 - `protocol`: bloque específico del proveedor
-- `unresolved`: motivos exactos que impiden usar el contrato como completo
+- `execution_structure`: vista de lectura para el futuro farm
+- `unresolved`: motivos exactos que impiden considerar completo el contrato
 
-El core valida sólo el sobre común. Cada proveedor construye y valida su bloque `protocol`.
+## `execution_structure`
+
+Esta sección es deliberadamente una **vista de lectura**, no un lenguaje de requests. Resume lo ya descubierto para evitar resolver otra vez la superficie de apuestas y elecciones.
+
+```json
+{
+  "execution_structure": {
+    "wagers": [
+      {
+        "mode_id": "SPIN",
+        "kind": "SPIN",
+        "evidence": "DEMOSTRADO",
+        "executor": "spin",
+        "parameters": {}
+      },
+      {
+        "mode_id": "PURCHASE_BONUS",
+        "kind": "PURCHASE",
+        "evidence": "DEMOSTRADO",
+        "executor": "spin",
+        "cost_multiplier": 100,
+        "parameters": {
+          "purchased_feature": "bonus_buy"
+        }
+      }
+    ],
+    "choices": [
+      {
+        "mode_id": "PURCHASE_BONUS__CHOICE_ROOT",
+        "kind": "FSO_BRANCH",
+        "evidence": "DEMOSTRADO",
+        "executor": "choose",
+        "parent": "PURCHASE_BONUS",
+        "prefix": [],
+        "domain": ["0", "1"],
+        "covered": ["0", "1"],
+        "coverage_complete": true,
+        "parameters": {}
+      }
+    ],
+    "provider_domains": {}
+  }
+}
+```
+
+### `wagers`
+
+Incluye únicamente modos de apuesta conocidos: `SPIN`, `ANTE_BET`, `PURCHASE` y sus variantes ya descubiertas. Cada entrada conserva los parámetros estables que el módulo del proveedor ya conoce, por ejemplo:
+
+- índices `bl/pur` y costos en Pragmatic;
+- `allowed_bets`, `default_bet`, `effective_stake`, tipos y multiplicadores de compra en RubyPlay;
+- `stake`, `feature_buy`, multiplicadores y costos en Red Tiger;
+- selectores, `mathType`, `vipOn`, `line_bet` y `bet` en Belatra;
+- estados conocidos en D1 cuando forman parte del contrato;
+- opciones, features comprables, niveles y multiplicadores en BGaming.
+
+No se inventa un valor ausente. Si el discovery no lo conoce, el archivo no lo fabrica.
+
+### `choices`
+
+Incluye elecciones y ramas ya descubiertas, por ejemplo `CONTINUATION`, `CHOICE_CONTINUATION`, `FSO_BRANCH` e `INDEXED_CHOICE`.
+
+Cuando existe un dominio explícito se conserva:
+
+- `domain`: opciones que el proveedor anunció o que el discovery probó como necesarias;
+- `covered`: opciones realmente cubiertas;
+- `coverage_complete`: `true/false` sólo cuando hay evidencia explícita suficiente; `null` cuando no corresponde afirmar cobertura;
+- `parent` y `prefix`: posición de la elección dentro del flujo cuando están disponibles;
+- `parameters`: metadata específica del proveedor.
+
+### `provider_domains`
+
+Conserva dominios estables que no pertenecen a un único modo pero son necesarios para interpretar la superficie del juego.
+
+Ejemplos actuales:
+
+- BGaming: `spin_option_choices`, `effective_bet_selector`, `effective_bet_multipliers`, `purchase_features`;
+- RubyPlay: `bet_profile`, `client_profile`;
+- Red Tiger: `stakes`, `default_stake`, `feature_buys`, `game_modes`, `math_modes`.
+
+Pragmatic, Belatra y D1 pueden dejar este objeto vacío cuando toda su estructura ya está expresada en `wagers`/`choices`. Vacío significa “no hay dominio adicional persistido”, no “inventar uno”.
 
 ## Evidencia
 
@@ -45,7 +139,7 @@ Cada modo conserva uno de estos estados:
 - `CANDIDATO_WIRE`: el formato parece conocido pero no fue demostrado en esta corrida.
 - `SOLO_ANUNCIADO`: el proveedor anuncia que existe pero el wire no está demostrado.
 
-Sólo los modos `DEMOSTRADO` cuentan como resueltos.
+Sólo `DEMOSTRADO` cuenta como resuelto. Los otros estados pueden aparecer en el candidate para diagnóstico, pero nunca deben presentarse como estructura ejecutable confirmada.
 
 ## Promoción
 
@@ -65,20 +159,6 @@ Si no cumple, se guarda candidate con `ready=false` y no se toca el contrato pub
 
 No se persisten cookies, tokens de sesión, CSRF, authorization, credenciales, round IDs efímeros, signed URLs temporales ni secretos equivalentes.
 
-## Interfaz de proveedor
-
-`ProviderAdapter` incorporará hooks neutrales para exportación:
-
-```python
-def build_farm_contract(self, game: Game, result: GameTestResult) -> dict[str, Any]:
-    ...
-
-def validate_farm_contract(self, contract: dict[str, Any]) -> list[str]:
-    ...
-```
-
-Los proveedores que todavía no implementen un contrato específico podrán generar un candidate `ready=false` indicando `PROVIDER_CONTRACT_UNSUPPORTED`; no se rompe su discovery actual.
-
 ## Integración
 
 La generación ocurre después de `provider.finalize_test_result()` para trabajar sobre el estado final real:
@@ -86,7 +166,8 @@ La generación ocurre después de `provider.finalize_test_result()` para trabaja
 ```text
 provider.test_game()
 → provider.finalize_test_result()
-→ build_farm_contract()
+→ provider.build_farm_contract()
+→ construir execution_structure
 → validar
 → guardar candidate
 → promover si ready
@@ -96,31 +177,29 @@ Un fallo al escribir estos artefactos es diagnóstico y no cambia un `OK/PARCIAL
 
 ## Aislamiento
 
-No se crea un DSL universal de HTTP/WS. El bloque `protocol` es autónomo por proveedor. El core no contiene lógica del tipo `if provider == "bgaming"`.
-
-## Primera implementación
-
-BGaming será el primer proveedor con bloque `protocol` completo porque ya tiene evidencia por modo (`DEMOSTRADO`, `NO_VALIDADO`, `CANDIDATO_WIRE`, `SOLO_ANUNCIADO`).
-
-Pragmatic, RubyPlay, Red Tiger, Belatra y D1/OneSpin4Win usarán el mismo sobre y añadirán su bloque específico sin cambiar el core.
-
-## Tests mínimos
-
-- contrato común válido;
-- schema inválido;
-- unresolved impide promoción;
-- modo obligatorio no demostrado impide promoción;
-- todos los modos obligatorios demostrados permiten promoción;
-- candidate parcial no pisa contrato previo;
-- sanitización impide secretos;
-- BGaming genera contrato estable desde resultado final;
-- proveedor no soportado genera candidate explícito y no rompe discovery;
-- concurrencia de juegos no mezcla contratos.
+No se crea un DSL universal de HTTP/WS. El bloque `protocol` sigue siendo autónomo por proveedor. `execution_structure` sólo normaliza la lectura de apuestas y elecciones descubiertas; no serializa requests ni decide transiciones.
 
 ## No objetivos de esta fase
 
-Esta fase no implementa el farm masivo, no ejecuta contratos headless, no añade UI analysis, no añade HAR analysis y no redescubre protocolo fuera del flujo actual.
+Tester-Spin no implementa aquí:
+
+- farm masivo;
+- ejecución headless de contratos;
+- workers distribuidos;
+- scripts de explotación/farm;
+- redescubrimiento durante el farm;
+- UI analysis, OCR o canvas analysis nuevos.
+
+Todo eso, si se necesita, pertenece al programa de farm futuro que consumirá `farm-contract.json`.
 
 ## Criterio de aceptación
 
-Después de probar un juego, existe un `analysis/farm-contract-candidate.json` fiel al resultado final. Si el juego quedó completamente resuelto, también existe `farm-contract.json` listo para lectura futura. Si quedó parcial, el contrato publicado anterior permanece intacto y el candidate explica exactamente qué falta.
+Después de probar un juego existe `analysis/farm-contract-candidate.json` fiel al resultado final. Si el juego quedó completamente resuelto, también existe `farm-contract.json`.
+
+Para los seis proveedores activos, el contrato contiene `execution_structure` con:
+
+- `wagers`: apuestas/modos conocidos y sus parámetros estables;
+- `choices`: elecciones/ramas conocidas y sus dominios/cobertura;
+- `provider_domains`: dominios globales específicos del proveedor cuando existen.
+
+El programa futuro debe poder leer esa estructura sin volver a analizar la GUI ni redescubrir qué apuestas o elecciones existen.
