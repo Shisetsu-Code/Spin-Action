@@ -5,6 +5,7 @@ import time
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from collections.abc import Callable, Iterable
 
+from tester_spin.farm_contract import export_farm_contract
 from tester_spin.models import Game, GameTestResult
 from tester_spin.providers.base import ProviderAdapter
 
@@ -76,7 +77,14 @@ def run_game_tests(
             progress=game_progress,
         )
         result.samples_per_path = spins_per_game
-        return provider.finalize_test_result(result, progress=game_progress)
+        result = provider.finalize_test_result(result, progress=game_progress)
+        export_farm_contract(
+            provider,
+            game,
+            result,
+            progress=game_progress,
+        )
+        return result
 
     in_flight: dict[Future[GameTestResult], Game] = {}
     next_index = 0
