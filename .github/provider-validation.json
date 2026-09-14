@@ -1,5 +1,5 @@
 {
-  "provider": "bgaming",
+  "provider": "rubyplay",
   "slug": "",
   "game_url": "",
   "game_name": "",
@@ -10,6 +10,6 @@
   "timeout": 60,
   "max_pages": 0,
   "allow_har_fallback": false,
-  "install_browser": false,
-  "run_sequence": 34
+  "install_browser": true,
+  "run_sequence": 35
 }
