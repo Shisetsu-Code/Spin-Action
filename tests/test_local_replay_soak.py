@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import json
 import socket
+import tempfile
 import threading
 import time
 import unittest
+from pathlib import Path
 from unittest import mock
 
+from scripts.local_replay_soak import discover_sample_catalogs, run_corpus
 from tester_spin.local_replay_soak import replay_game_catalog, run_provider_replays
 
 
@@ -135,6 +139,59 @@ class LocalReplaySoakTests(unittest.TestCase):
         self.assertEqual(len(rows), 8)
         self.assertLessEqual(peak, 3)
         self.assertGreaterEqual(peak, 2)
+
+    def test_corpus_discovers_multiple_providers_and_writes_reports(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "input"
+            out = Path(temp) / "out"
+            for provider, game in (("rubyplay", "alpha"), ("pragmatic", "beta")):
+                catalog = _catalog(spin_samples=[_sample("base", attempt=1)])
+                catalog["provider"] = provider
+                catalog["game"] = game
+                target = root / provider / game / "sample-catalog.json"
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(json.dumps(catalog), encoding="utf-8")
+
+            found = discover_sample_catalogs(root)
+            summary = run_corpus(root, out, iterations=25, concurrency=3)
+
+            self.assertEqual(len(found), 2)
+            self.assertEqual(summary["games_total"], 2)
+            self.assertEqual(summary["providers"], ["pragmatic", "rubyplay"])
+            self.assertTrue((out / "rubyplay" / "alpha" / "replay-soak.json").is_file())
+            self.assertTrue((out / "pragmatic" / "beta" / "replay-soak.json").is_file())
+            self.assertTrue((out / "summary.json").is_file())
+
+    def test_corpus_reports_malformed_catalog_instead_of_skipping_it(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "input"
+            out = Path(temp) / "out"
+            bad = root / "rubyplay" / "broken" / "sample-catalog.json"
+            bad.parent.mkdir(parents=True, exist_ok=True)
+            bad.write_text("{not-json", encoding="utf-8")
+
+            summary = run_corpus(root, out, iterations=10, concurrency=3)
+
+            self.assertEqual(summary["games_total"], 1)
+            self.assertEqual(summary["rows"][0]["stop_reason"], "MALFORMED_SAMPLE_CATALOG")
+            self.assertIn("JSONDecodeError", summary["rows"][0]["error"])
+
+    def test_corpus_reports_duplicate_provider_game_identity_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "input"
+            out = Path(temp) / "out"
+            for folder in ("first", "second"):
+                catalog = _catalog(spin_samples=[_sample("base", attempt=1)])
+                catalog["provider"] = "rubyplay"
+                catalog["game"] = "duplicate"
+                target = root / folder / "sample-catalog.json"
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(json.dumps(catalog), encoding="utf-8")
+
+            summary = run_corpus(root, out, iterations=10, concurrency=3)
+
+            reasons = [row["stop_reason"] for row in summary["rows"]]
+            self.assertEqual(reasons.count("DUPLICATE_PROVIDER_GAME"), 2)
 
 
 if __name__ == "__main__":
