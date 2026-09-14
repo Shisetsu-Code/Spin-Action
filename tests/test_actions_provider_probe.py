@@ -1,15 +1,35 @@
 from __future__ import annotations
 
+import threading
 import unittest
 
 from scripts.actions_provider_probe import (
     build_direct_game,
     build_parser,
+    enumerate_catalog_for_probe,
     provider_class_for,
     select_games,
     summarize_audits,
 )
 from tester_spin.models import Game
+
+
+class _CatalogProvider:
+    key = "test-provider"
+
+    def __init__(self) -> None:
+        self.downloads = 0
+
+    def _download_thumbnail(self, game, progress) -> None:
+        self.downloads += 1
+
+    def catalog_record_invalid_reason(self, game) -> str:
+        return ""
+
+    def crawl_catalog(self, *, stop_event, progress, max_pages, on_game=None):
+        game = Game(self.key, "alpha", "Alpha", "https://example.invalid/alpha")
+        self._download_thumbnail(game, progress)
+        return [game]
 
 
 class ActionsProviderProbeTests(unittest.TestCase):
@@ -29,6 +49,17 @@ class ActionsProviderProbeTests(unittest.TestCase):
         resolved = {key: provider_class_for(key).key for key in expected}
         self.assertEqual(resolved, {key: key for key in expected})
         self.assertEqual(provider_class_for("one_spin4win").key, "1spin4win")
+
+    def test_probe_catalog_enumeration_uses_low_traffic_manifest_path(self) -> None:
+        provider = _CatalogProvider()
+        games = enumerate_catalog_for_probe(
+            provider,
+            requested_pages=1,
+            stop_event=threading.Event(),
+            progress=lambda _message: None,
+        )
+        self.assertEqual([game.slug for game in games], ["alpha"])
+        self.assertEqual(provider.downloads, 0)
 
     def test_direct_target_builds_game_without_catalog(self) -> None:
         game = build_direct_game(
