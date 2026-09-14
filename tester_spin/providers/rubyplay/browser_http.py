@@ -10,7 +10,8 @@ class RubyPlayVerifiedBrowserTransport:
 
     TLS verification remains enabled: no ``ignore_https_errors`` and no
     certificate/hostname bypasses are configured. Chromium is launched lazily
-    on the first fallback request and is closed with the owning provider session.
+    for one fallback request and then closed immediately so Sync Playwright
+    state cannot leak into a later browser bootstrap in the same thread.
     """
 
     def __init__(self) -> None:
@@ -94,7 +95,7 @@ class RubyPlayVerifiedBrowserTransport:
 
 
 class RubyPlayTlsFallbackSession:
-    """requests-shaped session with a lazy, verified Chromium GET fallback."""
+    """requests-shaped session with an ephemeral verified Chromium GET fallback."""
 
     def __init__(
         self,
@@ -103,14 +104,8 @@ class RubyPlayTlsFallbackSession:
         transport_factory: Callable[[], RubyPlayVerifiedBrowserTransport] = RubyPlayVerifiedBrowserTransport,
     ) -> None:
         self._base = base_session
-        self._browser: RubyPlayVerifiedBrowserTransport | None = None
         self._transport_factory = transport_factory
         self.headers = base_session.headers
-
-    def _browser_transport(self) -> RubyPlayVerifiedBrowserTransport:
-        if self._browser is None:
-            self._browser = self._transport_factory()
-        return self._browser
 
     @staticmethod
     def _timeout_seconds(kwargs: dict[str, Any]) -> float:
@@ -127,21 +122,20 @@ class RubyPlayTlsFallbackSession:
         try:
             return self._base.get(url, **kwargs)
         except requests.exceptions.SSLError:
-            return self._browser_transport().get(
-                str(url),
-                timeout_s=self._timeout_seconds(kwargs),
-            )
+            transport = self._transport_factory()
+            try:
+                return transport.get(
+                    str(url),
+                    timeout_s=self._timeout_seconds(kwargs),
+                )
+            finally:
+                transport.close()
 
     def post(self, *args, **kwargs):
         return self._base.post(*args, **kwargs)
 
     def close(self) -> None:
-        try:
-            self._base.close()
-        finally:
-            if self._browser is not None:
-                self._browser.close()
-                self._browser = None
+        self._base.close()
 
     def __getattr__(self, name: str):
         return getattr(self._base, name)
