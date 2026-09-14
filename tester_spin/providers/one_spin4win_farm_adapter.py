@@ -35,8 +35,34 @@ _SPEC = ProviderFarmSpec(
 )
 
 
+class _RateLimitedWebSocket:
+    """Transparent websocket proxy that accounts every outbound D1 frame."""
+
+    def __init__(self, provider: "OneSpin4WinProvider", websocket) -> None:
+        self._provider = provider
+        self._websocket = websocket
+
+    def send(self, value):
+        if not self._provider.acquire_provider_request_slot():
+            raise InterruptedError("D1 request cancelled by provider rate limiter")
+        return self._websocket.send(value)
+
+    def recv(self, *args, **kwargs):
+        return self._websocket.recv(*args, **kwargs)
+
+    def close(self, *args, **kwargs):
+        return self._websocket.close(*args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._websocket, name)
+
+
 class OneSpin4WinProvider(_OneSpin4WinProvider):
     """Active D1 provider with post-discovery farm export hooks."""
+
+    def _open_websocket(self, spec: dict, timeout_s: float):
+        websocket = super()._open_websocket(spec, timeout_s)
+        return _RateLimitedWebSocket(self, websocket)
 
     def test_natural_spins(
         self,
