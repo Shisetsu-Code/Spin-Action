@@ -1,9 +1,9 @@
 {
   "provider": "rubyplay",
-  "slug": "diamond-explosion-sweet-love",
-  "game_url": "https://rubyplay.com/games/diamond-explosion-sweet-love/",
-  "game_name": "Diamond Explosion Sweet Love",
-  "symbol": "rp_101",
+  "slug": "elephant-stampede",
+  "game_url": "https://rubyplay.com/games/elephant-stampede/",
+  "game_name": "Elephant Stampede",
+  "symbol": "rp_42",
   "game_offset": 0,
   "game_limit": 1,
   "spins": 50,
@@ -11,5 +11,5 @@
   "max_pages": 1,
   "allow_har_fallback": false,
   "install_browser": true,
-  "run_sequence": 24
+  "run_sequence": 25
 }
