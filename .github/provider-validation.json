@@ -1,8 +1,8 @@
 {
-  "provider": "pragmatic",
-  "slug": "ra-vs-osiris",
-  "game_url": "https://www.pragmaticplay.com/en/games/ra-vs-osiris/",
-  "game_name": "Ra vs Osiris",
+  "provider": "rubyplay",
+  "slug": "",
+  "game_url": "",
+  "game_name": "",
   "symbol": "",
   "game_offset": 0,
   "game_limit": 1,
@@ -11,5 +11,5 @@
   "max_pages": 1,
   "allow_har_fallback": false,
   "install_browser": false,
-  "run_sequence": 3
+  "run_sequence": 4
 }
