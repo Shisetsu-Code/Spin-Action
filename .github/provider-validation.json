@@ -1,15 +1,15 @@
 {
   "provider": "rubyplay",
-  "slug": "",
-  "game_url": "",
-  "game_name": "",
-  "symbol": "",
+  "slug": "diamond-explosion-7s",
+  "game_url": "https://rubyplay.com/games/diamond-explosion-7s/",
+  "game_name": "Diamond Explosion ® 7s Max Win: 8,000x",
+  "symbol": "rp_72",
   "game_offset": 0,
-  "game_limit": 10,
-  "spins": 1,
+  "game_limit": 1,
+  "spins": 50,
   "timeout": 60,
   "max_pages": 1,
   "allow_har_fallback": false,
   "install_browser": true,
-  "run_sequence": 21
+  "run_sequence": 22
 }
