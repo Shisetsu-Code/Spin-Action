@@ -1,9 +1,19 @@
 from __future__ import annotations
 
+import tempfile
+import threading
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
-from tester_spin.models import GameTestResult
+from tester_spin.models import Game, GameTestResult
+from tester_spin.providers.rubyplay.execution import RubyPlayExecutionMixin
+from tester_spin.providers.rubyplay.runtime import (
+    LauncherConfig,
+    RubyPlayClientProfile,
+    RubyPlayRuntime,
+)
 
 
 def _result(*, modes: list[dict], status: str = "OK") -> GameTestResult:
@@ -21,12 +31,9 @@ def _result(*, modes: list[dict], status: str = "OK") -> GameTestResult:
 
 
 def _annotate(result: GameTestResult, *, capability, available, feature_type="") -> GameTestResult:
-    try:
-        from tester_spin.providers.rubyplay.action_inventory import (
-            annotate_rubyplay_action_inventory,
-        )
-    except ImportError as exc:  # RED until the provider-specific inventory exists.
-        raise AssertionError("RubyPlay action inventory annotator is missing") from exc
+    from tester_spin.providers.rubyplay.action_inventory import (
+        annotate_rubyplay_action_inventory,
+    )
 
     runtime = SimpleNamespace(
         client_profile=SimpleNamespace(
@@ -38,6 +45,30 @@ def _annotate(result: GameTestResult, *, capability, available, feature_type="")
         init_data={"data": {"buy_feature_available": available}},
     )
     return annotate_rubyplay_action_inventory(result, runtime)
+
+
+class _Session:
+    def close(self) -> None:
+        return None
+
+
+class _Response:
+    status_code = 200
+
+
+class _Provider(RubyPlayExecutionMixin):
+    key = "rubyplay"
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+
+    def game_dir(self, game: Game) -> Path:
+        path = self.root / game.slug
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def _new_session(self) -> _Session:
+        return _Session()
 
 
 class RubyPlayActionInventoryTests(unittest.TestCase):
@@ -92,6 +123,87 @@ class RubyPlayActionInventoryTests(unittest.TestCase):
         inventory = result.structural_map["action_inventory"]
         self.assertEqual(inventory["state"], "UNKNOWN")
         self.assertIn("unresolved", inventory["reason"].lower())
+
+    def test_execution_attaches_inventory_from_its_bootstrap_runtime(self) -> None:
+        profile = RubyPlayClientProfile(
+            protocol_version=2,
+            math_version=20220204,
+            wager=2.0,
+            buy_feature_client_supported=False,
+            actions=["init", "spin"],
+        )
+        runtime = RubyPlayRuntime(
+            session=_Session(),  # type: ignore[arg-type]
+            launcher=LauncherConfig(
+                launcher_url="https://launcher.example/launcher?x=1",
+                gamename="rp_72",
+                operator="rubyplay.com",
+                server_url="https://srv.example",
+                currency="EUR",
+                mode="fun",
+                lang="en",
+            ),
+            client_profile=profile,
+            session_key="opaque",
+            fun_mode_data={"gameId": 72},
+            init_data={"data": {"buy_feature_available": False}},
+            bets=[2, 5, 10],
+            default_bet=2,
+            default_bet_index=0,
+            currency="EUR",
+            subunit=100,
+            action_number=0,
+            next_action="spin",
+        )
+        game = Game(
+            provider="rubyplay",
+            slug="diamond-explosion-7s",
+            name="Diamond Explosion 7s",
+            url="https://rubyplay.com/games/diamond-explosion-7s/",
+        )
+
+        def fake_post(runtime_obj, action, **kwargs):
+            previous = runtime_obj.action_number
+            runtime_obj.action_number += 1
+            runtime_obj.next_action = "spin"
+            return (
+                _Response(),
+                {"action": action, "bet": kwargs.get("bet")},
+                {
+                    "status": "ok",
+                    "data": {
+                        "an": runtime_obj.action_number,
+                        "next_action": "spin",
+                        "player": {"balance": 1000000},
+                    },
+                },
+                previous,
+            )
+
+        with tempfile.TemporaryDirectory() as temp:
+            provider = _Provider(Path(temp))
+            with (
+                patch("tester_spin.providers.rubyplay.execution.bootstrap_game", return_value=runtime),
+                patch("tester_spin.providers.rubyplay.execution.post_action", side_effect=fake_post),
+                patch("tester_spin.providers.rubyplay.execution.validate_action_response", return_value=[]),
+            ):
+                result = provider.test_game(
+                    game,
+                    spins=1,
+                    timeout_s=5.0,
+                    stop_event=threading.Event(),
+                    progress=lambda _message: None,
+                )
+
+        self.assertEqual(result.status, "OK")
+        self.assertEqual(
+            result.structural_map["action_inventory"]["state"],
+            "COMPLETE",
+        )
+        self.assertEqual(
+            result.structural_map["action_inventory"]["root_actions"],
+            ["SPIN"],
+        )
 
 
 if __name__ == "__main__":
