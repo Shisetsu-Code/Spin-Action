@@ -44,6 +44,20 @@ class _TlsFailSession:
         raise requests.exceptions.SSLError("unable to get local issuer certificate")
 
 
+class _HttpDomSession:
+    def __init__(self) -> None:
+        self.get_calls = 0
+
+    def get(self, url: str, *_args, **_kwargs):
+        self.get_calls += 1
+        response = requests.Response()
+        response.status_code = 200
+        response.url = url
+        response._content = DOM_HTML.encode("utf-8")
+        response.encoding = "utf-8"
+        return response
+
+
 class _BrowserCatalog:
     instances = []
     html = BRICKS_HTML
@@ -117,6 +131,24 @@ class RubyPlayCatalogTlsFallbackTests(unittest.TestCase):
             sorted(game.slug for game in games),
             ["go-high-panda", "volcano-rising-se"],
         )
+        self.assertFalse(provider.catalog_crawl_authoritative)
+        self.assertIn("DOM", provider.catalog_crawl_reason)
+        self.assertTrue(any("DOM" in message for message in messages))
+
+    def test_http_200_current_dom_reuses_saved_html_without_second_request(self) -> None:
+        messages: list[str] = []
+        with tempfile.TemporaryDirectory() as temp:
+            provider = RubyPlayProvider(Path(temp))
+            session = _HttpDomSession()
+            provider.http = session  # type: ignore[assignment]
+            games = self._crawl(provider, messages)
+
+        self.assertEqual(
+            sorted(game.slug for game in games),
+            ["go-high-panda", "volcano-rising-se"],
+        )
+        self.assertEqual(session.get_calls, 1)
+        self.assertEqual(_BrowserCatalog.instances, [])
         self.assertFalse(provider.catalog_crawl_authoritative)
         self.assertIn("DOM", provider.catalog_crawl_reason)
         self.assertTrue(any("DOM" in message for message in messages))
