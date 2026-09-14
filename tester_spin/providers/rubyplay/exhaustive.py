@@ -243,6 +243,39 @@ class RubyPlayProvider(_RubyPlayProvider):
             transport_factory=RubyPlayVerifiedBrowserTransport,
         )
 
+    def _dom_catalog_fallback(
+        self,
+        *,
+        progress: Progress,
+        on_game: GameCallback | None,
+        base_url: str | None = None,
+    ) -> list[Game]:
+        initial = self.provider_root / "catalog-pages" / "initial.html"
+        try:
+            html = initial.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise RuntimeError(
+                "RubyPlay catálogo DOM fallback: falta initial.html ya descargado."
+            ) from exc
+        games = _strict_dom_games(html, base_url or self.catalog_url, self.key)
+        if not games:
+            raise ValueError(
+                "RubyPlay catálogo DOM fallback: no hay targets canónicos /games/<slug>/."
+            )
+        reason = (
+            "DOM fallback: el catálogo actual expone targets /games/<slug>/ "
+            "pero no publica metadatos Bricks que demuestren exhaustividad"
+        )
+        self.set_catalog_authority(False, reason)
+        progress(
+            f"RubyPlay catálogo DOM fallback: {len(games)} targets estrictos; "
+            "autoridad=no hasta demostrar cierre del listado."
+        )
+        if on_game is not None:
+            for game in games:
+                on_game(game)
+        return games
+
     def crawl_catalog(
         self,
         *,
@@ -257,6 +290,14 @@ class RubyPlayProvider(_RubyPlayProvider):
                 progress=progress,
                 max_pages=max_pages,
                 on_game=on_game,
+            )
+        except ValueError as exc:
+            if "no se encontró query Bricks post_type=games" not in str(exc):
+                raise
+            return self._dom_catalog_fallback(
+                progress=progress,
+                on_game=on_game,
+                base_url=self.catalog_url,
             )
         except requests.exceptions.SSLError as exc:
             progress(
@@ -280,23 +321,11 @@ class RubyPlayProvider(_RubyPlayProvider):
             except ValueError as exc:
                 if "no se encontró query Bricks post_type=games" not in str(exc):
                     raise
-                html, resolved_url = browser.fetch_catalog_html()
-                games = _strict_dom_games(html, resolved_url, self.key)
-                if not games:
-                    raise
-                reason = (
-                    "DOM fallback: el catálogo actual expone targets /games/<slug>/ "
-                    "pero no publica metadatos Bricks que demuestren exhaustividad"
+                return self._dom_catalog_fallback(
+                    progress=progress,
+                    on_game=on_game,
+                    base_url=self.catalog_url,
                 )
-                self.set_catalog_authority(False, reason)
-                progress(
-                    f"RubyPlay catálogo DOM fallback: {len(games)} targets estrictos; "
-                    "autoridad=no hasta demostrar cierre del listado."
-                )
-                if on_game is not None:
-                    for game in games:
-                        on_game(game)
-                return games
         finally:
             self.http = original_http
             browser.close()
