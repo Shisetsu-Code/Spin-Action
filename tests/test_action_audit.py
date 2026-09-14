@@ -112,6 +112,68 @@ class ActionAuditTests(unittest.TestCase):
         self.assertEqual(audit["verdict"], "INCOMPLETE")
         self.assertEqual(audit["actions"][0]["missing_options"], ["1"])
 
+    def test_terminal_parent_attempt_credits_observed_continuation_wire_commands(self) -> None:
+        result = _result()
+        result.provider = "rubyplay"
+        result.structural_map = {
+            "action_inventory": {
+                "state": "COMPLETE",
+                "source": "provider-authoritative-init",
+                "reason": "closed",
+            }
+        }
+        result.discovered_modes = [
+            {
+                "id": "SPIN",
+                "kind": "SPIN",
+                "observed": True,
+                "executable": True,
+                "wire_command": "spin",
+            },
+            {
+                "id": "CONTINUATION_FREESPIN",
+                "kind": "CONTINUATION",
+                "observed": True,
+                "executable": True,
+                "wire_command": "freespin",
+            },
+            {
+                "id": "CONTINUATION_RESPIN",
+                "kind": "CONTINUATION",
+                "observed": True,
+                "executable": True,
+                "wire_command": "respin",
+            },
+        ]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            attempt_dir = root / "SPIN" / "attempt-00001"
+            attempt_dir.mkdir(parents=True)
+            (attempt_dir / "request.json").write_text(
+                json.dumps({"action": "spin"}), encoding="utf-8"
+            )
+            (attempt_dir / "step-002-request.json").write_text(
+                json.dumps({"action": "freespin"}), encoding="utf-8"
+            )
+            (attempt_dir / "step-003-request.json").write_text(
+                json.dumps({"action": "respin"}), encoding="utf-8"
+            )
+            result.run_dir = str(root)
+            attempt = _terminal_attempt()
+            attempt.wire_steps = 3
+            attempt.artifact_dir = str(attempt_dir)
+            result.attempts = [attempt]
+
+            audit = build_action_audit(result)
+
+        self.assertEqual(audit["verdict"], "COMPLETE")
+        states = {item["id"]: item for item in audit["actions"]}
+        self.assertEqual(states["CONTINUATION_FREESPIN"]["state"], "DEMONSTRATED")
+        self.assertEqual(states["CONTINUATION_RESPIN"]["state"], "DEMONSTRATED")
+        self.assertIn("remote wire executions=1", states["CONTINUATION_FREESPIN"]["evidence"])
+        self.assertIn("remote wire executions=1", states["CONTINUATION_RESPIN"]["evidence"])
+
     def test_path_coverage_artifact_can_block_complete(self) -> None:
         result = _result()
         result.structural_map = {
