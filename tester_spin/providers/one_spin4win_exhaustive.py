@@ -4,10 +4,12 @@ import json
 import threading
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 from tester_spin.models import Game, GameTestResult
 from tester_spin.providers.base import Progress
 from tester_spin.providers.one_spin4win import OneSpin4WinProvider as _OneSpin4WinProvider
+from tester_spin.providers.one_spin4win_client_evidence import build_client_action_evidence
 
 
 KNOWN_ACTIVE_STATES = {5, 6, 11, 12}
@@ -30,6 +32,110 @@ def _load_attempt_artifact(attempt) -> dict[str, Any]:
     except Exception:
         return {}
     return artifact if isinstance(artifact, dict) else {}
+
+
+def _safe_script_url(value: str) -> str:
+    try:
+        parsed = urlsplit(str(value or ""))
+    except Exception:
+        return ""
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return ""
+    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
+
+
+def _runtime_script_urls(result: GameTestResult) -> list[str]:
+    for attempt in result.attempts:
+        artifact_dir = Path(str(attempt.artifact_dir or ""))
+        path = artifact_dir / "runtime-spec.json"
+        try:
+            spec = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        raw_urls = spec.get("scripts_scanned") if isinstance(spec, dict) else None
+        if not isinstance(raw_urls, list):
+            continue
+        urls: list[str] = []
+        for raw in raw_urls:
+            value = str(raw or "").strip()
+            if value and value not in urls:
+                urls.append(value)
+        if urls:
+            return urls
+    return []
+
+
+def attach_d1_client_action_evidence(
+    provider: _OneSpin4WinProvider,
+    result: GameTestResult,
+    *,
+    timeout_s: float,
+    progress: Progress,
+) -> GameTestResult:
+    """Attach compact structural evidence from the already-discovered D1 assets.
+
+    This deliberately does not construct ``action_inventory``.  It only records
+    which ``gameController.<method>()`` calls are present in the official client,
+    with source hashes, so inventory closure can be decided later from evidence
+    instead of from repeated spins or game-specific assumptions.
+    """
+
+    if result.status in {"ERROR", "CANCELADO"} or not result.run_dir:
+        return result
+
+    urls = _runtime_script_urls(result)
+    sources: list[tuple[str, str]] = []
+    failures: list[dict[str, str]] = []
+    session = provider._worker_session()
+    request_timeout = min(20.0, max(2.0, float(timeout_s)))
+
+    for url in urls:
+        stored_url = _safe_script_url(url)
+        try:
+            response = session.get(url, timeout=request_timeout, allow_redirects=True)
+            response.raise_for_status()
+            if len(response.content) > 8 * 1024 * 1024:
+                failures.append({"url": stored_url, "error": "asset_too_large"})
+                continue
+            sources.append((stored_url, response.text or ""))
+        except Exception as exc:
+            failures.append(
+                {
+                    "url": stored_url,
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+            )
+
+    evidence = build_client_action_evidence(sources)
+    evidence["requested_script_count"] = len(urls)
+    evidence["fetched_script_count"] = len(sources)
+    evidence["fetch_failures"] = failures
+    evidence["complete"] = bool(urls) and len(sources) == len(urls) and not failures
+
+    target = Path(result.run_dir) / "client-action-evidence.json"
+    try:
+        target.write_text(
+            json.dumps(evidence, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        structural = dict(result.structural_map or {})
+        structural["client_action_evidence"] = {
+            "schema": evidence["schema"],
+            "artifact": target.name,
+            "complete": evidence["complete"],
+            "requested_script_count": evidence["requested_script_count"],
+            "fetched_script_count": evidence["fetched_script_count"],
+            "aggregate": evidence["aggregate"],
+        }
+        result.structural_map = structural
+        progress(
+            "D1 evidencia de cliente: métodos gameController="
+            + repr(evidence["aggregate"]["game_controller_methods"])
+            + f"; assets={len(sources)}/{len(urls)}; cierre de inventario aún no inferido."
+        )
+    except Exception as exc:
+        progress(f"D1 evidencia de cliente no persistida: {type(exc).__name__}: {exc}")
+    return result
 
 
 def _observed_result_states(provider: _OneSpin4WinProvider, result: GameTestResult) -> set[int]:
@@ -213,7 +319,17 @@ class OneSpin4WinProvider(_OneSpin4WinProvider):
             stop_event=stop_event,
             progress=progress,
         )
+        result = attach_d1_client_action_evidence(
+            self,
+            result,
+            timeout_s=timeout_s,
+            progress=progress,
+        )
         return apply_d1_path_audit(self, result, progress=progress)
 
 
-__all__ = ["OneSpin4WinProvider", "apply_d1_path_audit"]
+__all__ = [
+    "OneSpin4WinProvider",
+    "apply_d1_path_audit",
+    "attach_d1_client_action_evidence",
+]
