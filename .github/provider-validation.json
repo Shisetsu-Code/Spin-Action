@@ -1,15 +1,15 @@
 {
-  "provider": "1spin4win",
-  "slug": "classic-chilli-plus",
-  "game_url": "https://gs.1spin4win.com:10443/gmh5/classicchilliplus.html?currency=EUR&config=1&freeplay=true&language=en&exit=none",
-  "game_name": "Classic Chilli Plus",
-  "symbol": "classicchilliplus",
+  "provider": "pragmatic",
+  "slug": "",
+  "game_url": "",
+  "game_name": "",
+  "symbol": "",
   "game_offset": 0,
-  "game_limit": 1,
+  "game_limit": 10000,
   "spins": 1,
   "timeout": 60,
-  "max_pages": 1,
+  "max_pages": 0,
   "allow_har_fallback": false,
-  "install_browser": true,
-  "run_sequence": 30
+  "install_browser": false,
+  "run_sequence": 31
 }
