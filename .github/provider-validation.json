@@ -1,5 +1,5 @@
 {
-  "provider": "1spin4win",
+  "provider": "pragmatic",
   "slug": "",
   "game_url": "",
   "game_name": "",
@@ -11,5 +11,5 @@
   "max_pages": 0,
   "allow_har_fallback": false,
   "install_browser": false,
-  "run_sequence": 11
+  "run_sequence": 12
 }
