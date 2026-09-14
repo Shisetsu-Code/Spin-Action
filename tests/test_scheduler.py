@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import tempfile
 import threading
 import time
 import unittest
+from pathlib import Path
 
+from tester_spin.farm_contract import SCHEMA
 from tester_spin.models import Game, GameTestResult
 from tester_spin.providers import BGamingProvider
 from tester_spin.providers.base import ProviderAdapter
@@ -67,6 +70,57 @@ class _LimitedProvider(ProviderAdapter):
         finally:
             with self._lock:
                 self.active -= 1
+
+
+class _OrderingProvider(_LimitedProvider):
+    def __init__(self, root: Path) -> None:
+        super().__init__()
+        self.root = root
+        self.events: list[str] = []
+
+    def test_game(self, game, *, spins, timeout_s, stop_event, progress):
+        self.events.append("test")
+        return GameTestResult(
+            provider=game.provider,
+            slug=game.slug,
+            game_name=game.name,
+            game_url=game.url,
+            requested_spins=spins,
+            successful_spins=spins,
+            failed_spins=0,
+            status="OK",
+            symbol=game.symbol,
+        )
+
+    def finalize_test_result(self, result, *, progress):
+        self.events.append("finalize")
+        return result
+
+    def farm_contract_dir(self, game):
+        return self.root
+
+    def build_farm_contract(self, game, result):
+        self.events.append("build")
+        return {
+            "schema": SCHEMA,
+            "provider": result.provider,
+            "game": {
+                "slug": result.slug,
+                "name": result.game_name,
+                "symbol": result.symbol,
+            },
+            "ready": False,
+            "source": {
+                "run": result.finished_at,
+                "protocol_family": "synthetic",
+            },
+            "bootstrap": {},
+            "modes": [],
+            "continuations": {"known": [], "unresolved": []},
+            "terminal_contract": {},
+            "protocol": {},
+            "unresolved": ["TEST_NOT_READY"],
+        }
 
 
 class SchedulerConcurrencyTests(unittest.TestCase):
@@ -149,6 +203,35 @@ class SchedulerConcurrencyTests(unittest.TestCase):
             any("preparación de artefactos ERROR" in line for line in logs),
             logs,
         )
+
+    def test_farm_contract_build_runs_after_finalization(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            provider = _OrderingProvider(Path(temp))
+            game = Game(
+                provider=provider.key,
+                slug="game",
+                name="Game",
+                url="https://example.test/game",
+            )
+            results: list[GameTestResult] = []
+
+            run_game_tests(
+                provider,
+                [game],
+                concurrency=1,
+                spins_per_game=1,
+                delay_between_starts_s=0.0,
+                timeout_s=5.0,
+                stop_event=threading.Event(),
+                progress=lambda _message: None,
+                on_result=results.append,
+            )
+
+            self.assertEqual(provider.events, ["test", "finalize", "build"])
+            self.assertEqual(results[0].status, "OK")
+            self.assertTrue(
+                (Path(temp) / "analysis" / "farm-contract-candidate.json").is_file()
+            )
 
 
 if __name__ == "__main__":
