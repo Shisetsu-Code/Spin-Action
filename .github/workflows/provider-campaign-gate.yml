@@ -1,0 +1,80 @@
+name: Provider Campaign Gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: "Run ID that uploaded the provider-campaign-bundle artifact"
+        required: true
+        type: string
+      required_natural_spins:
+        description: "Required successful natural spins per catalog game (0 disables soak gate)"
+        required: true
+        default: "3000"
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  aggregate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout lab code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Download campaign bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: provider-campaign-bundle
+          path: campaign-input
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.source_run_id }}
+
+      - name: Validate bundle layout
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f campaign-input/manifest.json
+          test -d campaign-input/coverage
+          find campaign-input/coverage -type f -name '*.json' -print -quit | grep -q .
+          if [ "${{ inputs.required_natural_spins }}" != "0" ]; then
+            test -d campaign-input/natural
+            find campaign-input/natural -type f -name '*.json' -print -quit | grep -q .
+          fi
+
+      - name: Aggregate fail-closed
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=(
+            --manifest campaign-input/manifest.json
+            --required-natural-spins "${{ inputs.required_natural_spins }}"
+            --output campaign-summary.json
+          )
+          while IFS= read -r -d '' file; do
+            args+=(--coverage "$file")
+          done < <(find campaign-input/coverage -type f -name '*.json' -print0 | sort -z)
+          if [ "${{ inputs.required_natural_spins }}" != "0" ]; then
+            while IFS= read -r -d '' file; do
+              args+=(--natural "$file")
+            done < <(find campaign-input/natural -type f -name '*.json' -print0 | sort -z)
+          fi
+          python -m scripts.provider_campaign_aggregate "${args[@]}"
+
+      - name: Upload gate summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: provider-campaign-gate-${{ github.run_id }}
+          path: campaign-summary.json
+          if-no-files-found: warn
+          retention-days: 14
