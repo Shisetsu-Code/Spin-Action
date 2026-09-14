@@ -337,11 +337,13 @@ def _append_unproven_advertised_purchases(
         result.discovered_modes.append(
             {
                 "id": mode_id,
-                "kind": "PURCHASE",
+                "kind": "DISCOVERED_ONLY",
                 "observed": True,
                 "client_observed": False,
                 "executable": False,
-                "coverage_required": True,
+                "coverage_required": False,
+                "evidence_level": "SERVER_ADVERTISED",
+                "execution_state": "WIRE_UNPROVEN",
                 "discovery_state": "ADVERTISED_ONLY",
                 "wire_command": "spin",
                 "purchased_feature": name,

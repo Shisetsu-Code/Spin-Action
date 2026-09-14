@@ -135,20 +135,25 @@ class BGamingStructuralMapTests(unittest.TestCase):
         finally:
             end_capture(token)
 
-    def test_provider_wrapper_persists_and_reports_map_failure(self):
+    def test_provider_wrapper_reports_map_failure_without_changing_runtime_status(self):
         import tester_spin.providers.bgaming_paths_v2 as paths
         game = Game("bgaming", "wrapper", "", "")
         with tempfile.TemporaryDirectory() as directory:
             result = GameTestResult("bgaming", "wrapper", "", "", 1, 1, 0, "OK", run_dir=directory)
+            progress = Mock()
             with patch.object(paths._exhaustive.BGamingProvider, "test_game", return_value=result), \
                  patch.object(paths._policy, "finalize_policy_artifacts", side_effect=lambda value: value), \
                  patch("tester_spin.providers.bgaming.structural_map.Capture.finish", side_effect=ValueError("private")):
                 provider = object.__new__(paths.BGamingProvider)
                 provider.game_dir = lambda game: Path(directory)
-                observed = provider.test_game(game, spins=1, timeout_s=1, stop_event=Mock(), progress=Mock())
-            self.assertEqual(observed.status, "PARCIAL")
+                observed = provider.test_game(game, spins=1, timeout_s=1, stop_event=Mock(), progress=progress)
+            self.assertEqual(observed.status, "OK")
+            self.assertEqual(observed.structural_map["status"], "failed")
             self.assertEqual(observed.structural_map["diagnostic"], "ValueError")
             self.assertNotIn("private", observed.error)
+            self.assertTrue(
+                any("Structural Map diagnóstico" in str(call.args[0]) for call in progress.call_args_list)
+            )
 
 
 if __name__ == "__main__":

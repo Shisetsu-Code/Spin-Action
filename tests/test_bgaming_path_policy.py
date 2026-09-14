@@ -14,6 +14,7 @@ from tester_spin.providers.bgaming_path_policy import (
     scoped_choice_domains,
     wager_plan_from_init,
 )
+from tester_spin.providers.path_coverage import build_path_coverage_report
 
 
 class BGamingPathPolicyTests(unittest.TestCase):
@@ -130,10 +131,19 @@ class BGamingPathPolicyTests(unittest.TestCase):
             }
             unresolved = by_id["PURCHASE_FREESPIN_BUY"]
             self.assertFalse(unresolved["executable"])
-            self.assertTrue(unresolved["coverage_required"])
+            self.assertFalse(unresolved["coverage_required"])
+            self.assertEqual(unresolved["kind"], "DISCOVERED_ONLY")
+            self.assertEqual(unresolved["evidence_level"], "SERVER_ADVERTISED")
+            self.assertEqual(unresolved["execution_state"], "WIRE_UNPROVEN")
             self.assertEqual(unresolved["discovery_state"], "ADVERTISED_ONLY")
             self.assertEqual(result.status, "PARCIAL")
             self.assertIn("PURCHASE_FREESPIN_BUY", result.error)
+
+            coverage = build_path_coverage_report(result)
+            coverage_ids = {
+                item["mode_id"] for item in coverage["branch_points"]
+            }
+            self.assertNotIn("PURCHASE_FREESPIN_BUY", coverage_ids)
 
             catalog = json.loads(
                 (root / "wager-catalog.json").read_text(encoding="utf-8")

@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from tester_spin.models import GameTestResult
+from tester_spin.models import GameTestResult, SpinAttempt
 from tester_spin.providers.bgaming.profile import BGamingProfile
 import tester_spin.providers.bgaming_path_policy as policy
 import tester_spin.providers.bgaming_paths_v2 as v2
@@ -76,6 +76,47 @@ class BGamingPathsV2Regressions(unittest.TestCase):
             self.assertTrue((target / "old.json").is_file())
             self.assertTrue((root / "branch-sample-002" / "new.json").is_file())
             self.assertEqual(Path(result.run_dir), root / "branch-sample-002")
+
+    def test_final_mode_evidence_distinguishes_remote_proof_from_candidates(self) -> None:
+        result = GameTestResult(
+            provider="bgaming",
+            slug="synthetic",
+            game_name="Synthetic",
+            game_url="https://example.invalid",
+            requested_spins=2,
+            successful_spins=1,
+            failed_spins=1,
+            status="PARCIAL",
+            discovered_modes=[
+                {"id": "SPIN", "kind": "SPIN", "executable": True},
+                {"id": "PURCHASE_CANDIDATE", "kind": "PURCHASE", "executable": True},
+                {
+                    "id": "PURCHASE_ADVERTISED",
+                    "kind": "DISCOVERED_ONLY",
+                    "executable": False,
+                    "evidence_level": "SERVER_ADVERTISED",
+                    "execution_state": "WIRE_UNPROVEN",
+                },
+            ],
+            attempts=[
+                SpinAttempt(number=1, ok=True, terminal=True, mode_id="SPIN"),
+                SpinAttempt(number=1, ok=False, terminal=False, mode_id="PURCHASE_CANDIDATE"),
+            ],
+        )
+        logs: list[str] = []
+
+        v2._annotate_mode_evidence(result, logs.append)
+
+        by_id = {mode["id"]: mode for mode in result.discovered_modes}
+        self.assertEqual(by_id["SPIN"]["evidence_level"], "REMOTE_EXECUTION")
+        self.assertEqual(by_id["SPIN"]["execution_state"], "PROVEN_TERMINAL")
+        self.assertEqual(by_id["PURCHASE_CANDIDATE"]["evidence_level"], "WIRE_CANDIDATE")
+        self.assertEqual(by_id["PURCHASE_CANDIDATE"]["execution_state"], "ATTEMPTED_UNVALIDATED")
+        self.assertEqual(by_id["PURCHASE_ADVERTISED"]["evidence_level"], "SERVER_ADVERTISED")
+        self.assertEqual(by_id["PURCHASE_ADVERTISED"]["execution_state"], "WIRE_UNPROVEN")
+        self.assertTrue(any("DEMOSTRADO" in line and "SPIN" in line for line in logs))
+        self.assertTrue(any("NO_VALIDADO" in line and "PURCHASE_CANDIDATE" in line for line in logs))
+        self.assertTrue(any("SOLO_ANUNCIADO" in line and "PURCHASE_ADVERTISED" in line for line in logs))
 
 
 if __name__ == "__main__":

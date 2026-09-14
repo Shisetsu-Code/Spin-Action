@@ -260,6 +260,96 @@ def _move_run_guard(result: GameTestResult, target: Path) -> None:
         index += 1
 
 
+def _attempt_base_mode_id(mode_id: str) -> str:
+    return str(mode_id or "").split("__", 1)[0]
+
+
+def _annotate_mode_evidence(result: GameTestResult, progress: Progress) -> None:
+    """Label final BGaming mode evidence from actual remote attempts.
+
+    Discovery/executability only describes what the adapter believes it can
+    serialize. A mode becomes DEMOSTRADO only after a successful terminal
+    server round. Server-advertised metadata stays explicitly unproven.
+    """
+    attempts_by_mode: dict[str, list[Any]] = {}
+    for attempt in result.attempts:
+        mode_id = _attempt_base_mode_id(attempt.mode_id)
+        if mode_id:
+            attempts_by_mode.setdefault(mode_id, []).append(attempt)
+
+    for mode in result.discovered_modes:
+        if not isinstance(mode, dict):
+            continue
+        mode_id = str(mode.get("id") or "")
+        if not mode_id:
+            continue
+        attempts = attempts_by_mode.get(mode_id, [])
+        proven = [
+            attempt
+            for attempt in attempts
+            if attempt.ok and attempt.terminal and not str(attempt.error or "")
+        ]
+
+        if proven:
+            mode["evidence_level"] = "REMOTE_EXECUTION"
+            mode["execution_state"] = "PROVEN_TERMINAL"
+            mode["validated"] = True
+            progress(
+                f"[{result.game_name}] EVIDENCIA {mode_id}: DEMOSTRADO "
+                f"por ejecución remota terminal ({len(proven)}/{len(attempts)})."
+            )
+            continue
+
+        discovery_state = str(mode.get("discovery_state") or "")
+        if attempts:
+            if discovery_state.startswith("REJECTED"):
+                mode["evidence_level"] = "REMOTE_REJECTION"
+                mode["execution_state"] = "REJECTED_REMOTE"
+                mode["validated"] = False
+                label = "RECHAZADO_REMOTO"
+            else:
+                mode["evidence_level"] = "WIRE_CANDIDATE"
+                mode["execution_state"] = "ATTEMPTED_UNVALIDATED"
+                mode["validated"] = False
+                label = "NO_VALIDADO"
+            progress(
+                f"[{result.game_name}] EVIDENCIA {mode_id}: {label} "
+                f"({len(attempts)} intento(s), terminales válidos=0)."
+            )
+            continue
+
+        if (
+            str(mode.get("evidence_level") or "") == "SERVER_ADVERTISED"
+            or discovery_state == "ADVERTISED_ONLY"
+        ):
+            mode["evidence_level"] = "SERVER_ADVERTISED"
+            mode["execution_state"] = "WIRE_UNPROVEN"
+            mode["validated"] = False
+            progress(
+                f"[{result.game_name}] EVIDENCIA {mode_id}: SOLO_ANUNCIADO "
+                "por servidor; wire no demostrado."
+            )
+            continue
+
+        if bool(mode.get("executable")):
+            mode.setdefault("evidence_level", "WIRE_CANDIDATE")
+            mode["execution_state"] = "NOT_ATTEMPTED"
+            mode["validated"] = False
+            progress(
+                f"[{result.game_name}] EVIDENCIA {mode_id}: CANDIDATO_WIRE "
+                "no ejecutado en esta corrida."
+            )
+            continue
+
+        mode.setdefault("evidence_level", "DISCOVERED")
+        mode.setdefault("execution_state", "NOT_EXECUTABLE")
+        mode["validated"] = False
+        progress(
+            f"[{result.game_name}] EVIDENCIA {mode_id}: SOLO_DESCUBIERTO; "
+            "sin ejecución remota validada."
+        )
+
+
 # install_policy() supplies the HyperHive wager hook and scoped option domains.
 # These guards stay inert outside a normal exhaustive provider run.
 _execution.discover_profile = _profile_guard
@@ -310,20 +400,26 @@ class BGamingProvider(_exhaustive.BGamingProvider):
             )
             _write_server_guided_artifact(result)
             result = _policy.finalize_policy_artifacts(result)
+            _annotate_mode_evidence(result, progress)
             try:
                 capture.finish(result, self.game_dir(game))
             except Exception as exc:
-                result.structural_map = {"status": "failed", "diagnostic": type(exc).__name__}
-                if result.status == "OK":
-                    result.status = "PARCIAL"
-                result.error = (str(result.error or "") + " Structural Map: " + type(exc).__name__).strip()
+                diagnostic = type(exc).__name__
+                result.structural_map = {"status": "failed", "diagnostic": diagnostic}
+                progress(
+                    f"[{game.name}] Structural Map diagnóstico: {diagnostic}; "
+                    "la telemetría auxiliar no modifica el estado del protocolo."
+                )
             if result.run_dir and Path(result.run_dir).is_dir():
                 try:
                     atomic_write(Path(result.run_dir) / "result.json", result.to_dict())
                 except OSError as exc:
-                    result.structural_map["result_write_diagnostic"] = type(exc).__name__
-                    if result.status == "OK":
-                        result.status = "PARCIAL"
+                    diagnostic = type(exc).__name__
+                    result.structural_map["result_write_diagnostic"] = diagnostic
+                    progress(
+                        f"[{game.name}] result.json diagnóstico: {diagnostic}; "
+                        "la persistencia auxiliar no modifica el estado del protocolo."
+                    )
             return result
         finally:
             end_capture(capture_token)
