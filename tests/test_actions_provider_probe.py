@@ -23,10 +23,11 @@ class ActionsProviderProbeTests(unittest.TestCase):
             "rubyplay",
             "redtiger",
             "belatra",
-            "one_spin4win",
+            "1spin4win",
         }
         resolved = {key: provider_class_for(key).key for key in expected}
         self.assertEqual(resolved, {key: key for key in expected})
+        self.assertEqual(provider_class_for("one_spin4win").key, "1spin4win")
 
     def test_game_selection_is_stable_and_supports_one_by_one_offsets(self) -> None:
         games = [
