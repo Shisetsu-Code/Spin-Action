@@ -4,6 +4,7 @@ from pathlib import Path
 
 from tester_spin.models import Game, GameTestResult
 from tester_spin.providers.farm_structure import attach_execution_structure
+from tester_spin.providers.pragmatic_action_inventory import annotate_pragmatic_action_inventory
 from tester_spin.providers.pragmatic_exhaustive import PragmaticProvider as _PragmaticProvider
 from tester_spin.providers.result_farm_contract import (
     ProviderFarmSpec,
@@ -55,6 +56,19 @@ class PragmaticProvider(_PragmaticProvider):
 
     def farm_contract_dir(self, game: Game) -> Path | None:
         return self.game_dir(game)
+
+    def finalize_test_result(self, result: GameTestResult, *, progress) -> GameTestResult:
+        result = super().finalize_test_result(result, progress=progress)
+        annotate_pragmatic_action_inventory(result)
+        inventory = (
+            result.structural_map.get("action_inventory", {})
+            if isinstance(result.structural_map, dict)
+            else {}
+        )
+        state = str(inventory.get("state") or "UNKNOWN")
+        reason = str(inventory.get("reason") or "")
+        progress(f"Pragmatic inventario de acciones: {state}. {reason}".strip())
+        return result
 
     def build_farm_contract(self, game: Game, result: GameTestResult) -> dict:
         contract = build_result_farm_contract(game, result, self.game_dir(game), _SPEC)
