@@ -9,6 +9,7 @@ from typing import Any
 
 from tester_spin.models import Game, GameTestResult, SpinAttempt, utc_now_iso
 from tester_spin.providers.base import Progress
+from tester_spin.providers.rubyplay.action_inventory import annotate_rubyplay_action_inventory
 from tester_spin.providers.rubyplay.runtime import (
     RubyPlayClientProfile,
     RubyPlayRuntime,
@@ -425,7 +426,7 @@ class RubyPlayExecutionMixin:
             error = errors[0] if errors else "RubyPlay no completó ninguna iteración."
 
         total_expected = requested_total or repetitions
-        return GameTestResult(
+        result = GameTestResult(
             provider=self.key,
             slug=game.slug,
             game_name=game.name,
@@ -443,3 +444,6 @@ class RubyPlayExecutionMixin:
             run_dir=str(run_dir),
             attempts=attempts,
         )
+        if runtime is not None:
+            result = annotate_rubyplay_action_inventory(result, runtime)
+        return result
