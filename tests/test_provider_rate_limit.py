@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import threading
 import unittest
+from pathlib import Path
 
 from tester_spin.provider_rate_limit import ProviderRequestRateLimiter
+from tester_spin.providers.base import ProviderAdapter
 
 
 class _FakeTime:
@@ -21,6 +23,18 @@ class _FakeTime:
             seconds = max(0.0, float(seconds))
             self.sleeps.append(seconds)
             self.value += seconds
+
+
+class _DummyProvider(ProviderAdapter):
+    key = "dummy"
+    display_name = "Dummy"
+    catalog_url = "https://example.invalid"
+
+    def crawl_catalog(self, *, stop_event, progress, max_pages=100, on_game=None):
+        return []
+
+    def test_game(self, game, *, spins, timeout_s, stop_event, progress):
+        raise NotImplementedError
 
 
 class ProviderRequestRateLimiterTests(unittest.TestCase):
@@ -85,6 +99,23 @@ class ProviderRequestRateLimiterTests(unittest.TestCase):
         self.assertEqual(stats["requests_per_minute_limit"], 1234)
         self.assertEqual(stats["total_acquired"], 1)
         self.assertGreaterEqual(stats["requests_in_current_window"], 1)
+
+    def test_provider_adapter_uses_attached_shared_limiter(self) -> None:
+        provider = _DummyProvider()
+        limiter = ProviderRequestRateLimiter(requests_per_minute=2000)
+        provider.set_request_rate_limiter(limiter)
+
+        self.assertTrue(provider.acquire_provider_request_slot())
+        self.assertTrue(provider.acquire_provider_request_slot())
+        stats = provider.provider_request_rate_snapshot()
+
+        self.assertEqual(stats["requests_per_minute_limit"], 2000)
+        self.assertEqual(stats["total_acquired"], 2)
+
+    def test_provider_adapter_without_limiter_is_noop(self) -> None:
+        provider = _DummyProvider()
+        self.assertTrue(provider.acquire_provider_request_slot())
+        self.assertEqual(provider.provider_request_rate_snapshot(), {})
 
 
 if __name__ == "__main__":
