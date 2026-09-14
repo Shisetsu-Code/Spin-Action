@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
 from tester_spin.models import Game, GameTestResult
+from tester_spin.providers.base import Progress
+from tester_spin.providers.belatra import BelatraProvider as _BaseBelatraProvider
 from tester_spin.providers.belatra_exhaustive import BelatraProvider as _BelatraProvider
 from tester_spin.providers.farm_structure import attach_execution_structure
 from tester_spin.providers.result_farm_contract import (
@@ -42,6 +45,27 @@ _SPEC = ProviderFarmSpec(
 
 class BelatraProvider(_BelatraProvider):
     """Active Belatra provider with post-discovery farm export hooks."""
+
+    def test_natural_spins(
+        self,
+        game: Game,
+        *,
+        spins: int,
+        timeout_s: float,
+        stop_event: threading.Event,
+        progress: Progress,
+    ) -> GameTestResult:
+        # Deliberately bypass belatra_exhaustive.test_game(): the exhaustive
+        # wrapper multiplies selector branches by `spins`. The soak budget applies
+        # only to the base natural START/FINISH path.
+        return _BaseBelatraProvider.test_game(
+            self,
+            game,
+            spins=spins,
+            timeout_s=timeout_s,
+            stop_event=stop_event,
+            progress=progress,
+        )
 
     def farm_contract_dir(self, game: Game) -> Path | None:
         return self.game_dir(game)
