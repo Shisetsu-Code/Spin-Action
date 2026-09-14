@@ -1,9 +1,9 @@
 {
   "provider": "redtiger",
-  "slug": "dragon-pearl",
-  "game_url": "https://games.evolution.com/slots/dragon-pearl/",
-  "game_name": "Dragon Pearl",
-  "symbol": "25014",
+  "slug": "trillionaire-megaways",
+  "game_url": "https://games.evolution.com/slots/trillionaire-megaways/",
+  "game_name": "Trillionaire Megaways™",
+  "symbol": "34916",
   "game_offset": 0,
   "game_limit": 1,
   "spins": 1,
@@ -11,5 +11,5 @@
   "max_pages": 0,
   "allow_har_fallback": false,
   "install_browser": true,
-  "run_sequence": 39
+  "run_sequence": 40
 }
