@@ -46,6 +46,25 @@ _SPEC = ProviderFarmSpec(
 class BelatraProvider(_BelatraProvider):
     """Active Belatra provider with post-discovery farm export hooks."""
 
+    def _post_direct_game(
+        self,
+        state: dict,
+        data: dict,
+        *,
+        timeout_s: float,
+        artifact_dir: Path,
+        label: str,
+    ):
+        if not self.acquire_provider_request_slot():
+            raise InterruptedError("Belatra request cancelled by provider rate limiter")
+        return super()._post_direct_game(
+            state,
+            data,
+            timeout_s=timeout_s,
+            artifact_dir=artifact_dir,
+            label=label,
+        )
+
     def test_natural_spins(
         self,
         game: Game,
