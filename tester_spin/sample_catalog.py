@@ -9,7 +9,7 @@ from typing import Any
 
 from tester_spin.models import GameTestResult
 
-_TAGS = {"command", "action", "na", "state", "phaseCur", "phaseNext", "spinMode", "st"}
+_TAGS = {"command", "action", "next_action", "na", "state", "phaseCur", "phaseNext", "spinMode", "st"}
 
 
 def _ordered(path: Path) -> tuple:
