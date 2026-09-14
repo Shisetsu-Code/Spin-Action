@@ -4,6 +4,7 @@ import threading
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from tester_spin.models import Game, GameTestResult
 
@@ -71,6 +72,52 @@ class ProviderAdapter(ABC):
         Providers that do not maintain HAR artifacts keep the default no-op.
         """
         return None
+
+    def farm_contract_dir(self, game: Game) -> Path | None:
+        """Return the per-game folder that may receive farm contract artifacts.
+
+        Providers opt in explicitly. Returning ``None`` keeps existing providers
+        completely unchanged until they implement a stable farm-facing contract.
+        """
+        return None
+
+    def build_farm_contract(
+        self,
+        game: Game,
+        result: GameTestResult,
+    ) -> dict[str, Any]:
+        """Build a non-executable candidate for providers not adapted to the farm.
+
+        The common exporter can persist this diagnostic shape only when a provider
+        opts in via ``farm_contract_dir``. It never invents provider protocol data.
+        """
+        from tester_spin.farm_contract import SCHEMA
+
+        return {
+            "schema": SCHEMA,
+            "provider": result.provider,
+            "game": {
+                "slug": result.slug,
+                "name": result.game_name,
+                "symbol": result.symbol,
+            },
+            "ready": False,
+            "source": {
+                "run": result.finished_at,
+                "protocol_family": "unsupported",
+                "result_status": result.status,
+            },
+            "bootstrap": {},
+            "modes": [],
+            "continuations": {"known": [], "unresolved": []},
+            "terminal_contract": {},
+            "protocol": {},
+            "unresolved": ["PROVIDER_CONTRACT_UNSUPPORTED"],
+        }
+
+    def validate_farm_contract(self, contract: dict[str, Any]) -> list[str]:
+        """Return provider-specific farm-contract validation errors."""
+        return []
 
     def finalize_test_result(
         self,
