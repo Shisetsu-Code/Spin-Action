@@ -1,9 +1,9 @@
 {
-  "provider": "rubyplay",
-  "slug": "diamond-explosion-7s",
-  "game_url": "https://rubyplay.com/games/diamond-explosion-7s/",
-  "game_name": "Diamond Explosion ® 7s Max Win: 8,000x",
-  "symbol": "rp_72",
+  "provider": "1spin4win",
+  "slug": "classic-chilli-plus",
+  "game_url": "https://gs.1spin4win.com:10443/gmh5/classicchilliplus.html?currency=EUR&config=1&freeplay=true&language=en&exit=none",
+  "game_name": "Classic Chilli Plus",
+  "symbol": "classicchilliplus",
   "game_offset": 0,
   "game_limit": 1,
   "spins": 50,
@@ -11,5 +11,5 @@
   "max_pages": 1,
   "allow_har_fallback": false,
   "install_browser": true,
-  "run_sequence": 27
+  "run_sequence": 28
 }
