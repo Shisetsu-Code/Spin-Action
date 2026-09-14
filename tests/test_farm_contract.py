@@ -2,16 +2,20 @@ from __future__ import annotations
 
 import json
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
 from tester_spin.farm_contract import (
     SCHEMA,
     contains_forbidden_runtime_data,
+    export_farm_contract,
     promote_contract_if_ready,
     validate_common_contract,
     write_contract_candidate,
 )
+from tester_spin.models import Game, GameTestResult
+from tester_spin.providers.base import ProviderAdapter
 
 
 def _contract(*, ready: bool = True) -> dict:
@@ -45,6 +49,29 @@ def _contract(*, ready: bool = True) -> dict:
         "protocol": {"family": "synthetic-v1"},
         "unresolved": [],
     }
+
+
+class _UnsupportedProvider(ProviderAdapter):
+    key = "synthetic"
+    display_name = "Synthetic"
+    catalog_url = "https://example.test"
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+
+    def crawl_catalog(self, **_kwargs):
+        return []
+
+    def test_game(self, game, *, spins, timeout_s, stop_event, progress):
+        raise AssertionError("not used")
+
+    def farm_contract_dir(self, game: Game) -> Path | None:
+        return self.root
+
+
+class _ExplodingProvider(_UnsupportedProvider):
+    def build_farm_contract(self, game: Game, result: GameTestResult) -> dict:
+        raise RuntimeError("builder exploded")
 
 
 class FarmContractTests(unittest.TestCase):
@@ -142,6 +169,68 @@ class FarmContractTests(unittest.TestCase):
             )
             self.assertEqual(published["schema"], SCHEMA)
             self.assertTrue(published["ready"])
+
+    def test_unsupported_provider_emits_explicit_nonready_candidate(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            provider = _UnsupportedProvider(root)
+            game = Game(
+                provider="synthetic",
+                slug="game-a",
+                name="Game A",
+                url="https://example.test/game-a",
+                symbol="GameA",
+            )
+            result = GameTestResult(
+                provider="synthetic",
+                slug="game-a",
+                game_name="Game A",
+                game_url=game.url,
+                requested_spins=1,
+                successful_spins=1,
+                failed_spins=0,
+                status="OK",
+                symbol="GameA",
+            )
+            logs: list[str] = []
+
+            export_farm_contract(provider, game, result, progress=logs.append)
+
+            candidate = json.loads(
+                (root / "analysis" / "farm-contract-candidate.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertFalse(candidate["ready"])
+            self.assertIn("PROVIDER_CONTRACT_UNSUPPORTED", candidate["unresolved"])
+            self.assertFalse((root / "farm-contract.json").exists())
+            self.assertEqual(result.status, "OK")
+
+    def test_export_failure_never_changes_protocol_status(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            provider = _ExplodingProvider(Path(temp))
+            game = Game(
+                provider="synthetic",
+                slug="game-a",
+                name="Game A",
+                url="https://example.test/game-a",
+            )
+            result = GameTestResult(
+                provider="synthetic",
+                slug="game-a",
+                game_name="Game A",
+                game_url=game.url,
+                requested_spins=1,
+                successful_spins=1,
+                failed_spins=0,
+                status="OK",
+            )
+            logs: list[str] = []
+
+            export_farm_contract(provider, game, result, progress=logs.append)
+
+            self.assertEqual(result.status, "OK")
+            self.assertTrue(any("farm contract ERROR" in line for line in logs), logs)
 
 
 if __name__ == "__main__":
