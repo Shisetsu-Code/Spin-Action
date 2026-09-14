@@ -5,6 +5,7 @@ import time
 import unittest
 
 from tester_spin.models import Game, GameTestResult
+from tester_spin.providers import BGamingProvider
 from tester_spin.providers.base import ProviderAdapter
 from tester_spin.scheduler import run_game_tests
 
@@ -73,6 +74,10 @@ class SchedulerConcurrencyTests(unittest.TestCase):
         provider = _LimitedProvider()
         self.assertEqual(provider.effective_test_concurrency(1), 1)
         self.assertEqual(provider.effective_test_concurrency(3), 1)
+
+    def test_bgaming_respects_requested_concurrency(self) -> None:
+        provider = BGamingProvider.__new__(BGamingProvider)
+        self.assertEqual(provider.effective_test_concurrency(3), 3)
 
     def test_scheduler_enforces_provider_cap_even_if_three_requested(self) -> None:
         provider = _LimitedProvider()

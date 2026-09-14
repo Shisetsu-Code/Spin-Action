@@ -274,6 +274,11 @@ _exhaustive._move_run = _move_run_guard
 class BGamingProvider(_exhaustive.BGamingProvider):
     """BGaming exhaustive traversal with scoped purchase/wager policy."""
 
+    # The active BGaming adapter uses per-game HTTP sessions and thread-local
+    # policy/HAR context, so let the shared scheduler honor the GUI-requested
+    # concurrency instead of forcing all BGaming games through one worker.
+    max_test_concurrency = None
+
     def test_game(
         self,
         game: Game,
