@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from tester_spin.models import Game, GameTestResult
+from tester_spin.providers.farm_structure import attach_execution_structure, select_domains
 from tester_spin.providers.result_farm_contract import (
     ProviderFarmSpec,
     build_result_farm_contract,
@@ -58,7 +59,11 @@ class RubyPlayProvider(_RubyPlayProvider):
         return self.game_dir(game)
 
     def build_farm_contract(self, game: Game, result: GameTestResult) -> dict:
-        return build_result_farm_contract(game, result, self.game_dir(game), _SPEC)
+        contract = build_result_farm_contract(game, result, self.game_dir(game), _SPEC)
+        protocol = contract.get("protocol")
+        stable = protocol.get("stable_metadata") if isinstance(protocol, dict) else {}
+        domains = select_domains(stable, ("bet_profile", "client_profile"))
+        return attach_execution_structure(contract, provider_domains=domains)
 
     def validate_farm_contract(self, contract: dict) -> list[str]:
         return validate_result_farm_contract(contract, _SPEC)
