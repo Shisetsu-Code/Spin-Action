@@ -22,7 +22,7 @@ class RubyPlayBrowserCatalogClient:
     when the direct requests transport cannot establish a verified TLS session
     or when RubyPlay rejects a direct Bricks ``load_query_page`` replay.
 
-    Playwright keeps its normal certificate and hostname verification.  This
+    Playwright keeps its normal certificate and hostname verification. This
     class never enables ``ignore_https_errors`` and never weakens TLS checks.
     """
 
@@ -84,86 +84,92 @@ class RubyPlayBrowserCatalogClient:
                 pass
 
     def fetch_catalog_html(self) -> tuple[str, str]:
-        """Return the rendered catalogue HTML from a verified browser session."""
         self.start()
         assert self._page is not None
         return str(self._page.content() or ""), str(self._page.url or self.catalog_url)
 
-    def fetch_page(self, state: BricksCatalogState, page: int) -> BrowserBricksResponse:
+    def request_json(
+        self,
+        url: str,
+        *,
+        params: dict[str, Any] | None = None,
+        payload: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> BrowserBricksResponse:
+        """Execute a same-origin JSON request from the verified browser page."""
         self.start()
         assert self._page is not None
-
-        fallback_payload = load_query_payload(state, page)
         result = self._page.evaluate(
             """
-            async ({fallbackUrl, fallbackPayload, fallbackWpRestNonce}) => {
+            async ({target, query, payload, headers}) => {
               const data = window.bricksData || {};
-              const restRoot = String(data.restApiUrl || fallbackUrl || '');
-              const endpoint = restRoot.endsWith('/')
-                ? `${restRoot}load_query_page`
-                : `${restRoot}/load_query_page`;
-
-              const payload = Object.assign({}, fallbackPayload, {
-                postId: data.postId || fallbackPayload.postId,
-                nonce: data.nonce || fallbackPayload.nonce,
-                lang: data.language || fallbackPayload.lang,
-              });
-
-              const url = new URL(endpoint, window.location.href);
-              if (payload.lang) url.searchParams.set('lang', payload.lang);
-
-              const headers = {
-                'Content-Type': 'application/json; charset=UTF-8',
-                'Accept': 'application/json, text/plain, */*',
-              };
-              const wpRestNonce = data.wpRestNonce || fallbackWpRestNonce || '';
-              if (wpRestNonce) headers['X-WP-Nonce'] = wpRestNonce;
-
-              const response = await fetch(url.toString(), {
+              const u = new URL(target, window.location.href);
+              for (const [key, value] of Object.entries(query || {})) {
+                if (value !== null && value !== undefined && String(value) !== '') {
+                  u.searchParams.set(key, String(value));
+                }
+              }
+              const body = Object.assign({}, payload || {});
+              if (Object.prototype.hasOwnProperty.call(body, 'nonce') && data.nonce) {
+                body.nonce = data.nonce;
+              }
+              if (Object.prototype.hasOwnProperty.call(body, 'postId') && data.postId) {
+                body.postId = data.postId;
+              }
+              if (Object.prototype.hasOwnProperty.call(body, 'lang') && data.language) {
+                body.lang = data.language;
+              }
+              const requestHeaders = Object.assign(
+                {'Content-Type': 'application/json; charset=UTF-8', 'Accept': 'application/json, text/plain, */*'},
+                headers || {},
+              );
+              const wpRestNonce = data.wpRestNonce || requestHeaders['X-WP-Nonce'] || '';
+              if (wpRestNonce) requestHeaders['X-WP-Nonce'] = wpRestNonce;
+              const response = await fetch(u.toString(), {
                 method: 'POST',
-                headers,
+                headers: requestHeaders,
                 credentials: 'same-origin',
-                body: JSON.stringify(payload),
+                body: JSON.stringify(body),
               });
-              return {
-                status: response.status,
-                url: response.url,
-                body: await response.text(),
-                noncePresent: !!data.nonce,
-                wpRestNoncePresent: !!wpRestNonce,
-              };
+              return {status: response.status, url: response.url, body: await response.text()};
             }
             """,
             {
-                "fallbackUrl": state.rest_api_url,
-                "fallbackPayload": fallback_payload,
-                "fallbackWpRestNonce": state.wp_rest_nonce,
+                "target": str(url),
+                "query": dict(params or {}),
+                "payload": dict(payload or {}),
+                "headers": dict(headers or {}),
             },
         )
         if not isinstance(result, dict):
-            raise RuntimeError("RubyPlay browser Bricks: respuesta de fetch inválida.")
-
+            raise RuntimeError("RubyPlay browser request: respuesta inválida.")
         status = int(result.get("status") or 0)
         body = str(result.get("body") or "")
-        url = str(result.get("url") or state.load_query_url)
-        if status < 200 or status >= 300:
-            excerpt = " ".join(body.split())[:400]
-            raise RuntimeError(
-                f"RubyPlay browser Bricks HTTP {status} para {url}: {excerpt}"
-            )
-
+        resolved_url = str(result.get("url") or url)
         try:
             parsed = json.loads(body)
         except Exception as exc:
             raise ValueError(
-                f"RubyPlay browser Bricks: respuesta no JSON ({type(exc).__name__})."
+                f"RubyPlay browser request: respuesta no JSON ({type(exc).__name__})."
             ) from exc
         if not isinstance(parsed, dict):
-            raise ValueError("RubyPlay browser Bricks: respuesta JSON no es objeto.")
-
+            raise ValueError("RubyPlay browser request: respuesta JSON no es objeto.")
         return BrowserBricksResponse(
             status=status,
-            url=url,
+            url=resolved_url,
             body=body,
             data=parsed,
+        )
+
+    def fetch_page(self, state: BricksCatalogState, page: int) -> BrowserBricksResponse:
+        fallback_payload = load_query_payload(state, page)
+        return self.request_json(
+            state.load_query_url,
+            params={"lang": state.language},
+            payload=fallback_payload,
+            headers={
+                "Accept": "application/json, text/plain, */*",
+                "Content-Type": "application/json; charset=UTF-8",
+                "Referer": self.catalog_url,
+            },
         )
