@@ -110,6 +110,88 @@ def _include_evidence_file(provider: str, directory: Path, path: Path) -> bool:
     return False
 
 
+def _state_sequence_id(states: list[list[dict[str, Any]]]) -> str:
+    if not states:
+        return ""
+    encoded = json.dumps(states, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _finalize_state_sequences(group: dict[str, Any]) -> list[dict[str, Any]]:
+    sequences: dict[str, dict[str, Any]] = {}
+    for sample in group.get("samples", []):
+        sequence_id = str(sample.get("state_sequence_id") or "")
+        if not sequence_id:
+            continue
+        entry = sequences.setdefault(
+            sequence_id,
+            {
+                "id": sequence_id,
+                "observed_state_sequence": sample.get("observed_state_sequence", []),
+                "occurrences": 0,
+                "validated_occurrences": 0,
+                "first_attempt": sample.get("attempt"),
+                "evidence": [],
+            },
+        )
+        entry["occurrences"] += 1
+        entry["validated_occurrences"] += int(bool(sample.get("validated")))
+        attempt_number = sample.get("attempt")
+        if isinstance(attempt_number, int) and (
+            not isinstance(entry.get("first_attempt"), int) or attempt_number < entry["first_attempt"]
+        ):
+            entry["first_attempt"] = attempt_number
+        entry["evidence"].append(
+            {
+                "attempt": attempt_number,
+                "artifact_dir": sample.get("artifact_dir", ""),
+                "files": sample.get("evidence", []),
+            }
+        )
+
+    ordered = sorted(
+        sequences.values(),
+        key=lambda row: (
+            -int(row.get("validated_occurrences", 0)),
+            -int(row.get("occurrences", 0)),
+            int(row.get("first_attempt")) if isinstance(row.get("first_attempt"), int) else 10**12,
+            str(row.get("id", "")),
+        ),
+    )
+    group["observed_state_sequences"] = ordered
+    group["dominant_state_sequence_id"] = ordered[0]["id"] if ordered else ""
+    group["unclassified_wire_variants"] = []
+
+    if len(ordered) < 2:
+        return []
+
+    dominant = ordered[0]
+    dominant_validated = int(dominant.get("validated_occurrences", 0))
+    runner_up_validated = int(ordered[1].get("validated_occurrences", 0))
+    if dominant_validated < 2 or dominant_validated <= runner_up_validated:
+        return []
+
+    variants = []
+    for sequence in ordered[1:]:
+        validated_occurrences = int(sequence.get("validated_occurrences", 0))
+        if validated_occurrences <= 0:
+            continue
+        variants.append(
+            {
+                "id": f"UNCLASSIFIED_WIRE_VARIANT_{str(sequence['id'])[:12]}",
+                "classification": "UNCLASSIFIED_WIRE_VARIANT",
+                "sequence_id": sequence["id"],
+                "occurrences": int(sequence.get("occurrences", 0)),
+                "validated_occurrences": validated_occurrences,
+                "first_attempt": sequence.get("first_attempt"),
+                "evidence": sequence.get("evidence", []),
+                "note": "Observed wire-state sequence differs from the dominant sequence; semantics intentionally unresolved.",
+            }
+        )
+    group["unclassified_wire_variants"] = variants
+    return variants
+
+
 def build_sample_catalog(result: GameTestResult, *, samples_per_path: int = 1) -> dict[str, Any]:
     target = max(1, int(samples_per_path))
     root = Path(result.run_dir).resolve() if result.run_dir else None
@@ -167,11 +249,22 @@ def build_sample_catalog(result: GameTestResult, *, samples_per_path: int = 1) -
             "artifact_dir": directory.relative_to(root).as_posix(),
             "validated": valid,
             "terminal": attempt.terminal,
+            "state_sequence_id": _state_sequence_id(states),
             "observed_state_sequence": states,
             "evidence": evidence,
         })
+
+    unclassified_wire_variants = []
     for group in groups.values():
         group["missing_samples"] = max(0, target - group["validated_samples"])
+        for variant in _finalize_state_sequences(group):
+            unclassified_wire_variants.append(
+                {
+                    "group_id": group["id"],
+                    "mode_id": group.get("mode_id"),
+                    **variant,
+                }
+            )
     return {
         "schema": "tester-spin/sample-catalog/v2",
         "provider": result.provider,
@@ -180,6 +273,7 @@ def build_sample_catalog(result: GameTestResult, *, samples_per_path: int = 1) -
         "samples_per_path": target,
         "groups": list(groups.values()),
         "observed_state_types": list(state_types.values()),
+        "unclassified_wire_variants": unclassified_wire_variants,
         "diagnostics": diagnostics,
         "observed_paths_sampled": bool(groups) and not diagnostics and all(group["missing_samples"] == 0 for group in groups.values()),
     }
