@@ -5,12 +5,97 @@ import threading
 from pathlib import Path
 from typing import Any
 
+import requests
+
 from tester_spin.models import Game, GameTestResult
-from tester_spin.providers.base import Progress
+from tester_spin.providers.base import GameCallback, Progress
 from tester_spin.providers.rubyplay.adapter import RubyPlayProvider as _RubyPlayProvider
+from tester_spin.providers.rubyplay.browser_catalog import RubyPlayBrowserCatalogClient
 
 
 INDEX_BRANCH_ACTIONS = {"select", "pick"}
+
+
+class _BrowserHTTPResponse:
+    def __init__(
+        self,
+        *,
+        status_code: int,
+        url: str,
+        text: str,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        self.status_code = int(status_code)
+        self.url = str(url)
+        self.text = str(text)
+        self._payload = payload
+
+    @property
+    def content(self) -> bytes:
+        return self.text.encode("utf-8")
+
+    def raise_for_status(self) -> None:
+        if self.status_code < 400:
+            return
+        response = requests.Response()
+        response.status_code = self.status_code
+        response.url = self.url
+        response._content = self.content
+        raise requests.HTTPError(
+            f"{self.status_code} error for {self.url}",
+            response=response,
+        )
+
+    def json(self) -> dict[str, Any]:
+        if isinstance(self._payload, dict):
+            return self._payload
+        parsed = json.loads(self.text)
+        if not isinstance(parsed, dict):
+            raise ValueError("RubyPlay browser response JSON no es objeto.")
+        return parsed
+
+
+class _BrowserCatalogSession:
+    """requests-shaped facade backed by an already verified Chromium page."""
+
+    def __init__(self, browser: RubyPlayBrowserCatalogClient, original: Any) -> None:
+        self.browser = browser
+        self.original = original
+        self.headers = getattr(original, "headers", {})
+
+    def get(self, url: str, **kwargs):
+        if str(url).rstrip("/") == self.browser.catalog_url.rstrip("/"):
+            html, resolved = self.browser.fetch_catalog_html()
+            return _BrowserHTTPResponse(
+                status_code=200,
+                url=resolved,
+                text=html,
+            )
+        return self.original.get(url, **kwargs)
+
+    def post(
+        self,
+        url: str,
+        *,
+        params=None,
+        json=None,
+        headers=None,
+        timeout=None,
+        **_kwargs,
+    ):
+        del timeout
+        response = self.browser.request_json(
+            url,
+            params=dict(params or {}),
+            payload=dict(json or {}),
+            headers=dict(headers or {}),
+        )
+        return _BrowserHTTPResponse(
+            status_code=response.status,
+            url=response.url,
+            text=response.body,
+            payload=response.data,
+        )
 
 
 def _load_json(path: Path) -> dict[str, Any] | None:
@@ -112,6 +197,43 @@ def apply_rubyplay_path_audit(
 
 class RubyPlayProvider(_RubyPlayProvider):
     """RubyPlay adapter with fail-closed exhaustive branch semantics."""
+
+    def crawl_catalog(
+        self,
+        *,
+        stop_event: threading.Event,
+        progress: Progress,
+        max_pages: int = 100,
+        on_game: GameCallback | None = None,
+    ) -> list[Game]:
+        try:
+            return super().crawl_catalog(
+                stop_event=stop_event,
+                progress=progress,
+                max_pages=max_pages,
+                on_game=on_game,
+            )
+        except requests.exceptions.SSLError as exc:
+            progress(
+                "RubyPlay catálogo: requests falló verificación TLS; "
+                "reintentando con Chromium y verificación TLS normal "
+                f"({type(exc).__name__})."
+            )
+
+        original_http = self.http
+        browser = RubyPlayBrowserCatalogClient(self.catalog_url, timeout_s=30.0)
+        try:
+            browser.start()
+            self.http = _BrowserCatalogSession(browser, original_http)  # type: ignore[assignment]
+            return super().crawl_catalog(
+                stop_event=stop_event,
+                progress=progress,
+                max_pages=max_pages,
+                on_game=on_game,
+            )
+        finally:
+            self.http = original_http
+            browser.close()
 
     def test_game(
         self,
