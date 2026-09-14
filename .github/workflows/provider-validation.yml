@@ -20,6 +20,21 @@ on:
         required: false
         default: ''
         type: string
+      game_url:
+        description: Direct game URL; when set, catalog crawl is skipped
+        required: false
+        default: ''
+        type: string
+      game_name:
+        description: Human name for direct target
+        required: false
+        default: ''
+        type: string
+      symbol:
+        description: Known provider symbol/ID for direct target
+        required: false
+        default: ''
+        type: string
       game_offset:
         description: Sorted catalog offset
         required: true
@@ -49,6 +64,11 @@ on:
         description: Allow HAR preparation/capture only when explicitly requested
         required: true
         default: false
+        type: boolean
+      install_browser:
+        description: Install Playwright Chromium only when provider bootstrap needs it
+        required: true
+        default: true
         type: boolean
   push:
     branches:
@@ -83,12 +103,16 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           INPUT_PROVIDER: ${{ inputs.provider }}
           INPUT_SLUG: ${{ inputs.slug }}
+          INPUT_GAME_URL: ${{ inputs.game_url }}
+          INPUT_GAME_NAME: ${{ inputs.game_name }}
+          INPUT_SYMBOL: ${{ inputs.symbol }}
           INPUT_GAME_OFFSET: ${{ inputs.game_offset }}
           INPUT_GAME_LIMIT: ${{ inputs.game_limit }}
           INPUT_SPINS: ${{ inputs.spins }}
           INPUT_TIMEOUT: ${{ inputs.timeout }}
           INPUT_MAX_PAGES: ${{ inputs.max_pages }}
           INPUT_ALLOW_HAR: ${{ inputs.allow_har_fallback }}
+          INPUT_INSTALL_BROWSER: ${{ inputs.install_browser }}
         run: |
           python - <<'PY'
           import json
@@ -99,12 +123,16 @@ jobs:
               cfg = {
                   'provider': os.environ.get('INPUT_PROVIDER') or 'pragmatic',
                   'slug': os.environ.get('INPUT_SLUG') or '',
+                  'game_url': os.environ.get('INPUT_GAME_URL') or '',
+                  'game_name': os.environ.get('INPUT_GAME_NAME') or '',
+                  'symbol': os.environ.get('INPUT_SYMBOL') or '',
                   'game_offset': int(os.environ.get('INPUT_GAME_OFFSET') or 0),
                   'game_limit': int(os.environ.get('INPUT_GAME_LIMIT') or 1),
                   'spins': int(os.environ.get('INPUT_SPINS') or 1),
                   'timeout': float(os.environ.get('INPUT_TIMEOUT') or 45),
                   'max_pages': int(os.environ.get('INPUT_MAX_PAGES') or 1),
                   'allow_har_fallback': str(os.environ.get('INPUT_ALLOW_HAR') or '').lower() == 'true',
+                  'install_browser': str(os.environ.get('INPUT_INSTALL_BROWSER') or 'true').lower() == 'true',
               }
           else:
               cfg = json.loads(Path('.github/provider-validation.json').read_text(encoding='utf-8'))
@@ -116,16 +144,22 @@ jobs:
               raise SystemExit('game_limit must be >= 1 in live Actions validation')
           if int(cfg.get('max_pages', 1)) < 0:
               raise SystemExit('max_pages must be >= 0')
+          if cfg.get('game_url') and not cfg.get('slug'):
+              raise SystemExit('direct game_url requires slug')
 
           values = {
               'provider': cfg['provider'],
               'slug': str(cfg.get('slug') or ''),
+              'game_url': str(cfg.get('game_url') or ''),
+              'game_name': str(cfg.get('game_name') or ''),
+              'symbol': str(cfg.get('symbol') or ''),
               'game_offset': int(cfg.get('game_offset', 0)),
               'game_limit': int(cfg.get('game_limit', 1)),
               'spins': int(cfg.get('spins', 1)),
               'timeout': float(cfg.get('timeout', 45)),
               'max_pages': int(cfg.get('max_pages', 1)),
               'allow_har_fallback': 'true' if cfg.get('allow_har_fallback') else 'false',
+              'install_browser': 'true' if cfg.get('install_browser', True) else 'false',
           }
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as out:
               for key, value in values.items():
@@ -137,6 +171,7 @@ jobs:
         run: python -m pip install -r requirements.txt
 
       - name: Install Chromium for provider bootstrap
+        if: steps.config.outputs.install_browser == 'true'
         run: python -m playwright install --with-deps chromium
 
       - name: Run fail-closed provider probe
@@ -145,6 +180,9 @@ jobs:
           args=(
             --provider "${{ steps.config.outputs.provider }}"
             --slug "${{ steps.config.outputs.slug }}"
+            --game-url "${{ steps.config.outputs.game_url }}"
+            --game-name "${{ steps.config.outputs.game_name }}"
+            --symbol "${{ steps.config.outputs.symbol }}"
             --game-offset "${{ steps.config.outputs.game_offset }}"
             --game-limit "${{ steps.config.outputs.game_limit }}"
             --spins "${{ steps.config.outputs.spins }}"
