@@ -2,36 +2,75 @@ from __future__ import annotations
 
 import hashlib
 import re
-from collections import Counter
+from collections import Counter, defaultdict
 from typing import Any
 
 
+_IDENTIFIER = r"[A-Za-z_$][A-Za-z0-9_$]*"
 _GAME_CONTROLLER_CALL = re.compile(
-    r"(?:\bthis\s*\.\s*)?\bgameController\s*\.\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\(",
+    rf"(?:\bthis\s*\.\s*)?\bgameController\s*\.\s*({_IDENTIFIER})\s*\(",
+    re.I,
+)
+_GAME_CONTROLLER_DOT_REFERENCE = re.compile(
+    rf"(?:\bthis\s*\.\s*)?\bgameController\s*\.\s*({_IDENTIFIER})",
+    re.I,
+)
+_GAME_CONTROLLER_BRACKET_REFERENCE = re.compile(
+    rf"(?:\bthis\s*\.\s*)?\bgameController\s*\[\s*['\"]({_IDENTIFIER})['\"]\s*\]",
+    re.I,
+)
+_CONTROLLER_PROTOTYPE_REFERENCE = re.compile(
+    rf"\b({_IDENTIFIER}Controller)\s*\.\s*prototype\s*(?:\.\s*({_IDENTIFIER})|\[\s*['\"]({_IDENTIFIER})['\"]\s*\])",
     re.I,
 )
 
 
 def extract_client_action_evidence(source: str) -> dict[str, Any]:
-    """Extract neutral method-call evidence from the official D1 client source.
+    """Extract neutral controller evidence from an official D1 client source.
 
-    Method names are reported exactly as structural evidence.  No method is
+    Names are reported exactly as structural evidence. No method/reference is
     promoted to a semantic action (purchase, gamble, choice, etc.) here.
     """
 
-    counts: Counter[str] = Counter()
-    for match in _GAME_CONTROLLER_CALL.finditer(source or ""):
-        counts[str(match.group(1))] += 1
+    text = source or ""
+    call_counts: Counter[str] = Counter()
+    for match in _GAME_CONTROLLER_CALL.finditer(text):
+        call_counts[str(match.group(1))] += 1
+
+    references: set[str] = set()
+    references.update(
+        str(match.group(1))
+        for match in _GAME_CONTROLLER_DOT_REFERENCE.finditer(text)
+    )
+    references.update(
+        str(match.group(1))
+        for match in _GAME_CONTROLLER_BRACKET_REFERENCE.finditer(text)
+    )
+
+    prototype_methods: dict[str, set[str]] = defaultdict(set)
+    for match in _CONTROLLER_PROTOTYPE_REFERENCE.finditer(text):
+        controller = str(match.group(1))
+        method = str(match.group(2) or match.group(3) or "")
+        if controller and method:
+            prototype_methods[controller].add(method)
+
     return {
-        "game_controller_methods": sorted(counts),
-        "method_call_counts": dict(sorted(counts.items())),
+        "game_controller_methods": sorted(call_counts),
+        "method_call_counts": dict(sorted(call_counts.items())),
+        "game_controller_references": sorted(references),
+        "controller_prototype_methods": {
+            controller: sorted(methods)
+            for controller, methods in sorted(prototype_methods.items())
+        },
     }
 
 
 def build_client_action_evidence(
     script_sources: list[tuple[str, str]],
 ) -> dict[str, Any]:
-    aggregate: Counter[str] = Counter()
+    aggregate_calls: Counter[str] = Counter()
+    aggregate_references: set[str] = set()
+    aggregate_prototypes: dict[str, set[str]] = defaultdict(set)
     scripts: list[dict[str, Any]] = []
 
     for url, source in script_sources:
@@ -39,13 +78,21 @@ def build_client_action_evidence(
         evidence = extract_client_action_evidence(text)
         counts = evidence["method_call_counts"]
         for method, count in counts.items():
-            aggregate[str(method)] += int(count)
+            aggregate_calls[str(method)] += int(count)
+        aggregate_references.update(
+            str(method) for method in evidence["game_controller_references"]
+        )
+        for controller, methods in evidence["controller_prototype_methods"].items():
+            aggregate_prototypes[str(controller)].update(str(method) for method in methods)
+
         scripts.append(
             {
                 "url": str(url),
                 "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
                 "game_controller_methods": evidence["game_controller_methods"],
                 "method_call_counts": counts,
+                "game_controller_references": evidence["game_controller_references"],
+                "controller_prototype_methods": evidence["controller_prototype_methods"],
             }
         )
 
@@ -53,8 +100,13 @@ def build_client_action_evidence(
         "schema": "tester-spin/1spin4win-client-action-evidence/v1",
         "scripts": scripts,
         "aggregate": {
-            "game_controller_methods": sorted(aggregate),
-            "method_call_counts": dict(sorted(aggregate.items())),
+            "game_controller_methods": sorted(aggregate_calls),
+            "method_call_counts": dict(sorted(aggregate_calls.items())),
+            "game_controller_references": sorted(aggregate_references),
+            "controller_prototype_methods": {
+                controller: sorted(methods)
+                for controller, methods in sorted(aggregate_prototypes.items())
+            },
         },
     }
 
