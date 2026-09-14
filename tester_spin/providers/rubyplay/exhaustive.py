@@ -14,6 +14,10 @@ from tester_spin.models import Game, GameTestResult
 from tester_spin.providers.base import GameCallback, Progress
 from tester_spin.providers.rubyplay.adapter import RubyPlayProvider as _RubyPlayProvider
 from tester_spin.providers.rubyplay.browser_catalog import RubyPlayBrowserCatalogClient
+from tester_spin.providers.rubyplay.browser_http import (
+    RubyPlayTlsFallbackSession,
+    RubyPlayVerifiedBrowserTransport,
+)
 
 
 INDEX_BRANCH_ACTIONS = {"select", "pick"}
@@ -231,6 +235,13 @@ def apply_rubyplay_path_audit(
 
 class RubyPlayProvider(_RubyPlayProvider):
     """RubyPlay adapter with fail-closed exhaustive branch semantics."""
+
+    def _new_session(self):
+        base = _RubyPlayProvider._new_session()
+        return RubyPlayTlsFallbackSession(
+            base,
+            transport_factory=RubyPlayVerifiedBrowserTransport,
+        )
 
     def crawl_catalog(
         self,
