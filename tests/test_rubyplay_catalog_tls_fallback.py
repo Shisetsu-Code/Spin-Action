@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import requests
 
-from tester_spin.providers.rubyplay.adapter import RubyPlayProvider
+from tester_spin.providers.rubyplay.exhaustive import RubyPlayProvider
 
 
 HTML = r'''
@@ -56,6 +56,9 @@ class _BrowserCatalog:
             raise AssertionError("browser must be started before reading catalog HTML")
         return HTML, self.catalog_url
 
+    def request_json(self, *_args, **_kwargs):
+        raise AssertionError("one-page catalog must not paginate")
+
     def fetch_page(self, *_args, **_kwargs):
         raise AssertionError("one-page catalog must not paginate")
 
@@ -68,7 +71,7 @@ class RubyPlayCatalogTlsFallbackTests(unittest.TestCase):
             provider = RubyPlayProvider(Path(temp))
             provider.http = _TlsFailSession()  # type: ignore[assignment]
             with patch(
-                "tester_spin.providers.rubyplay.adapter.RubyPlayBrowserCatalogClient",
+                "tester_spin.providers.rubyplay.exhaustive.RubyPlayBrowserCatalogClient",
                 _BrowserCatalog,
             ):
                 games = provider.crawl_catalog(
