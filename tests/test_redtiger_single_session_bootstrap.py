@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from tester_spin.providers.redtiger import evolution_launch
+from tester_spin.providers.redtiger import bootstrap_browser, evolution_launch
 from tester_spin.providers.redtiger.bootstrap_browser import _safe_trace_url
 
 
@@ -66,6 +66,36 @@ class RedTigerSingleSessionBootstrapTests(unittest.TestCase):
             "https://g.example/a/<opaque>/platform/game/settings?session=<redacted>",
         )
         self.assertNotIn("session=secret", sanitized)
+
+    def test_trace_response_headers_allowlists_only_safe_edge_metadata(self) -> None:
+        self.assertTrue(
+            hasattr(bootstrap_browser, "_safe_response_headers"),
+            "bootstrap trace needs a safe response-header allowlist for launcher diagnostics",
+        )
+        sanitized = bootstrap_browser._safe_response_headers(
+            {
+                "Server": "cloudflare",
+                "Content-Type": "text/html; charset=UTF-8",
+                "X-Frame-Options": "SAMEORIGIN",
+                "Content-Security-Policy": "frame-ancestors 'self' https://showcase.evo-games.com",
+                "Cross-Origin-Resource-Policy": "same-site",
+                "Set-Cookie": "session=do-not-record",
+                "Authorization": "Bearer do-not-record",
+            }
+        )
+        self.assertEqual(
+            sanitized,
+            {
+                "content-security-policy": "frame-ancestors 'self' https://showcase.evo-games.com",
+                "content-type": "text/html; charset=UTF-8",
+                "cross-origin-resource-policy": "same-site",
+                "server": "cloudflare",
+                "x-frame-options": "SAMEORIGIN",
+            },
+        )
+        self.assertNotIn("set-cookie", sanitized)
+        self.assertNotIn("authorization", sanitized)
+        self.assertNotIn("do-not-record", repr(sanitized))
 
 
 if __name__ == "__main__":
