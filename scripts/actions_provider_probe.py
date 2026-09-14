@@ -25,6 +25,7 @@ _PROVIDER_CLASSES = {
     "rubyplay": RubyPlayProvider,
     "redtiger": RedTigerProvider,
     "belatra": BelatraProvider,
+    "1spin4win": OneSpin4WinProvider,
     "one_spin4win": OneSpin4WinProvider,
 }
 
