@@ -15,7 +15,6 @@ from scripts.actions_provider_probe import (
 )
 from tester_spin.models import Game, GameTestResult
 from tester_spin.purchase_coverage import (
-    NO_PURCHASE_PROVEN,
     PURCHASE_COMPLETE,
     PURCHASE_UNKNOWN,
     aggregate_purchase_coverages,
@@ -123,13 +122,16 @@ def run_selected_games(
 
         runtime_exc: BaseException | None = None
         try:
+            # Purchase paths deliberately bypass the general result finalizer.
+            # Sampling quotas, full branch matrices and farm-readiness are a
+            # different audit and must not turn a proven purchase into a false
+            # negative (or promote an unproven one).
             result = provider.test_purchase_paths(
                 game,
                 timeout_s=max(1.0, float(timeout_s)),
                 stop_event=stop_event,
                 progress=game_progress,
             )
-            result = provider.finalize_test_result(result, progress=game_progress)
         except BaseException as exc:
             runtime_exc = exc
             result = _error_result(game, exc)
