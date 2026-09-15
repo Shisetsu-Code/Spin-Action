@@ -31,6 +31,20 @@ class ProviderAdapter(ABC):
         """Attach one limiter shared by every game worker for this provider instance."""
         self._provider_request_rate_limiter = limiter
 
+    def set_provider_request_rate_limit(self, requests_per_minute: int) -> int:
+        """Adjust the attached shared limiter in place.
+
+        Active workers keep the same limiter object, so a campaign can reduce the
+        provider-wide ceiling without creating independent per-worker budgets.
+        """
+        limiter = getattr(self, "_provider_request_rate_limiter", None)
+        if limiter is None:
+            raise RuntimeError("provider request rate limiter is not attached")
+        setter = getattr(limiter, "set_requests_per_minute", None)
+        if not callable(setter):
+            raise TypeError("attached provider request rate limiter is not adjustable")
+        return int(setter(int(requests_per_minute)))
+
     def acquire_provider_request_slot(
         self,
         *,
@@ -220,18 +234,14 @@ class ProviderAdapter(ABC):
 
 class ProviderRegistry:
     def __init__(self) -> None:
-        self._providers: dict[str, ProviderAdapter] = {}
+        self._providers: dict[str, type[ProviderAdapter]] = {}
 
-    def register(self, provider: ProviderAdapter) -> None:
-        if provider.key in self._providers:
-            raise ValueError(f"Proveedor duplicado: {provider.key}")
-        self._providers[provider.key] = provider
+    def register(self, provider_cls: type[ProviderAdapter]) -> None:
+        self._providers[provider_cls.key] = provider_cls
 
-    def get(self, key: str) -> ProviderAdapter:
-        try:
-            return self._providers[key]
-        except KeyError as exc:
-            raise KeyError(f"Proveedor no registrado: {key}") from exc
+    def create(self, key: str, data_root: Path) -> ProviderAdapter:
+        provider_cls = self._providers[key]
+        return provider_cls(data_root)
 
-    def all(self) -> list[ProviderAdapter]:
-        return list(self._providers.values())
+    def keys(self) -> list[str]:
+        return sorted(self._providers)
