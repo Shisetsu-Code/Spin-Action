@@ -6,6 +6,7 @@ from tester_spin.models import Game, GameTestResult
 from tester_spin.providers.farm_structure import attach_execution_structure
 from tester_spin.providers.pragmatic_action_inventory import annotate_pragmatic_action_inventory
 from tester_spin.providers.pragmatic_exhaustive import PragmaticProvider as _PragmaticProvider
+from tester_spin.providers.pragmatic_purchase_coverage import build_pragmatic_purchase_coverage
 from tester_spin.providers.result_farm_contract import (
     ProviderFarmSpec,
     build_result_farm_contract,
@@ -69,6 +70,10 @@ class PragmaticProvider(_PragmaticProvider):
         reason = str(inventory.get("reason") or "")
         progress(f"Pragmatic inventario de acciones: {state}. {reason}".strip())
         return result
+
+    def build_purchase_coverage(self, game: Game, result: GameTestResult) -> dict:
+        del game
+        return build_pragmatic_purchase_coverage(result)
 
     def build_farm_contract(self, game: Game, result: GameTestResult) -> dict:
         contract = build_result_farm_contract(game, result, self.game_dir(game), _SPEC)
