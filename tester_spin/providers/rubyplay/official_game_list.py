@@ -75,7 +75,11 @@ def build_sheet_csv_url(sheet_url: str) -> str:
         {
             "tqx": "out:csv",
             "gid": gids[0],
-            "range": "A2:P",
+            # The current official sheet has a deliberately blank column B and
+            # extends through Demo Link near the right edge. A2:P truncated the
+            # authoritative Demo Link column and forced a non-authoritative web
+            # fallback. Keep enough width for the documented table through T.
+            "range": "A2:T",
             "headers": "1",
         }
     )
