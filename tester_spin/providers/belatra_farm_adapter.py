@@ -47,6 +47,10 @@ _SPEC = ProviderFarmSpec(
 class BelatraProvider(_BelatraProvider):
     """Active Belatra provider with post-discovery farm export hooks."""
 
+    # Keep purchase validation serial until the encrypted demo runtime has been
+    # explicitly proven safe with multiple simultaneous game sessions.
+    max_test_concurrency = 1
+
     def _post_direct_game(
         self,
         state: dict,
