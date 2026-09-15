@@ -7,6 +7,7 @@ from tester_spin.models import Game, GameTestResult
 from tester_spin.providers.base import Progress
 from tester_spin.providers.belatra import BelatraProvider as _BaseBelatraProvider
 from tester_spin.providers.belatra_exhaustive import BelatraProvider as _BelatraProvider
+from tester_spin.providers.belatra_purchase_coverage import build_belatra_purchase_coverage
 from tester_spin.providers.farm_structure import attach_execution_structure
 from tester_spin.providers.result_farm_contract import (
     ProviderFarmSpec,
@@ -85,6 +86,30 @@ class BelatraProvider(_BelatraProvider):
             stop_event=stop_event,
             progress=progress,
         )
+
+    def test_purchase_paths(
+        self,
+        game: Game,
+        *,
+        timeout_s: float,
+        stop_event: threading.Event,
+        progress: Progress,
+    ) -> GameTestResult:
+        # Purchase discovery only needs the authoritative ENTER metadata. Reusing
+        # the direct one-spin path avoids expanding unrelated math/VIP selector
+        # matrices just to learn that buyBonus wire semantics are still unresolved.
+        return _BaseBelatraProvider.test_game(
+            self,
+            game,
+            spins=1,
+            timeout_s=timeout_s,
+            stop_event=stop_event,
+            progress=progress,
+        )
+
+    def build_purchase_coverage(self, game: Game, result: GameTestResult) -> dict:
+        del game
+        return build_belatra_purchase_coverage(result)
 
     def farm_contract_dir(self, game: Game) -> Path | None:
         return self.game_dir(game)
