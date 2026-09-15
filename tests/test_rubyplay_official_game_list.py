@@ -17,6 +17,8 @@ DOC_HTML = r'''
 
 CSV_TEXT = '''RubyPlay Game List,,,,,,\nName,Status,Release Date,Game ID,Wager,Buy Feature,Demo Link\nUpcoming Game 96,Upcoming,2026-12-10,rp_999,5,Yes,https://demo.rubyplay.com/launcher?gamename=rp_999&mode=offline\nJ Mania Chili Champs 96,Active,2026-09-03,rp_214,5,Yes,https://demo.rubyplay.com/launcher?gamename=rp_214&mode=offline\nMad Hit Supernova 96,Active,2024-04-25,rp_108,10,Yes,https://rubyplay.com/games/mad-hit-supernova/\n'''
 
+CURRENT_WIDE_CSV = '''Name,,Status,Release Date,Game ID,Wager,Max Win Multiplier,BF Max Win Multiplier,Default RTP,Only Buy Feature RTP,Volatility in %,Volatility,Hit Rate Frequency,Free Rounds,Buy Feature,Awarded Feature Support,Theme,Features,Demo Link\nMad Hit Mr Coin SE 96,,Upcoming,2026-11-12,rp_240,2,x3728,x3583,96.32%,96%,81.63,5,16.99%,Active,Yes,Yes,Banking/Money,"Mad Hit Instant Win, Mad Hit Collect and Win",https://demo.rubyplay.com/launcher?gamename=rp_240&mode=offline\nJ Mania Chili Champs 96,,Active,2026-09-03,rp_214,5,5000x,5000x,96.30%,96%,91%,5,56.70%,Active,Yes,Yes,Chili/Spices,"Wild Surge, J Mania, Jackpot Pick",https://demo.rubyplay.com/launcher?gamename=rp_214&mode=offline\n'''
+
 
 class RubyPlayOfficialGameListTests(unittest.TestCase):
     def test_discovers_google_sheet_and_builds_csv_export_url(self) -> None:
@@ -28,7 +30,7 @@ class RubyPlayOfficialGameListTests(unittest.TestCase):
         self.assertEqual(
             build_sheet_csv_url(sheet),
             "https://docs.google.com/spreadsheets/d/1AbC_def-123/gviz/tq?"
-            "tqx=out%3Acsv&gid=987654321&range=A2%3AP&headers=1",
+            "tqx=out%3Acsv&gid=987654321&range=A2%3AT&headers=1",
         )
 
     def test_parser_keeps_only_active_games_and_preserves_provider_identity(self) -> None:
@@ -50,6 +52,21 @@ class RubyPlayOfficialGameListTests(unittest.TestCase):
         public = next(item for item in records if item.game.symbol == "rp_108")
         self.assertEqual(public.game.slug, "mad-hit-supernova")
         self.assertEqual(public.game.url, "https://rubyplay.com/games/mad-hit-supernova/")
+
+    def test_parser_accepts_current_wide_sheet_with_blank_column_b(self) -> None:
+        records = parse_official_game_list_csv(CURRENT_WIDE_CSV, provider_key="rubyplay")
+        self.assertEqual(len(records), 1)
+        record = records[0]
+        self.assertEqual(record.game.symbol, "rp_214")
+        self.assertEqual(record.game.slug, "rp_214")
+        self.assertEqual(
+            record.game.url,
+            "https://demo.rubyplay.com/launcher?gamename=rp_214&mode=offline",
+        )
+        self.assertTrue(record.buy_feature)
+        self.assertEqual(record.default_rtp, "96.30%")
+        self.assertEqual(record.theme, "Chili/Spices")
+        self.assertIn("J Mania", record.features)
 
     def test_parser_fails_closed_on_duplicate_active_game_ids(self) -> None:
         duplicated = CSV_TEXT + (
