@@ -1,15 +1,15 @@
 {
-  "provider": "pragmatic",
-  "slug": "frozen-charms",
-  "game_url": "https://www.pragmaticplay.com/en/games/frozen-charms/",
-  "game_name": "Frozen Charms",
-  "symbol": "vswayscharms",
-  "game_offset": 0,
-  "game_limit": 1,
+  "provider": "belatra",
+  "slug": "",
+  "game_url": "",
+  "game_name": "",
+  "symbol": "",
+  "game_offset": 90,
+  "game_limit": 14,
   "spins": 1,
   "timeout": 45,
   "max_pages": 0,
   "allow_har_fallback": false,
   "install_browser": false,
-  "run_sequence": 60
+  "run_sequence": 61
 }
