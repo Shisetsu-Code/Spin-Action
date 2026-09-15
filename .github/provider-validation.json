@@ -4,12 +4,12 @@
   "game_url": "",
   "game_name": "",
   "symbol": "",
-  "game_offset": 160,
-  "game_limit": 40,
+  "game_offset": 200,
+  "game_limit": 27,
   "spins": 1,
   "timeout": 45,
   "max_pages": 0,
   "allow_har_fallback": false,
   "install_browser": true,
-  "run_sequence": 67
+  "run_sequence": 68
 }
