@@ -20,6 +20,7 @@ class _FakeProvider:
 
     def __init__(self) -> None:
         self.seen: list[str] = []
+        self.finalizer_calls = 0
 
     def test_purchase_paths(self, game, *, timeout_s, stop_event, progress):
         self.seen.append(game.slug)
@@ -39,7 +40,8 @@ class _FakeProvider:
         )
 
     def finalize_test_result(self, result, *, progress):
-        return result
+        self.finalizer_calls += 1
+        raise AssertionError("purchase campaign must not invoke general sampling/path finalizer")
 
     def build_purchase_coverage(self, game, result):
         return {
@@ -82,6 +84,7 @@ class PurchaseCampaignTests(unittest.TestCase):
                 progress=lambda _message: None,
             )
         self.assertEqual(provider.seen, ["ok-1", "boom", "ok-2"])
+        self.assertEqual(provider.finalizer_calls, 0)
         self.assertEqual([row["coverage"]["state"] for row in rows], [
             PURCHASE_COMPLETE,
             PURCHASE_UNKNOWN,
