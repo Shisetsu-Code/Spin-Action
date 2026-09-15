@@ -7,6 +7,7 @@ from pathlib import Path
 
 from scripts.purchase_retry_manifest import (
     build_retry_manifest,
+    provider_blockers_from_campaign_summary,
     rows_from_campaign_summary,
     write_retry_manifest,
 )
@@ -130,11 +131,82 @@ class PurchaseRetryManifestTests(unittest.TestCase):
         self.assertEqual(entry["reason"], "launcher HTTP 403")
         self.assertEqual(entry["pending_options"], [])
 
-    def test_reporter_flattens_campaign_results_and_writes_manifest(self) -> None:
+    def test_manifest_uses_pending_option_reason_when_game_reason_is_empty(self) -> None:
+        manifest = build_retry_manifest(
+            [
+                {
+                    "game": {"provider": "fake", "slug": "option-reason"},
+                    "runtime_error": "",
+                    "coverage": {
+                        "state": PURCHASE_UNKNOWN,
+                        "reason": "",
+                        "options": [
+                            {
+                                "purchase_id": "P-UNKNOWN",
+                                "executable": False,
+                                "wire_contract_state": "UNKNOWN",
+                                "execution_state": "NOT_ATTEMPTED",
+                                "terminal": False,
+                                "reason": "serializer not proven",
+                            }
+                        ],
+                    },
+                }
+            ]
+        )
+        self.assertEqual(manifest["entries"][0]["reason"], "serializer not proven")
+
+    def test_manifest_never_leaves_retry_reason_blank(self) -> None:
+        manifest = build_retry_manifest(
+            [
+                {
+                    "game": {"provider": "fake", "slug": "unexplained"},
+                    "runtime_error": "",
+                    "coverage": {
+                        "state": PURCHASE_UNKNOWN,
+                        "reason": "",
+                        "options": [],
+                    },
+                }
+            ]
+        )
+        self.assertTrue(manifest["entries"][0]["reason"])
+        self.assertIn("purchase-coverage.json", manifest["entries"][0]["reason"])
+
+    def test_provider_catalog_failures_are_preserved_as_retry_blockers(self) -> None:
         summary = {
             "provider_summaries": [
                 {
+                    "provider": "rubyplay",
+                    "catalog_error": "HTTP 503 while reading official catalog",
+                    "results": [],
+                },
+                {
+                    "provider": "pragmatic",
+                    "results": [],
+                },
+            ]
+        }
+        blockers = provider_blockers_from_campaign_summary(summary)
+        self.assertEqual(
+            blockers,
+            [
+                {
+                    "provider": "rubyplay",
+                    "state": PURCHASE_UNKNOWN,
+                    "reason": "HTTP 503 while reading official catalog",
+                }
+            ],
+        )
+
+    def test_reporter_flattens_campaign_results_and_writes_manifest(self) -> None:
+        summary = {
+            "closed": False,
+            "aggregate": {"overall_state": PURCHASE_UNKNOWN},
+            "provider_summaries": [
+                {
                     "provider": "fake",
+                    "catalog_error": "catalog unavailable",
                     "results": [
                         {
                             "game": {"provider": "fake", "slug": "u-1"},
@@ -149,7 +221,7 @@ class PurchaseRetryManifestTests(unittest.TestCase):
                         }
                     ],
                 }
-            ]
+            ],
         }
         self.assertEqual(len(rows_from_campaign_summary(summary)), 1)
 
@@ -165,6 +237,10 @@ class PurchaseRetryManifestTests(unittest.TestCase):
         self.assertEqual(manifest, stored)
         self.assertEqual(stored["count"], 1)
         self.assertEqual(stored["entries"][0]["slug"], "u-1")
+        self.assertEqual(stored["provider_blocker_count"], 1)
+        self.assertEqual(stored["provider_blockers"][0]["provider"], "fake")
+        self.assertFalse(stored["source_closed"])
+        self.assertEqual(stored["source_overall_state"], PURCHASE_UNKNOWN)
 
     def test_retry_reasons_redact_urls_and_secret_like_values(self) -> None:
         manifest = build_retry_manifest(
