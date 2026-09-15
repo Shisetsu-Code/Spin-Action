@@ -1,0 +1,110 @@
+name: Purchase Coverage Campaign
+
+on:
+  push:
+    branches:
+      - lab/actions-validation
+    paths:
+      - .github/purchase-campaign.json
+      - .github/workflows/purchase-campaign.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  purchase-campaign:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Read campaign config
+        id: cfg
+        shell: bash
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+
+          cfg = json.loads(Path('.github/purchase-campaign.json').read_text(encoding='utf-8'))
+          keys = (
+              'run_sequence', 'provider', 'slug', 'game_url', 'game_name', 'symbol',
+              'game_offset', 'game_limit', 'timeout', 'max_pages', 'install_chromium',
+          )
+          for key in keys:
+              value = cfg.get(key, '')
+              if isinstance(value, bool):
+                  value = 'true' if value else 'false'
+              print(f"{key}={value}")
+          PY
+
+      - name: Install Chromium
+        if: steps.cfg.outputs.install_chromium == 'true'
+        run: python -m playwright install --with-deps chromium
+
+      - name: Run purchase campaign
+        id: campaign
+        shell: bash
+        run: |
+          set +e
+          args=(
+            --provider "${{ steps.cfg.outputs.provider }}"
+            --game-offset "${{ steps.cfg.outputs.game_offset }}"
+            --game-limit "${{ steps.cfg.outputs.game_limit }}"
+            --timeout "${{ steps.cfg.outputs.timeout }}"
+            --max-pages "${{ steps.cfg.outputs.max_pages }}"
+            --data-root "purchase-results/data"
+            --output-dir "purchase-results"
+          )
+          if [[ -n "${{ steps.cfg.outputs.slug }}" ]]; then
+            args+=(--slug "${{ steps.cfg.outputs.slug }}")
+          fi
+          if [[ -n "${{ steps.cfg.outputs.game_url }}" ]]; then
+            args+=(--game-url "${{ steps.cfg.outputs.game_url }}")
+          fi
+          if [[ -n "${{ steps.cfg.outputs.game_name }}" ]]; then
+            args+=(--game-name "${{ steps.cfg.outputs.game_name }}")
+          fi
+          if [[ -n "${{ steps.cfg.outputs.symbol }}" ]]; then
+            args+=(--symbol "${{ steps.cfg.outputs.symbol }}")
+          fi
+
+          python -m scripts.purchase_campaign "${args[@]}"
+          status=$?
+          echo "exit_code=$status" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Upload purchase evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: purchase-campaign-${{ steps.cfg.outputs.provider }}-${{ steps.cfg.outputs.run_sequence }}
+          path: purchase-results/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Enforce fail-closed campaign verdict
+        if: always()
+        shell: bash
+        run: |
+          status="${{ steps.campaign.outputs.exit_code }}"
+          if [[ -z "$status" ]]; then
+            echo "Purchase campaign did not report an exit code."
+            exit 2
+          fi
+          if [[ "$status" != "0" ]]; then
+            echo "Purchase campaign remained fail-closed with exit code $status."
+            exit "$status"
+          fi
+          echo "Purchase campaign closed successfully."
