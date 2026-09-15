@@ -90,12 +90,22 @@ def _normalize_row(row: dict[str, str | None]) -> dict[str, str]:
     }
 
 
+def _bounded_row_preview(rows: list[list[str]]) -> list[list[str]]:
+    preview: list[list[str]] = []
+    for row in rows[:2]:
+        preview.append([str(cell or "").strip()[:80] for cell in row[:8]])
+    return preview
+
+
 def _header_index(rows: list[list[str]]) -> int:
     for index, row in enumerate(rows[:20]):
         names = {str(cell or "").strip() for cell in row if str(cell or "").strip()}
         if _REQUIRED_HEADERS.issubset(names):
             return index
-    raise ValueError("RubyPlay Game List: encabezado oficial no encontrado.")
+    raise ValueError(
+        "RubyPlay Game List: encabezado oficial no encontrado; "
+        f"primeras_filas={_bounded_row_preview(rows)!r}."
+    )
 
 
 def _validated_demo_identity(demo_url: str, game_id: str) -> tuple[str, str]:
