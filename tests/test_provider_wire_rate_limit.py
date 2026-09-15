@@ -9,6 +9,7 @@ from tester_spin.models import Game
 from tester_spin.providers.belatra_farm_adapter import BelatraProvider
 from tester_spin.providers.one_spin4win import OneSpin4WinProvider as BaseOneSpin4WinProvider
 from tester_spin.providers.one_spin4win_farm_adapter import OneSpin4WinProvider
+from tester_spin.providers.pragmatic import HttpBootstrap, PragmaticProvider as BasePragmaticProvider
 
 
 class _FakeWS:
@@ -23,10 +24,17 @@ class _FakeWS:
         self.closed = True
 
 
+class _FakeRequest:
+    url = "https://example.invalid/game"
+    headers = {"Content-Type": "application/x-www-form-urlencoded"}
+
+
 class _FakeResponse:
     status_code = 200
     text = '{"gs": {}}'
+    content = b"na=s"
     headers = {"Content-Type": "application/json"}
+    request = _FakeRequest()
 
     def json(self):
         return {"gs": {}}
@@ -42,6 +50,40 @@ class _FakeSession:
 
 
 class ProviderWireRateLimitTests(unittest.TestCase):
+    def test_pragmatic_state_post_reserves_provider_slot(self) -> None:
+        provider = object.__new__(BasePragmaticProvider)
+        slots: list[int] = []
+        provider.acquire_provider_request_slot = lambda **_kwargs: slots.append(1) or True
+        session = _FakeSession()
+        bootstrap = HttpBootstrap(
+            session=session,
+            symbol="vsdemo",
+            mgckey="demo",
+            cver=None,
+            endpoint="https://example.invalid/game",
+            launch_url="https://example.invalid/launch",
+            spin_template={},
+            init_request_raw="",
+            init_response_raw=b"",
+            init_response={},
+            calibration_request_raw="",
+            calibration_response_raw=b"",
+            calibration_response={},
+        )
+
+        with tempfile.TemporaryDirectory() as temp:
+            provider._post_and_store(
+                bootstrap,
+                {"action": "doSpin", "symbol": "vsdemo"},
+                Path(temp),
+                step=0,
+                label="entry",
+                timeout_s=1.0,
+            )
+
+        self.assertEqual(session.posts, 1)
+        self.assertEqual(len(slots), 1)
+
     def test_d1_reserves_slot_for_init_play_and_close(self) -> None:
         provider = object.__new__(OneSpin4WinProvider)
         ws = _FakeWS()
