@@ -2,6 +2,6 @@
   "providers": "rubyplay",
   "workers": 1,
   "max_pages": 0,
-  "install_browser": true,
-  "run_sequence": 2
+  "install_browser": false,
+  "run_sequence": 3
 }
