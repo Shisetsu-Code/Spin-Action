@@ -61,6 +61,10 @@ _SPEC = ProviderFarmSpec(
 class RedTigerProvider(_RedTigerProvider):
     """Active Red Tiger provider with post-discovery farm export hooks."""
 
+    # Evolution/Red Tiger bootstrap currently depends on one browser/runtime flow
+    # at a time. Keep it serial until multi-session bootstrap is proven safe.
+    max_test_concurrency = 1
+
     def farm_contract_dir(self, game: Game) -> Path | None:
         return self.game_dir(game)
 
