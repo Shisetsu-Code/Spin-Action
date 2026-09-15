@@ -15,7 +15,7 @@ permissions:
 jobs:
   purchase-campaign:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 360
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -41,9 +41,15 @@ jobs:
           keys = (
               'run_sequence', 'provider', 'slug', 'game_url', 'game_name', 'symbol',
               'game_offset', 'game_limit', 'timeout', 'max_pages', 'install_chromium',
+              'requests_per_minute', 'inter_game_delay', 'circuit_breaker_threshold',
           )
+          defaults = {
+              'requests_per_minute': 30,
+              'inter_game_delay': 4.0,
+              'circuit_breaker_threshold': 3,
+          }
           for key in keys:
-              value = cfg.get(key, '')
+              value = cfg.get(key, defaults.get(key, ''))
               if isinstance(value, bool):
                   value = 'true' if value else 'false'
               print(f"{key}={value}")
@@ -64,6 +70,9 @@ jobs:
             --game-limit "${{ steps.cfg.outputs.game_limit }}"
             --timeout "${{ steps.cfg.outputs.timeout }}"
             --max-pages "${{ steps.cfg.outputs.max_pages }}"
+            --requests-per-minute "${{ steps.cfg.outputs.requests_per_minute }}"
+            --inter-game-delay "${{ steps.cfg.outputs.inter_game_delay }}"
+            --circuit-breaker-threshold "${{ steps.cfg.outputs.circuit_breaker_threshold }}"
             --data-root "purchase-results/data"
             --output-dir "purchase-results"
           )
