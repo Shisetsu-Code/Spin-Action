@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import time
@@ -118,6 +119,7 @@ def _safe_trace_url(value: str) -> str:
 def _safe_response_headers(headers: dict[str, str]) -> dict[str, str]:
     """Keep only non-credential response metadata useful for launcher diagnostics."""
     allowed = {
+        "cf-mitigated",
         "content-security-policy",
         "content-type",
         "cross-origin-embedder-policy",
@@ -134,6 +136,30 @@ def _safe_response_headers(headers: dict[str, str]) -> dict[str, str]:
         if clean:
             result[name] = clean[:2000]
     return dict(sorted(result.items()))
+
+
+def _safe_error_page_fingerprint(body: str) -> dict[str, Any]:
+    """Classify an HTTP error page without persisting its body or credential-like values."""
+    raw = str(body or "")
+    lowered = raw.casefold()
+    if "cf-chl" in lowered or "just a moment" in lowered or "challenge-platform" in lowered:
+        kind = "cloudflare_challenge"
+    elif (
+        "sorry, you have been blocked" in lowered
+        or "error 1020" in lowered
+        or ("attention required" in lowered and "cloudflare" in lowered)
+    ):
+        kind = "cloudflare_access_denied"
+    elif "403 forbidden" in lowered or "access denied" in lowered:
+        kind = "forbidden"
+    else:
+        kind = "unclassified_html"
+    encoded = raw.encode("utf-8", errors="replace")
+    return {
+        "kind": kind,
+        "body_bytes": len(encoded),
+        "sha256": hashlib.sha256(encoded).hexdigest(),
+    }
 
 
 def _header_shape(headers: dict[str, str]) -> dict[str, Any]:
@@ -398,15 +424,21 @@ def bootstrap_game(
                     or "/platform/game/" in parsed.path
                 )
                 if interesting and len(trace) < 600:
+                    status = int(response.status)
                     item: dict[str, Any] = {
                         "method": str(request.method or ""),
-                        "status": int(response.status),
+                        "status": status,
                         "resource_type": str(getattr(request, "resource_type", "") or ""),
                         "url": _safe_trace_url(url),
                     }
                     response_headers = _safe_response_headers(dict(response.headers or {}))
                     if response_headers:
                         item["response_headers"] = response_headers
+                    if status >= 400:
+                        try:
+                            item["error_page"] = _safe_error_page_fingerprint(response.text())
+                        except Exception:
+                            pass
                     trace.append(item)
 
                 if _is_start_response(response):
