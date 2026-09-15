@@ -115,6 +115,60 @@ class PragmaticCatalogTargetsTests(unittest.TestCase):
         self.assertTrue(provider.catalog_crawl_authoritative)
         self.assertIn("3", provider.catalog_crawl_reason)
 
+    def test_transient_ajax_failure_retries_same_page_before_continuing(self) -> None:
+        provider = _Provider(
+            [
+                Game("pragmatic", "a", "A", "https://example.invalid/a"),
+                Game("pragmatic", "b", "B", "https://example.invalid/b"),
+            ],
+            per_page=2,
+        )
+        calls: list[int] = []
+
+        def fetch(_provider, page: int) -> AjaxPage:
+            calls.append(page)
+            if calls == [2]:
+                return AjaxPage(
+                    page=2,
+                    url="https://example.invalid/games/?page=2",
+                    status=0,
+                    elapsed_ms=20_000.0,
+                    games=[],
+                    error="ReadTimeout",
+                )
+            if page == 2:
+                return AjaxPage(
+                    page=2,
+                    url="https://example.invalid/games/?page=2",
+                    status=200,
+                    elapsed_ms=1.0,
+                    games=[
+                        Game("pragmatic", "c", "C", "https://example.invalid/c"),
+                        Game("pragmatic", "d", "D", "https://example.invalid/d"),
+                    ],
+                )
+            return AjaxPage(
+                page=3,
+                url="https://example.invalid/games/?page=3",
+                status=200,
+                elapsed_ms=1.0,
+                games=[Game("pragmatic", "e", "E", "https://example.invalid/e")],
+            )
+
+        games = enumerate_pragmatic_targets(
+            provider,
+            stop_event=threading.Event(),
+            progress=lambda _message: None,
+            items_per_page_override=2,
+            fetch_ajax=fetch,
+            max_ajax_attempts=3,
+            retry_delay_s=0.0,
+        )
+
+        self.assertEqual(calls, [2, 2, 3])
+        self.assertEqual([game.slug for game in games], ["a", "b", "c", "d", "e"])
+        self.assertTrue(provider.catalog_crawl_authoritative)
+
     def test_manual_page_cap_is_never_authoritative(self) -> None:
         provider = _Provider(
             [
@@ -163,6 +217,8 @@ class PragmaticCatalogTargetsTests(unittest.TestCase):
                 progress=lambda _message: None,
                 items_per_page_override=2,
                 fetch_ajax=fetch,
+                max_ajax_attempts=2,
+                retry_delay_s=0.0,
             )
         self.assertFalse(provider.catalog_crawl_authoritative)
         self.assertIn("falló", provider.catalog_crawl_reason.lower())
