@@ -1,9 +1,9 @@
 {
-  "provider": "pragmatic",
-  "slug": "gates-of-olympus-pop",
-  "game_url": "https://www.pragmaticplay.com/en/games/gates-of-olympus-pop/",
-  "game_name": "Gates of Olympus Pop",
-  "symbol": "vs10olymppop",
+  "provider": "rubyplay",
+  "slug": "rp_214",
+  "game_url": "https://demo.rubyplay.com/launcher?gamename=rp_214&mode=offline",
+  "game_name": "J Mania Chili Champs 96",
+  "symbol": "rp_214",
   "game_offset": 0,
   "game_limit": 1,
   "spins": 1,
@@ -11,5 +11,5 @@
   "max_pages": 0,
   "allow_har_fallback": false,
   "install_browser": false,
-  "run_sequence": 47
+  "run_sequence": 48
 }
