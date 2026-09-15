@@ -8,12 +8,12 @@ from typing import Any
 
 
 class ProviderRequestRateLimiter:
-    """Thread-safe sliding-window limiter shared by all games of one provider.
+    """Thread-safe paced sliding-window limiter shared by one provider instance.
 
-    A successful ``acquire`` reserves exactly one outbound provider-protocol
-    request. The default window is 60 seconds so a configured value maps directly
-    to requests/minute. Callers may inject clock/sleep functions for deterministic
-    tests.
+    ``requests_per_minute`` is both a hard 60-second window ceiling and a pacing
+    target. Pacing prevents a fresh campaign from spending the whole minute's
+    allowance in one burst. The limit can be lowered in place so all active game
+    workers immediately share the same reduced ceiling.
     """
 
     def __init__(
@@ -33,6 +33,27 @@ class ProviderRequestRateLimiter:
         self._lock = threading.Lock()
         self._timestamps: deque[float] = deque()
         self._total_acquired = 0
+        self._next_allowed_at = 0.0
+
+    @property
+    def minimum_interval_seconds(self) -> float:
+        with self._lock:
+            return self.window_s / float(self.requests_per_minute)
+
+    def set_requests_per_minute(self, requests_per_minute: int) -> int:
+        """Change the shared ceiling without replacing the limiter object."""
+        limit = int(requests_per_minute)
+        if limit <= 0:
+            raise ValueError("requests_per_minute must be positive")
+        with self._lock:
+            self.requests_per_minute = limit
+            if self._timestamps:
+                new_interval = self.window_s / float(limit)
+                self._next_allowed_at = max(
+                    self._next_allowed_at,
+                    self._timestamps[-1] + new_interval,
+                )
+            return self.requests_per_minute
 
     def _prune_locked(self, now: float) -> None:
         cutoff = now - self.window_s
@@ -40,12 +61,7 @@ class ProviderRequestRateLimiter:
             self._timestamps.popleft()
 
     def acquire(self, *, stop_event: threading.Event | None = None) -> bool:
-        """Reserve one request slot, waiting if needed.
-
-        Returns ``False`` when cancellation is already requested or becomes set
-        while waiting. A cancelled acquisition is not counted.
-        """
-
+        """Reserve one request slot, waiting for both pacing and window capacity."""
         while True:
             if stop_event is not None and stop_event.is_set():
                 return False
@@ -53,11 +69,22 @@ class ProviderRequestRateLimiter:
             with self._lock:
                 now = self._clock()
                 self._prune_locked(now)
-                if len(self._timestamps) < self.requests_per_minute:
+                interval = self.window_s / float(self.requests_per_minute)
+
+                window_wait = 0.0
+                if len(self._timestamps) >= self.requests_per_minute:
+                    window_wait = max(0.0, self._timestamps[0] + self.window_s - now)
+
+                pace_wait = 0.0
+                if self._total_acquired > 0:
+                    pace_wait = max(0.0, self._next_allowed_at - now)
+
+                wait_s = max(window_wait, pace_wait)
+                if wait_s <= 0:
                     self._timestamps.append(now)
                     self._total_acquired += 1
+                    self._next_allowed_at = now + interval
                     return True
-                wait_s = max(0.0, self._timestamps[0] + self.window_s - now)
 
             if stop_event is not None:
                 if stop_event.wait(wait_s):
@@ -84,6 +111,7 @@ class ProviderRequestRateLimiter:
             return {
                 "requests_per_minute_limit": self.requests_per_minute,
                 "window_seconds": self.window_s,
+                "minimum_interval_seconds": self.window_s / float(self.requests_per_minute),
                 "requests_in_current_window": len(self._timestamps),
                 "total_acquired": self._total_acquired,
             }
