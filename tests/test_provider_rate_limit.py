@@ -38,6 +38,22 @@ class _DummyProvider(ProviderAdapter):
 
 
 class ProviderRequestRateLimiterTests(unittest.TestCase):
+    def test_paces_requests_even_when_window_has_capacity(self) -> None:
+        fake = _FakeTime()
+        limiter = ProviderRequestRateLimiter(
+            requests_per_minute=120,
+            clock=fake.clock,
+            sleep=fake.sleep,
+        )
+
+        limiter.acquire()
+        limiter.acquire()
+        limiter.acquire()
+
+        self.assertEqual(limiter.total_acquired, 3)
+        self.assertEqual(fake.sleeps, [0.5, 0.5])
+        self.assertAlmostEqual(fake.value, 1.0)
+
     def test_blocks_before_exceeding_window_ceiling(self) -> None:
         fake = _FakeTime()
         limiter = ProviderRequestRateLimiter(
@@ -51,7 +67,7 @@ class ProviderRequestRateLimiterTests(unittest.TestCase):
         limiter.acquire()
 
         self.assertEqual(limiter.total_acquired, 3)
-        self.assertEqual(fake.sleeps, [60.0])
+        self.assertEqual(fake.sleeps, [30.0, 30.0])
         self.assertLessEqual(limiter.requests_in_current_window, 2)
 
     def test_limit_is_shared_by_concurrent_game_workers(self) -> None:
@@ -73,6 +89,25 @@ class ProviderRequestRateLimiterTests(unittest.TestCase):
         self.assertTrue(all(not thread.is_alive() for thread in threads))
         self.assertEqual(limiter.total_acquired, 75)
         self.assertEqual(limiter.requests_in_current_window, 75)
+
+    def test_can_lower_rate_in_place_for_all_workers(self) -> None:
+        fake = _FakeTime()
+        limiter = ProviderRequestRateLimiter(
+            requests_per_minute=2000,
+            clock=fake.clock,
+            sleep=fake.sleep,
+        )
+        same_object = limiter
+
+        new_limit = limiter.set_requests_per_minute(500)
+        limiter.acquire()
+        limiter.acquire()
+
+        self.assertIs(limiter, same_object)
+        self.assertEqual(new_limit, 500)
+        self.assertEqual(limiter.requests_per_minute, 500)
+        self.assertEqual(fake.sleeps, [0.12])
+        self.assertEqual(limiter.snapshot()["requests_per_minute_limit"], 500)
 
     def test_stop_event_cancels_wait_instead_of_sending_more(self) -> None:
         fake = _FakeTime()
@@ -99,6 +134,7 @@ class ProviderRequestRateLimiterTests(unittest.TestCase):
         self.assertEqual(stats["requests_per_minute_limit"], 1234)
         self.assertEqual(stats["total_acquired"], 1)
         self.assertGreaterEqual(stats["requests_in_current_window"], 1)
+        self.assertAlmostEqual(stats["minimum_interval_seconds"], 60.0 / 1234.0)
 
     def test_provider_adapter_uses_attached_shared_limiter(self) -> None:
         provider = _DummyProvider()
@@ -111,6 +147,16 @@ class ProviderRequestRateLimiterTests(unittest.TestCase):
 
         self.assertEqual(stats["requests_per_minute_limit"], 2000)
         self.assertEqual(stats["total_acquired"], 2)
+
+    def test_provider_adapter_can_lower_shared_limiter_in_place(self) -> None:
+        provider = _DummyProvider()
+        limiter = ProviderRequestRateLimiter(requests_per_minute=2000)
+        provider.set_request_rate_limiter(limiter)
+
+        changed = provider.set_provider_request_rate_limit(1000)
+
+        self.assertEqual(changed, 1000)
+        self.assertEqual(provider.provider_request_rate_snapshot()["requests_per_minute_limit"], 1000)
 
     def test_provider_adapter_without_limiter_is_noop(self) -> None:
         provider = _DummyProvider()
