@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin, urlparse
@@ -18,10 +19,18 @@ from tester_spin.providers.rubyplay.browser_http import (
     RubyPlayTlsFallbackSession,
     RubyPlayVerifiedBrowserTransport,
 )
+from tester_spin.providers.rubyplay.official_game_list import (
+    OfficialGameListRecord,
+    build_sheet_csv_url,
+    discover_game_list_sheet_url,
+    is_official_game_list_target,
+    parse_official_game_list_csv,
+)
 
 
 INDEX_BRANCH_ACTIONS = {"select", "pick"}
 _GAME_PATH_RE = re.compile(r"^/games/([a-z0-9][a-z0-9-]*)/?$")
+_OFFICIAL_GAME_LIST_DOC = "https://docs.rubyplay.com/content/integration/lists/game-list"
 
 
 class _BrowserHTTPResponse:
@@ -243,6 +252,104 @@ class RubyPlayProvider(_RubyPlayProvider):
             transport_factory=RubyPlayVerifiedBrowserTransport,
         )
 
+    def catalog_record_invalid_reason(self, game: Game) -> str:
+        if is_official_game_list_target(game):
+            return ""
+        return super().catalog_record_invalid_reason(game)
+
+    def _persist_official_game_list_record(self, record: OfficialGameListRecord) -> None:
+        game = record.game
+        path = self.game_dir(game) / "game.json"
+        current: dict[str, Any] = {}
+        if path.is_file():
+            try:
+                loaded = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    current = loaded
+            except Exception:
+                current = {}
+        current.update(
+            {
+                "provider": game.provider,
+                "slug": game.slug,
+                "name": game.name,
+                "url": game.url,
+                "identifier": game.symbol,
+                "catalog_transport": "rubyplay_official_game_list",
+                "catalog_status": record.status,
+                "release_date": record.release_date,
+                "wager": record.wager,
+                "buy_feature": record.buy_feature,
+                "free_rounds": record.free_rounds,
+                "awarded_feature_support": record.awarded_feature_support,
+                "default_rtp": record.default_rtp,
+                "theme": record.theme,
+                "features": record.features,
+                "catalog_recovery_disabled": False,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+        )
+        path.write_text(
+            json.dumps(current, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    def _official_game_list_catalog(
+        self,
+        *,
+        stop_event: threading.Event,
+        progress: Progress,
+        on_game: GameCallback | None,
+    ) -> list[Game]:
+        if stop_event.is_set():
+            raise InterruptedError("RubyPlay catálogo oficial: detención solicitada.")
+        docs = self.http.get(_OFFICIAL_GAME_LIST_DOC, timeout=30.0)
+        docs.raise_for_status()
+        sheet_url = discover_game_list_sheet_url(docs.text, _OFFICIAL_GAME_LIST_DOC)
+
+        if stop_event.is_set():
+            raise InterruptedError("RubyPlay catálogo oficial: detención solicitada.")
+        csv_url = build_sheet_csv_url(sheet_url)
+        sheet = self.http.get(csv_url, timeout=30.0)
+        sheet.raise_for_status()
+        records = parse_official_game_list_csv(sheet.text, provider_key=self.key)
+
+        if stop_event.is_set():
+            raise InterruptedError("RubyPlay catálogo oficial: detención solicitada.")
+        source_dir = self.provider_root / "catalog-pages"
+        source_dir.mkdir(parents=True, exist_ok=True)
+        (source_dir / "official-game-list-source.json").write_text(
+            json.dumps(
+                {
+                    "source": _OFFICIAL_GAME_LIST_DOC,
+                    "sheet_url": sheet_url,
+                    "csv_url": csv_url,
+                    "active_games": len(records),
+                    "retrieved_at": datetime.now(timezone.utc).isoformat(),
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
+        games: list[Game] = []
+        for record in records:
+            if stop_event.is_set():
+                raise InterruptedError("RubyPlay catálogo oficial: detención solicitada.")
+            self._persist_official_game_list_record(record)
+            games.append(record.game)
+            if on_game is not None:
+                on_game(record.game)
+
+        reason = f"RubyPlay official Game List: {len(games)} Active released games"
+        self.set_catalog_authority(True, reason)
+        progress(
+            f"RubyPlay catálogo oficial: {len(games)} juegos Active; "
+            "fuente=Game List; autoridad=sí."
+        )
+        return games
+
     def _dom_catalog_fallback(
         self,
         *,
@@ -276,13 +383,13 @@ class RubyPlayProvider(_RubyPlayProvider):
                 on_game(game)
         return games
 
-    def crawl_catalog(
+    def _legacy_catalog_fallback(
         self,
         *,
         stop_event: threading.Event,
         progress: Progress,
-        max_pages: int = 100,
-        on_game: GameCallback | None = None,
+        max_pages: int,
+        on_game: GameCallback | None,
     ) -> list[Game]:
         try:
             return super().crawl_catalog(
@@ -329,6 +436,35 @@ class RubyPlayProvider(_RubyPlayProvider):
         finally:
             self.http = original_http
             browser.close()
+
+    def crawl_catalog(
+        self,
+        *,
+        stop_event: threading.Event,
+        progress: Progress,
+        max_pages: int = 100,
+        on_game: GameCallback | None = None,
+    ) -> list[Game]:
+        self.set_catalog_authority(False, "")
+        try:
+            return self._official_game_list_catalog(
+                stop_event=stop_event,
+                progress=progress,
+                on_game=on_game,
+            )
+        except InterruptedError:
+            raise
+        except Exception as exc:
+            progress(
+                "RubyPlay Game List oficial no disponible; usando fallback web "
+                f"fail-closed ({type(exc).__name__}: {exc})."
+            )
+        return self._legacy_catalog_fallback(
+            stop_event=stop_event,
+            progress=progress,
+            max_pages=max_pages,
+            on_game=on_game,
+        )
 
     def test_game(
         self,
