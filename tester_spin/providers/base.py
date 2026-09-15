@@ -150,6 +150,50 @@ class ProviderAdapter(ABC):
             f"{self.key}: natural-spin-only execution is not implemented"
         )
 
+    def test_purchase_paths(
+        self,
+        game: Game,
+        *,
+        timeout_s: float,
+        stop_event: threading.Event,
+        progress: Progress,
+    ) -> GameTestResult:
+        """Run the minimum provider-native execution needed for purchase coverage.
+
+        The default reuses one normal exhaustive provider iteration. Providers may
+        override this when their ordinary test expands unrelated branch matrices.
+        Purchase semantics still remain provider-local and are evaluated later by
+        ``build_purchase_coverage``.
+        """
+        return self.test_game(
+            game,
+            spins=1,
+            timeout_s=timeout_s,
+            stop_event=stop_event,
+            progress=progress,
+        )
+
+    def build_purchase_coverage(
+        self,
+        game: Game,
+        result: GameTestResult,
+    ) -> dict[str, Any]:
+        """Return a fail-closed purchase coverage envelope.
+
+        Providers must override this method to promote any purchase or authoritative
+        no-purchase result. The base implementation deliberately cannot infer either.
+        """
+        from tester_spin.purchase_coverage import finalize_purchase_coverage
+
+        return finalize_purchase_coverage(
+            result,
+            options=[],
+            inventory_state="UNKNOWN",
+            authority=f"{self.key}:purchase-coverage-unsupported",
+            no_purchase_proven=False,
+            reason="Provider has no purchase coverage adapter; presence and absence remain unresolved.",
+        )
+
     @abstractmethod
     def crawl_catalog(
         self,
