@@ -4,6 +4,7 @@ from pathlib import Path
 
 from tester_spin.models import Game, GameTestResult
 from tester_spin.providers.farm_structure import attach_execution_structure
+from tester_spin.providers.pragmatic import PragmaticProvider as _BasePragmaticProvider
 from tester_spin.providers.pragmatic_action_inventory import annotate_pragmatic_action_inventory
 from tester_spin.providers.pragmatic_exhaustive import PragmaticProvider as _PragmaticProvider
 from tester_spin.providers.pragmatic_purchase_coverage import build_pragmatic_purchase_coverage
@@ -57,6 +58,30 @@ class PragmaticProvider(_PragmaticProvider):
 
     def farm_contract_dir(self, game: Game) -> Path | None:
         return self.game_dir(game)
+
+    def test_purchase_paths(
+        self,
+        game: Game,
+        *,
+        timeout_s: float,
+        stop_event,
+        progress,
+    ) -> GameTestResult:
+        """Run the non-exhaustive Pragmatic executor for purchase coverage.
+
+        The purchase campaign must not enter the exhaustive FSO/path-expansion
+        wrapper.  The base executor still derives purchase roots from the live
+        ``doInit`` response and exercises each enabled root once, which preserves
+        exact wire evidence while avoiding the additional branch-expansion load.
+        """
+        return _BasePragmaticProvider.test_game(
+            self,
+            game,
+            spins=1,
+            timeout_s=timeout_s,
+            stop_event=stop_event,
+            progress=progress,
+        )
 
     def finalize_test_result(self, result: GameTestResult, *, progress) -> GameTestResult:
         result = super().finalize_test_result(result, progress=progress)
