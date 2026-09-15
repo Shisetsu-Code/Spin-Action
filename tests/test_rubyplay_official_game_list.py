@@ -19,6 +19,8 @@ CSV_TEXT = '''RubyPlay Game List,,,,,,\nName,Status,Release Date,Game ID,Wager,B
 
 CURRENT_WIDE_CSV = '''Name,,Status,Release Date,Game ID,Wager,Max Win Multiplier,BF Max Win Multiplier,Default RTP,Only Buy Feature RTP,Volatility in %,Volatility,Hit Rate Frequency,Free Rounds,Buy Feature,Awarded Feature Support,Theme,Features,Demo Link\nMad Hit Mr Coin SE 96,,Upcoming,2026-11-12,rp_240,2,x3728,x3583,96.32%,96%,81.63,5,16.99%,Active,Yes,Yes,Banking/Money,"Mad Hit Instant Win, Mad Hit Collect and Win",https://demo.rubyplay.com/launcher?gamename=rp_240&mode=offline\nJ Mania Chili Champs 96,,Active,2026-09-03,rp_214,5,5000x,5000x,96.30%,96%,91%,5,56.70%,Active,Yes,Yes,Chili/Spices,"Wild Surge, J Mania, Jackpot Pick",https://demo.rubyplay.com/launcher?gamename=rp_214&mode=offline\n'''
 
+CURRENT_WITHOUT_DEMO_LINK_CSV = '''Name,Status,Release Date,Game ID,Wager,Max Win Multiplier,BF Max Win Multiplier,Default RTP,Only Buy Feature RTP,Volatility in %,Volatility,Hit Rate Frequency,Free Rounds,Buy Feature,Awarded Feature Support,Theme,Features\nMad Hit Mr Coin SE 96,Upcoming,2026-11-12,rp_240,2,x3728,x3583,96.32%,96%,81.63,5,16.99%,Active,Yes,Yes,Banking/Money,"Mad Hit Instant Win, Mad Hit Collect and Win"\nJ Mania Chili Champs 96,Active,2026-09-03,rp_214,5,5000x,5000x,96.30%,96%,91%,5,56.70%,Active,Yes,Yes,Chili/Spices,"Wild Surge, J Mania, Jackpot Pick"\n'''
+
 
 class RubyPlayOfficialGameListTests(unittest.TestCase):
     def test_discovers_google_sheet_and_builds_csv_export_url(self) -> None:
@@ -67,6 +69,23 @@ class RubyPlayOfficialGameListTests(unittest.TestCase):
         self.assertEqual(record.default_rtp, "96.30%")
         self.assertEqual(record.theme, "Chili/Spices")
         self.assertIn("J Mania", record.features)
+
+    def test_parser_accepts_current_sheet_without_demo_link_column(self) -> None:
+        records = parse_official_game_list_csv(
+            CURRENT_WITHOUT_DEMO_LINK_CSV,
+            provider_key="rubyplay",
+        )
+        self.assertEqual(len(records), 1)
+        record = records[0]
+        self.assertEqual(record.game.symbol, "rp_214")
+        self.assertEqual(record.game.slug, "rp_214")
+        self.assertEqual(
+            record.game.url,
+            "https://demo.rubyplay.com/launcher?gamename=rp_214&mode=offline",
+        )
+        self.assertTrue(record.buy_feature)
+        self.assertEqual(record.default_rtp, "96.30%")
+        self.assertEqual(record.theme, "Chili/Spices")
 
     def test_parser_fails_closed_on_duplicate_active_game_ids(self) -> None:
         duplicated = CSV_TEXT + (
