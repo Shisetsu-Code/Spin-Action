@@ -1,15 +1,15 @@
 {
-  "provider": "1spin4win",
-  "slug": "",
-  "game_url": "",
-  "game_name": "",
-  "symbol": "",
-  "game_offset": 80,
-  "game_limit": 20,
+  "provider": "pragmatic",
+  "slug": "sweet-bonanza",
+  "game_url": "https://www.pragmaticplay.com/en/games/sweet-bonanza/",
+  "game_name": "Sweet Bonanza",
+  "symbol": "vs20fruitsw",
+  "game_offset": 0,
+  "game_limit": 1,
   "spins": 1,
   "timeout": 45,
-  "max_pages": 0,
+  "max_pages": 1,
   "allow_har_fallback": false,
-  "install_browser": true,
-  "run_sequence": 70
+  "install_browser": false,
+  "run_sequence": 71
 }
