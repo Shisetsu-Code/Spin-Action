@@ -1,15 +1,15 @@
 {
-  "provider": "1spin4win",
+  "provider": "belatra",
   "slug": "",
   "game_url": "",
   "game_name": "",
   "symbol": "",
   "game_offset": 3,
-  "game_limit": 5,
+  "game_limit": 7,
   "spins": 1,
   "timeout": 45,
   "max_pages": 1,
   "allow_har_fallback": false,
-  "install_browser": true,
-  "run_sequence": 50
+  "install_browser": false,
+  "run_sequence": 51
 }
