@@ -10,6 +10,7 @@ from tester_spin.providers.result_farm_contract import (
     validate_result_farm_contract,
 )
 from tester_spin.providers.rubyplay.exhaustive import RubyPlayProvider as _RubyPlayProvider
+from tester_spin.providers.rubyplay.purchase_coverage import build_rubyplay_purchase_coverage
 
 
 _SPEC = ProviderFarmSpec(
@@ -57,6 +58,10 @@ class RubyPlayProvider(_RubyPlayProvider):
 
     def farm_contract_dir(self, game: Game) -> Path | None:
         return self.game_dir(game)
+
+    def build_purchase_coverage(self, game: Game, result: GameTestResult) -> dict:
+        del game
+        return build_rubyplay_purchase_coverage(result)
 
     def build_farm_contract(self, game: Game, result: GameTestResult) -> dict:
         contract = build_result_farm_contract(game, result, self.game_dir(game), _SPEC)
