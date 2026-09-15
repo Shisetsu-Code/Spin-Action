@@ -289,6 +289,13 @@ def run_selected_games(
     last_start = 0.0
     breaker_open = False
     breaker_reason = ""
+    warmup_target = (
+        min(len(queue), effective_concurrency, breaker_threshold)
+        if breaker_threshold > 0
+        else 0
+    )
+    warmup_started = 0
+    warmup_complete = warmup_target == 0
 
     def backoff_rate_if_needed(error: str) -> None:
         nonlocal current_rpm
@@ -348,10 +355,12 @@ def run_selected_games(
         thread_name_prefix=f"purchase-{provider.key}",
     ) as pool:
         while (next_index < len(queue) or in_flight) and not stop_event.is_set():
+            scheduling_limit = effective_concurrency if warmup_complete else warmup_target
             while (
                 not breaker_open
                 and next_index < len(queue)
-                and len(in_flight) < effective_concurrency
+                and len(in_flight) < scheduling_limit
+                and (warmup_complete or warmup_started < warmup_target)
                 and not stop_event.is_set()
             ):
                 if last_start and delay_s > 0:
@@ -364,9 +373,11 @@ def run_selected_games(
                 game = queue[next_index]
                 ordinal = next_index
                 next_index += 1
+                if not warmup_complete:
+                    warmup_started += 1
                 progress(
                     f"[{provider.key}] iniciando {next_index}/{len(queue)} {game.slug} "
-                    f"(activos={len(in_flight) + 1}/{effective_concurrency})"
+                    f"(activos={len(in_flight) + 1}/{scheduling_limit})"
                 )
                 future = pool.submit(
                     _execute_purchase_game,
@@ -400,6 +411,18 @@ def run_selected_games(
                     runtime_failed = True
                 rows.append(_persist_row(provider_root, game, result, coverage))
                 update_breaker(result, runtime_failed)
+
+            if (
+                not warmup_complete
+                and warmup_started >= warmup_target
+                and not in_flight
+            ):
+                warmup_complete = True
+                if not breaker_open and next_index < len(queue):
+                    progress(
+                        f"[{provider.key}] breaker microbatch passed "
+                        f"({warmup_target} games); concurrency unlocked to {effective_concurrency}."
+                    )
 
         while in_flight:
             done, _pending = wait(
