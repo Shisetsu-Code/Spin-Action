@@ -56,6 +56,11 @@ _SPEC = ProviderFarmSpec(
 class PragmaticProvider(_PragmaticProvider):
     """Active Pragmatic provider with post-discovery farm export hooks."""
 
+    # Pragmatic execution creates isolated runtime sessions per game. Keep the
+    # initial purchase campaign cap at four simultaneous games; all protocol
+    # requests still share one paced provider-wide limiter.
+    max_test_concurrency = 4
+
     def farm_contract_dir(self, game: Game) -> Path | None:
         return self.game_dir(game)
 
