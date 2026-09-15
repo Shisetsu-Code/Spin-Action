@@ -81,17 +81,20 @@ def build_redtiger_purchase_coverage(
         for mode in modes
         if str(mode.get("feature_buy") or "").strip()
     }
+    expected_names = {item["name"] for item in authoritative_buys}
 
-    if isinstance(has_feature_buy, bool):
-        if has_feature_buy and not authoritative_buys:
+    # A non-empty feature_buys list is itself parsed from the current SETTINGS
+    # response and is authoritative proof of purchase presence. The boolean flag
+    # is only needed to prove explicit absence or detect SETTINGS contradictions.
+    if authoritative_buys:
+        if has_feature_buy is False:
             inventory = "INCOMPLETE"
-        elif not has_feature_buy and not authoritative_buys:
-            inventory = "COMPLETE"
-        elif has_feature_buy and authoritative_buys:
-            expected_names = {item["name"] for item in authoritative_buys}
-            inventory = "COMPLETE" if expected_names == set(mode_by_name) else "INCOMPLETE"
         else:
-            inventory = "INCOMPLETE"
+            inventory = "COMPLETE" if expected_names == set(mode_by_name) else "INCOMPLETE"
+    elif has_feature_buy is True:
+        inventory = "INCOMPLETE"
+    elif has_feature_buy is False:
+        inventory = "COMPLETE"
     else:
         inventory = "UNKNOWN"
 
@@ -175,8 +178,10 @@ def build_redtiger_purchase_coverage(
         authority="redtiger-current-settings+runtime-wire",
         no_purchase_proven=(has_feature_buy is False and inventory == "COMPLETE" and not options),
         reason=(
-            "Red Tiger SETTINGS explicitly closes feature-buy inventory."
-            if inventory == "COMPLETE"
+            "Red Tiger SETTINGS closes purchase presence from concrete feature_buys."
+            if authoritative_buys and inventory == "COMPLETE"
+            else "Red Tiger SETTINGS explicitly closes feature-buy absence."
+            if has_feature_buy is False and inventory == "COMPLETE"
             else "Red Tiger SETTINGS feature-buy inventory is unavailable or contradictory."
         ),
     )
