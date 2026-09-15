@@ -1,9 +1,9 @@
 {
   "provider": "pragmatic",
-  "slug": "sweet-bonanza",
-  "game_url": "https://www.pragmaticplay.com/en/games/sweet-bonanza/",
-  "game_name": "Sweet Bonanza",
-  "symbol": "vs20fruitsw",
+  "slug": "starlight-princess",
+  "game_url": "https://www.pragmaticplay.com/en/games/starlight-princess/",
+  "game_name": "Starlight Princess",
+  "symbol": "vs20starlight",
   "game_offset": 0,
   "game_limit": 1,
   "spins": 1,
@@ -11,5 +11,5 @@
   "max_pages": 1,
   "allow_har_fallback": false,
   "install_browser": false,
-  "run_sequence": 71
+  "run_sequence": 72
 }
