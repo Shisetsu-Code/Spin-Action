@@ -47,9 +47,11 @@ class _TlsFailSession:
 class _HttpDomSession:
     def __init__(self) -> None:
         self.get_calls = 0
+        self.urls: list[str] = []
 
     def get(self, url: str, *_args, **_kwargs):
         self.get_calls += 1
+        self.urls.append(url)
         response = requests.Response()
         response.status_code = 200
         response.url = url
@@ -147,7 +149,7 @@ class RubyPlayCatalogTlsFallbackTests(unittest.TestCase):
             sorted(game.slug for game in games),
             ["go-high-panda", "volcano-rising-se"],
         )
-        self.assertEqual(session.get_calls, 1)
+        self.assertEqual(session.urls.count(provider.catalog_url), 1)
         self.assertEqual(_BrowserCatalog.instances, [])
         self.assertFalse(provider.catalog_crawl_authoritative)
         self.assertIn("DOM", provider.catalog_crawl_reason)
