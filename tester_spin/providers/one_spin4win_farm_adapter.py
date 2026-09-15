@@ -61,6 +61,11 @@ class _RateLimitedWebSocket:
 class OneSpin4WinProvider(_OneSpin4WinProvider):
     """Active D1 provider with post-discovery farm export hooks."""
 
+    # D1 uses worker-local HTTP sessions and per-game websocket connections. Four
+    # simultaneous games is the initial validated campaign cap; every outbound
+    # D1 frame still shares the single provider-wide request limiter.
+    max_test_concurrency = 4
+
     def _open_websocket(self, spec: dict, timeout_s: float):
         websocket = super()._open_websocket(spec, timeout_s)
         return _RateLimitedWebSocket(self, websocket)
