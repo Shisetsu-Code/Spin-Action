@@ -9,7 +9,8 @@ from tester_spin.models import Game
 from tester_spin.providers.belatra_farm_adapter import BelatraProvider
 from tester_spin.providers.one_spin4win import OneSpin4WinProvider as BaseOneSpin4WinProvider
 from tester_spin.providers.one_spin4win_farm_adapter import OneSpin4WinProvider
-from tester_spin.providers.pragmatic import HttpBootstrap, PragmaticProvider as BasePragmaticProvider
+from tester_spin.providers.pragmatic import HttpBootstrap
+from tester_spin.providers.pragmatic_farm_adapter import PragmaticProvider
 
 
 class _FakeWS:
@@ -51,7 +52,7 @@ class _FakeSession:
 
 class ProviderWireRateLimitTests(unittest.TestCase):
     def test_pragmatic_state_post_reserves_provider_slot(self) -> None:
-        provider = object.__new__(BasePragmaticProvider)
+        provider = object.__new__(PragmaticProvider)
         slots: list[int] = []
         provider.acquire_provider_request_slot = lambda **_kwargs: slots.append(1) or True
         session = _FakeSession()
