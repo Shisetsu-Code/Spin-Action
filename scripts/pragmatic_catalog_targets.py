@@ -33,24 +33,18 @@ def enumerate_pragmatic_targets(
     max_pages: int = 0,
     items_per_page_override: int | None = None,
     fetch_ajax: FetchAjax = _fetch_ajax_page,
+    max_ajax_attempts: int = 3,
+    retry_delay_s: float = 1.0,
 ) -> list[Game]:
     """Enumerate Pragmatic game targets without persisting thumbnails/metadata.
 
-    This lab-only enumerator deliberately performs only the catalog requests needed
-    to identify game URLs. It does not call ``_persist_catalog_artifacts`` and it
-    requests AJAX pages sequentially so it never over-fetches pages beyond the
-    first official short AJAX page.
-
-    The initial HTML page is not authoritative for catalog termination. Pragmatic's
-    production crawler validates AJAX page 2 even when the initial page contains
-    fewer cards than ``items-per-page``; the lab enumerator mirrors that behavior.
-
-    ``max_pages=0`` means continue until the official terminal AJAX page. A positive
-    value is a hard total-page cap and is useful only for sampling. Catalog authority
-    is granted only after observing a short AJAX page; limits, cancellation and
-    transport errors remain fail-closed/non-authoritative.
+    AJAX pages are fetched sequentially. A transient failure retries only the same
+    page a small bounded number of times; pages are never skipped because doing so
+    would make catalog authority impossible to prove.
     """
     page_cap = max(0, int(max_pages))
+    attempts_limit = max(1, int(max_ajax_attempts))
+    retry_delay = max(0.0, float(retry_delay_s))
     _set_authority(provider, False, "enumeración Pragmatic de laboratorio aún no cerrada")
 
     response = provider.http.get(provider.catalog_url, timeout=30.0)
@@ -92,9 +86,28 @@ def enumerate_pragmatic_targets(
             )
             break
 
-        item = fetch_ajax(provider, page)
-        if item.status != 200 or item.error:
-            reason = item.error or f"HTTP {item.status}"
+        item: AjaxPage | None = None
+        last_reason = ""
+        for attempt in range(1, attempts_limit + 1):
+            item = fetch_ajax(provider, page)
+            if item.status == 200 and not item.error:
+                break
+            last_reason = item.error or f"HTTP {item.status}"
+            if attempt >= attempts_limit:
+                break
+            progress(
+                f"Pragmatic targets: página {page} intento {attempt}/{attempts_limit} "
+                f"falló ({last_reason}); reintentando la misma página."
+            )
+            if retry_delay > 0 and stop_event.wait(retry_delay):
+                break
+
+        if stop_event.is_set():
+            break
+        if item is None or item.status != 200 or item.error:
+            reason = last_reason or (item.error if item is not None else "sin respuesta")
+            if item is not None and not reason:
+                reason = f"HTTP {item.status}"
             _set_authority(provider, False, f"AJAX página {page} falló: {reason}")
             raise RuntimeError(
                 f"Pragmatic target enumeration failed on page {page}: {reason}"
