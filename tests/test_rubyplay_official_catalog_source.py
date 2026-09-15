@@ -12,7 +12,10 @@ from tester_spin.providers.rubyplay.exhaustive import RubyPlayProvider
 
 DOC_URL = "https://docs.rubyplay.com/content/integration/lists/game-list"
 SHEET_URL = "https://docs.google.com/spreadsheets/d/1AbC_def-123/edit?gid=987654321"
-CSV_URL = "https://docs.google.com/spreadsheets/d/1AbC_def-123/gviz/tq?tqx=out%3Acsv&gid=987654321"
+CSV_URL = (
+    "https://docs.google.com/spreadsheets/d/1AbC_def-123/gviz/tq?"
+    "tqx=out%3Acsv&gid=987654321&range=A2%3AP&headers=1"
+)
 DOC_HTML = f'<html><body><a href="{SHEET_URL}">Game List Table</a></body></html>'
 CSV_TEXT = '''RubyPlay Game List,,,,,,\nName,Status,Release Date,Game ID,Wager,Buy Feature,Demo Link\nUpcoming Game 96,Upcoming,2026-12-10,rp_999,5,Yes,https://demo.rubyplay.com/launcher?gamename=rp_999&mode=offline\nJ Mania Chili Champs 96,Active,2026-09-03,rp_214,5,Yes,https://demo.rubyplay.com/launcher?gamename=rp_214&mode=offline\nMad Hit Supernova 96,Active,2024-04-25,rp_108,10,Yes,https://rubyplay.com/games/mad-hit-supernova/\n'''
 
