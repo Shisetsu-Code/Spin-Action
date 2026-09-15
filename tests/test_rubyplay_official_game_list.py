@@ -64,6 +64,22 @@ class RubyPlayOfficialGameListTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Demo Link"):
             parse_official_game_list_csv(broken, provider_key="rubyplay")
 
+    def test_missing_header_error_contains_only_bounded_row_preview(self) -> None:
+        broken = (
+            "Unexpected A,Unexpected B,Unexpected C\n"
+            "Value A,Value B,Value C\n"
+            + ("x" * 500)
+            + ",secret-looking-value\n"
+        )
+        with self.assertRaises(ValueError) as caught:
+            parse_official_game_list_csv(broken, provider_key="rubyplay")
+        message = str(caught.exception)
+        self.assertIn("primeras_filas=", message)
+        self.assertIn("Unexpected A", message)
+        self.assertIn("Value A", message)
+        self.assertNotIn("secret-looking-value", message)
+        self.assertLess(len(message), 600)
+
 
 if __name__ == "__main__":
     unittest.main()
