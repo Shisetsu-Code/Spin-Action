@@ -1,8 +1,15 @@
 from __future__ import annotations
 
+import json
+import tempfile
 import unittest
+from pathlib import Path
 
-from scripts.purchase_campaign import build_retry_manifest
+from scripts.purchase_retry_manifest import (
+    build_retry_manifest,
+    rows_from_campaign_summary,
+    write_retry_manifest,
+)
 from tester_spin.purchase_coverage import (
     PURCHASE_COMPLETE,
     PURCHASE_FAILED,
@@ -122,6 +129,63 @@ class PurchaseRetryManifestTests(unittest.TestCase):
         self.assertEqual(entry["slug"], "blocked-game")
         self.assertEqual(entry["reason"], "launcher HTTP 403")
         self.assertEqual(entry["pending_options"], [])
+
+    def test_reporter_flattens_campaign_results_and_writes_manifest(self) -> None:
+        summary = {
+            "provider_summaries": [
+                {
+                    "provider": "fake",
+                    "results": [
+                        {
+                            "game": {"provider": "fake", "slug": "u-1"},
+                            "runtime_error": "",
+                            "coverage": {
+                                "provider": "fake",
+                                "game_slug": "u-1",
+                                "state": PURCHASE_UNKNOWN,
+                                "reason": "needs retry",
+                                "options": [],
+                            },
+                        }
+                    ],
+                }
+            ]
+        }
+        self.assertEqual(len(rows_from_campaign_summary(summary)), 1)
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "purchase-campaign.json").write_text(
+                json.dumps(summary),
+                encoding="utf-8",
+            )
+            manifest = write_retry_manifest(root)
+            stored = json.loads((root / "purchase-retry-manifest.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(manifest, stored)
+        self.assertEqual(stored["count"], 1)
+        self.assertEqual(stored["entries"][0]["slug"], "u-1")
+
+    def test_retry_reasons_redact_urls_and_secret_like_values(self) -> None:
+        manifest = build_retry_manifest(
+            [
+                {
+                    "game": {"provider": "fake", "slug": "secret-safe"},
+                    "runtime_error": "",
+                    "coverage": {
+                        "state": PURCHASE_UNKNOWN,
+                        "reason": "GET https://example.test/demo?token=abc token=abc123 password=hunter2",
+                        "options": [],
+                    },
+                }
+            ]
+        )
+        reason = manifest["entries"][0]["reason"]
+        self.assertNotIn("https://example.test", reason)
+        self.assertNotIn("abc123", reason)
+        self.assertNotIn("hunter2", reason)
+        self.assertIn("<url>", reason)
+        self.assertIn("<redacted>", reason)
 
 
 if __name__ == "__main__":
