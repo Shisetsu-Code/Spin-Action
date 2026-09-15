@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import argparse
 import tempfile
 import threading
 import unittest
@@ -10,9 +9,23 @@ from tester_spin.models import Game, GameTestResult
 from tester_spin.purchase_coverage import PURCHASE_COMPLETE, PURCHASE_UNKNOWN
 from scripts.purchase_campaign import (
     DEFAULT_PURCHASE_PROVIDERS,
+    attach_safety_limiter,
     expand_provider_selection,
     run_selected_games,
 )
+
+
+class _RecordingEvent:
+    def __init__(self) -> None:
+        self.waits: list[float] = []
+        self._set = False
+
+    def is_set(self) -> bool:
+        return self._set
+
+    def wait(self, timeout: float) -> bool:
+        self.waits.append(float(timeout))
+        return self._set
 
 
 class _FakeProvider:
@@ -21,6 +34,13 @@ class _FakeProvider:
     def __init__(self) -> None:
         self.seen: list[str] = []
         self.finalizer_calls = 0
+        self.limiter = None
+
+    def set_request_rate_limiter(self, limiter) -> None:
+        self.limiter = limiter
+
+    def provider_request_rate_snapshot(self):
+        return {} if self.limiter is None else self.limiter.snapshot()
 
     def test_purchase_paths(self, game, *, timeout_s, stop_event, progress):
         self.seen.append(game.slug)
@@ -53,6 +73,12 @@ class _FakeProvider:
         }
 
 
+class _AlwaysFailProvider(_FakeProvider):
+    def test_purchase_paths(self, game, *, timeout_s, stop_event, progress):
+        self.seen.append(game.slug)
+        raise RuntimeError("HTTP 403 provider demo blocked")
+
+
 class PurchaseCampaignTests(unittest.TestCase):
     def test_default_provider_set_excludes_bgaming(self) -> None:
         self.assertEqual(
@@ -66,6 +92,56 @@ class PurchaseCampaignTests(unittest.TestCase):
         self.assertEqual(expand_provider_selection("pragmatic"), ["pragmatic"])
         with self.assertRaises(ValueError):
             expand_provider_selection("bgaming")
+
+    def test_campaign_attaches_self_imposed_provider_rate_limit(self) -> None:
+        provider = _FakeProvider()
+        snapshot = attach_safety_limiter(provider, requests_per_minute=17)
+        self.assertIsNotNone(provider.limiter)
+        self.assertEqual(provider.limiter.requests_per_minute, 17)
+        self.assertEqual(snapshot["requests_per_minute_limit"], 17)
+        self.assertEqual(snapshot["window_seconds"], 60.0)
+
+    def test_inter_game_cooldown_prevents_back_to_back_game_bursts(self) -> None:
+        games = [
+            Game(provider="fake", slug="ok-1", name="OK 1", url="https://example/1"),
+            Game(provider="fake", slug="ok-2", name="OK 2", url="https://example/2"),
+        ]
+        provider = _FakeProvider()
+        event = _RecordingEvent()
+        with tempfile.TemporaryDirectory() as temp:
+            rows = run_selected_games(
+                provider,
+                games,
+                timeout_s=5.0,
+                stop_event=event,
+                output_dir=Path(temp),
+                progress=lambda _message: None,
+                inter_game_delay_s=2.5,
+            )
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(event.waits, [2.5])
+
+    def test_repeated_identical_provider_failure_opens_circuit_without_more_network(self) -> None:
+        games = [
+            Game(provider="fake", slug=f"g-{index}", name=f"G {index}", url=f"https://example/{index}")
+            for index in range(6)
+        ]
+        provider = _AlwaysFailProvider()
+        with tempfile.TemporaryDirectory() as temp:
+            rows = run_selected_games(
+                provider,
+                games,
+                timeout_s=5.0,
+                stop_event=threading.Event(),
+                output_dir=Path(temp),
+                progress=lambda _message: None,
+                circuit_breaker_threshold=3,
+            )
+        self.assertEqual(provider.seen, ["g-0", "g-1", "g-2"])
+        self.assertEqual(len(rows), 6)
+        self.assertTrue(all(row["coverage"]["state"] == PURCHASE_UNKNOWN for row in rows))
+        self.assertIn("circuit breaker", rows[3]["runtime_error"].lower())
+        self.assertIn("HTTP 403 provider demo blocked", rows[3]["runtime_error"])
 
     def test_batch_continues_after_individual_game_failure_and_fails_closed(self) -> None:
         games = [
