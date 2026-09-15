@@ -56,6 +56,10 @@ _SPEC = ProviderFarmSpec(
 class RubyPlayProvider(_RubyPlayProvider):
     """Active RubyPlay provider with post-discovery farm export hooks."""
 
+    # Keep one launcher/runtime at a time until RubyPlay multi-session behavior is
+    # explicitly validated. This avoids shared launcher/session state collisions.
+    max_test_concurrency = 1
+
     def farm_contract_dir(self, game: Game) -> Path | None:
         return self.game_dir(game)
 
