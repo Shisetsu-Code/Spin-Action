@@ -11,5 +11,5 @@
   "max_pages": 0,
   "allow_har_fallback": false,
   "install_browser": true,
-  "run_sequence": 42
+  "run_sequence": 43
 }
