@@ -4,6 +4,8 @@ import argparse
 import json
 import re
 import threading
+import time
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from pathlib import Path
 from typing import Any
 
@@ -56,12 +58,7 @@ def expand_provider_selection(value: str) -> list[str]:
 
 
 def attach_safety_limiter(provider, *, requests_per_minute: int) -> dict[str, Any]:
-    """Attach a conservative self-imposed protocol request ceiling.
-
-    This is a client-side safety policy, not a claim about any provider's published
-    limit. Providers that reserve protocol slots through ProviderAdapter share this
-    limiter across every game in the campaign.
-    """
+    """Attach one provider-wide paced protocol request ceiling."""
     limiter = ProviderRequestRateLimiter(requests_per_minute=int(requests_per_minute))
     provider.set_request_rate_limiter(limiter)
     snapshot = provider.provider_request_rate_snapshot()
@@ -144,13 +141,7 @@ def _runtime_failure_fingerprint(error: str) -> str:
 
 
 def _is_transport_blocking_failure(error: str) -> bool:
-    """Return true only for repeatable network/edge failures worth circuit-breaking.
-
-    A missing demo is deliberately excluded: several retired titles in a row must
-    not be mistaken for a provider-wide outage. This helper covers transport/edge
-    conditions that would make repeated retries both unhelpful and unfriendly to a
-    public demo service.
-    """
+    """Return true only for repeatable network/edge failures worth circuit-breaking."""
     text = str(error or "").strip().lower()
     if not text:
         return False
@@ -178,7 +169,12 @@ def _is_transport_blocking_failure(error: str) -> bool:
     return any(marker in text for marker in markers)
 
 
-def _persist_row(provider_root: Path, game: Game, result: GameTestResult, coverage: dict[str, Any]) -> dict[str, Any]:
+def _persist_row(
+    provider_root: Path,
+    game: Game,
+    result: GameTestResult,
+    coverage: dict[str, Any],
+) -> dict[str, Any]:
     target = provider_root / _safe_component(game.slug)
     _write_json(target / "result.json", result.to_dict())
     _write_json(target / "purchase-coverage.json", coverage)
@@ -191,6 +187,66 @@ def _persist_row(provider_root: Path, game: Game, result: GameTestResult, covera
     }
 
 
+def _execute_purchase_game(
+    provider,
+    game: Game,
+    *,
+    timeout_s: float,
+    stop_event: threading.Event,
+    progress,
+) -> tuple[GameTestResult, dict[str, Any], bool]:
+    prefix = f"[{provider.key}/{game.slug}]"
+
+    def game_progress(message: str) -> None:
+        progress(f"{prefix} {message}")
+
+    runtime_exc: BaseException | None = None
+    try:
+        # Purchase paths deliberately bypass the general sampling/path finalizer.
+        result = provider.test_purchase_paths(
+            game,
+            timeout_s=max(1.0, float(timeout_s)),
+            stop_event=stop_event,
+            progress=game_progress,
+        )
+    except BaseException as exc:
+        runtime_exc = exc
+        result = _error_result(game, exc)
+        game_progress(f"runtime ERROR: {result.error}")
+
+    runtime_failed = runtime_exc is not None or str(result.status or "").upper() in {
+        "ERROR",
+        "CANCELADO",
+        "CANCELLED",
+    }
+    if runtime_failed:
+        coverage = _unknown_coverage(
+            result,
+            result.error or "Runtime stopped before purchase inventory could be trusted.",
+        )
+    else:
+        try:
+            coverage = provider.build_purchase_coverage(game, result)
+            if not isinstance(coverage, dict):
+                raise TypeError("build_purchase_coverage() no devolvió un objeto")
+        except BaseException as exc:
+            coverage = _unknown_coverage(
+                result,
+                f"Purchase coverage adapter failed: {type(exc).__name__}: {exc}",
+            )
+            game_progress(f"clasificación de compras ERROR: {type(exc).__name__}: {exc}")
+
+    state = str(coverage.get("state") or PURCHASE_UNKNOWN)
+    counts = coverage.get("counts") if isinstance(coverage.get("counts"), dict) else {}
+    game_progress(
+        "PURCHASE "
+        f"state={state} total={counts.get('total', 0)} "
+        f"complete={counts.get('complete', 0)} "
+        f"failed={counts.get('failed', 0)} unknown={counts.get('unknown', 0)}"
+    )
+    return result, coverage, runtime_failed
+
+
 def run_selected_games(
     provider,
     games: list[Game],
@@ -201,6 +257,7 @@ def run_selected_games(
     progress,
     inter_game_delay_s: float = 0.0,
     circuit_breaker_threshold: int = 0,
+    concurrency: int = 1,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     provider_root = Path(output_dir) / _safe_component(provider.key)
@@ -208,70 +265,26 @@ def run_selected_games(
     consecutive_equivalent_failures = 0
     delay_s = max(0.0, float(inter_game_delay_s))
     breaker_threshold = max(0, int(circuit_breaker_threshold))
-
-    for game_index, game in enumerate(games):
-        if stop_event.is_set():
-            break
-        if game_index > 0 and delay_s > 0:
-            progress(f"[{provider.key}] cooldown entre juegos: {delay_s:g}s")
-            if stop_event.wait(delay_s):
-                break
-
-        prefix = f"[{provider.key}/{game.slug}]"
-
-        def game_progress(message: str) -> None:
-            progress(f"{prefix} {message}")
-
-        runtime_exc: BaseException | None = None
-        try:
-            # Purchase paths deliberately bypass the general result finalizer.
-            # Sampling quotas, full branch matrices and farm-readiness are a
-            # different audit and must not turn a proven purchase into a false
-            # negative (or promote an unproven one).
-            result = provider.test_purchase_paths(
-                game,
-                timeout_s=max(1.0, float(timeout_s)),
-                stop_event=stop_event,
-                progress=game_progress,
-            )
-        except BaseException as exc:
-            runtime_exc = exc
-            result = _error_result(game, exc)
-            game_progress(f"runtime ERROR: {result.error}")
-
-        runtime_failed = runtime_exc is not None or str(result.status or "").upper() in {
-            "ERROR",
-            "CANCELADO",
-            "CANCELLED",
-        }
-        if runtime_failed:
-            coverage = _unknown_coverage(
-                result,
-                result.error or "Runtime stopped before purchase inventory could be trusted.",
-            )
-        else:
-            try:
-                coverage = provider.build_purchase_coverage(game, result)
-                if not isinstance(coverage, dict):
-                    raise TypeError("build_purchase_coverage() no devolvió un objeto")
-            except BaseException as exc:
-                coverage = _unknown_coverage(
-                    result,
-                    f"Purchase coverage adapter failed: {type(exc).__name__}: {exc}",
-                )
-                game_progress(
-                    f"clasificación de compras ERROR: {type(exc).__name__}: {exc}"
-                )
-
-        state = str(coverage.get("state") or PURCHASE_UNKNOWN)
-        counts = coverage.get("counts") if isinstance(coverage.get("counts"), dict) else {}
-        game_progress(
-            "PURCHASE "
-            f"state={state} total={counts.get('total', 0)} "
-            f"complete={counts.get('complete', 0)} "
-            f"failed={counts.get('failed', 0)} unknown={counts.get('unknown', 0)}"
+    requested_concurrency = max(1, int(concurrency))
+    effective_concurrency = provider.effective_test_concurrency(requested_concurrency)
+    if effective_concurrency != requested_concurrency:
+        progress(
+            f"[{provider.key}] concurrency requested={requested_concurrency} "
+            f"provider_cap={effective_concurrency}"
         )
-        rows.append(_persist_row(provider_root, game, result, coverage))
+
+    queue = list(games)
+    in_flight: dict[Future, tuple[int, Game]] = {}
+    next_index = 0
+    last_start = 0.0
+    breaker_open = False
+    breaker_reason = ""
+
+    def update_breaker(result: GameTestResult, runtime_failed: bool) -> None:
+        nonlocal previous_failure_fingerprint
+        nonlocal consecutive_equivalent_failures
+        nonlocal breaker_open
+        nonlocal breaker_reason
 
         breaker_failure = runtime_failed or _is_transport_blocking_failure(result.error)
         if breaker_failure:
@@ -289,21 +302,101 @@ def run_selected_games(
             breaker_threshold > 0
             and breaker_failure
             and consecutive_equivalent_failures >= breaker_threshold
-            and game_index + 1 < len(games)
         ):
-            reason = (
+            breaker_open = True
+            breaker_reason = (
                 "Provider circuit breaker opened after "
                 f"{consecutive_equivalent_failures} consecutive equivalent runtime failures: "
                 f"{result.error}"
             )
-            progress(f"[{provider.key}] {reason}; no se harán más llamadas de red en este lote.")
-            for skipped_game in games[game_index + 1 :]:
-                skipped_result = _error_result(skipped_game, RuntimeError(reason))
-                skipped_coverage = _unknown_coverage(skipped_result, reason)
-                rows.append(
-                    _persist_row(provider_root, skipped_game, skipped_result, skipped_coverage)
+            progress(
+                f"[{provider.key}] {breaker_reason}; no se programarán más juegos en este lote."
+            )
+
+    with ThreadPoolExecutor(
+        max_workers=effective_concurrency,
+        thread_name_prefix=f"purchase-{provider.key}",
+    ) as pool:
+        while (next_index < len(queue) or in_flight) and not stop_event.is_set():
+            while (
+                not breaker_open
+                and next_index < len(queue)
+                and len(in_flight) < effective_concurrency
+                and not stop_event.is_set()
+            ):
+                if last_start and delay_s > 0:
+                    remaining = delay_s - (time.monotonic() - last_start)
+                    if remaining > 0:
+                        progress(f"[{provider.key}] cooldown entre aperturas: {remaining:g}s")
+                        if stop_event.wait(remaining):
+                            break
+
+                game = queue[next_index]
+                ordinal = next_index
+                next_index += 1
+                progress(
+                    f"[{provider.key}] iniciando {next_index}/{len(queue)} {game.slug} "
+                    f"(activos={len(in_flight) + 1}/{effective_concurrency})"
                 )
-            break
+                future = pool.submit(
+                    _execute_purchase_game,
+                    provider,
+                    game,
+                    timeout_s=timeout_s,
+                    stop_event=stop_event,
+                    progress=progress,
+                )
+                in_flight[future] = (ordinal, game)
+                last_start = time.monotonic()
+
+            if not in_flight:
+                break
+
+            done, _pending = wait(
+                tuple(in_flight),
+                timeout=0.25,
+                return_when=FIRST_COMPLETED,
+            )
+            if not done:
+                continue
+
+            for future in done:
+                _ordinal, game = in_flight.pop(future)
+                try:
+                    result, coverage, runtime_failed = future.result()
+                except BaseException as exc:
+                    result = _error_result(game, exc)
+                    coverage = _unknown_coverage(result, result.error)
+                    runtime_failed = True
+                rows.append(_persist_row(provider_root, game, result, coverage))
+                update_breaker(result, runtime_failed)
+
+        # Already-started games are allowed to finish cleanly after a breaker opens.
+        while in_flight:
+            done, _pending = wait(
+                tuple(in_flight),
+                timeout=0.25,
+                return_when=FIRST_COMPLETED,
+            )
+            for future in done:
+                _ordinal, game = in_flight.pop(future)
+                try:
+                    result, coverage, runtime_failed = future.result()
+                except BaseException as exc:
+                    result = _error_result(game, exc)
+                    coverage = _unknown_coverage(result, result.error)
+                    runtime_failed = True
+                rows.append(_persist_row(provider_root, game, result, coverage))
+                if not breaker_open:
+                    update_breaker(result, runtime_failed)
+
+    if breaker_open and next_index < len(queue):
+        for skipped_game in queue[next_index:]:
+            skipped_result = _error_result(skipped_game, RuntimeError(breaker_reason))
+            skipped_coverage = _unknown_coverage(skipped_result, breaker_reason)
+            rows.append(
+                _persist_row(provider_root, skipped_game, skipped_result, skipped_coverage)
+            )
 
     return rows
 
@@ -337,23 +430,34 @@ def build_parser() -> argparse.ArgumentParser:
         help="Techo autoimpuesto de requests de protocolo por proveedor/minuto.",
     )
     parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=1,
+        help="Juegos simultáneos solicitados; cada proveedor aplica su propio cap seguro.",
+    )
+    parser.add_argument(
         "--inter-game-delay",
         type=float,
         default=4.0,
-        help="Pausa autoimpuesta entre juegos para evitar ráfagas de bootstrap.",
+        help="Pausa autoimpuesta entre aperturas de juegos.",
     )
     parser.add_argument(
         "--circuit-breaker-threshold",
         type=int,
         default=3,
-        help="Corta llamadas tras N fallos runtime equivalentes consecutivos; 0 desactiva.",
+        help="Corta nuevas aperturas tras N fallos runtime equivalentes consecutivos; 0 desactiva.",
     )
     parser.add_argument("--data-root", default="purchase-results/data")
     parser.add_argument("--output-dir", default="purchase-results")
     return parser
 
 
-def _select_provider_games(provider, args: argparse.Namespace, stop_event, progress) -> tuple[list[Game], dict[str, Any]]:
+def _select_provider_games(
+    provider,
+    args: argparse.Namespace,
+    stop_event,
+    progress,
+) -> tuple[list[Game], dict[str, Any]]:
     direct_target = bool(str(args.game_url or "").strip())
     if direct_target:
         game = build_direct_game(
@@ -400,12 +504,14 @@ def run_campaign(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
     data_root.mkdir(parents=True, exist_ok=True)
     stop_event = threading.Event()
     log_lines: list[str] = []
+    log_lock = threading.Lock()
 
     def progress(message: str) -> None:
         clean = str(message or "").rstrip()
         if clean:
             print(clean, flush=True)
-            log_lines.append(clean)
+            with log_lock:
+                log_lines.append(clean)
 
     all_rows: list[dict[str, Any]] = []
     provider_summaries: list[dict[str, Any]] = []
@@ -416,8 +522,12 @@ def run_campaign(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
             provider,
             requests_per_minute=max(1, int(args.requests_per_minute)),
         )
+        effective_concurrency = provider.effective_test_concurrency(
+            max(1, int(args.concurrency))
+        )
         progress(
             f"[{key}] safety rpm={limiter_initial.get('requests_per_minute_limit')} "
+            f"concurrency={effective_concurrency} "
             f"inter_game_delay={max(0.0, float(args.inter_game_delay)):g}s "
             f"circuit_breaker={max(0, int(args.circuit_breaker_threshold))}"
         )
@@ -450,6 +560,7 @@ def run_campaign(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
             progress=progress,
             inter_game_delay_s=max(0.0, float(args.inter_game_delay)),
             circuit_breaker_threshold=max(0, int(args.circuit_breaker_threshold)),
+            concurrency=max(1, int(args.concurrency)),
         )
         coverages = [row["coverage"] for row in rows]
         aggregate = aggregate_purchase_coverages(coverages)
@@ -462,6 +573,7 @@ def run_campaign(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
                 "provider": key,
                 "catalog": catalog,
                 "selected_count": len(selected),
+                "effective_concurrency": effective_concurrency,
                 "rate_limit": provider.provider_request_rate_snapshot(),
                 "aggregate": aggregate,
                 "results": rows,
@@ -476,7 +588,9 @@ def run_campaign(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
         bool(summary.get("aggregate", {}).get("closed"))
         for summary in provider_summaries
     )
-    selected_count = sum(int(summary.get("selected_count") or 0) for summary in provider_summaries)
+    selected_count = sum(
+        int(summary.get("selected_count") or 0) for summary in provider_summaries
+    )
     closed = bool(provider_closed and selected_count > 0)
     if not closed:
         global_aggregate["closed"] = False
@@ -496,6 +610,7 @@ def run_campaign(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
             "timeout": float(args.timeout),
             "max_pages": int(args.max_pages),
             "requests_per_minute": int(args.requests_per_minute),
+            "concurrency": int(args.concurrency),
             "inter_game_delay": float(args.inter_game_delay),
             "circuit_breaker_threshold": int(args.circuit_breaker_threshold),
         },
