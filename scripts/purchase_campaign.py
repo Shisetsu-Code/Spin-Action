@@ -141,7 +141,7 @@ def _runtime_failure_fingerprint(error: str) -> str:
 
 
 def _is_transport_blocking_failure(error: str) -> bool:
-    """Return true only for repeatable network/edge failures worth circuit-breaking."""
+    """Return true only for repeatable network/edge failures worth throttling."""
     text = str(error or "").strip().lower()
     if not text:
         return False
@@ -202,7 +202,6 @@ def _execute_purchase_game(
 
     runtime_exc: BaseException | None = None
     try:
-        # Purchase paths deliberately bypass the general sampling/path finalizer.
         result = provider.test_purchase_paths(
             game,
             timeout_s=max(1.0, float(timeout_s)),
@@ -258,6 +257,8 @@ def run_selected_games(
     inter_game_delay_s: float = 0.0,
     circuit_breaker_threshold: int = 0,
     concurrency: int = 1,
+    min_requests_per_minute: int = 250,
+    rate_backoff_factor: float = 0.5,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     provider_root = Path(output_dir) / _safe_component(provider.key)
@@ -267,6 +268,15 @@ def run_selected_games(
     breaker_threshold = max(0, int(circuit_breaker_threshold))
     requested_concurrency = max(1, int(concurrency))
     effective_concurrency = provider.effective_test_concurrency(requested_concurrency)
+    min_rpm = max(1, int(min_requests_per_minute))
+    factor = float(rate_backoff_factor)
+    if not 0.0 < factor < 1.0:
+        raise ValueError("rate_backoff_factor must be between 0 and 1")
+
+    rate_snapshot = provider.provider_request_rate_snapshot()
+    current_rpm = int(rate_snapshot.get("requests_per_minute_limit") or min_rpm)
+    current_rpm = max(min_rpm, current_rpm)
+
     if effective_concurrency != requested_concurrency:
         progress(
             f"[{provider.key}] concurrency requested={requested_concurrency} "
@@ -280,13 +290,33 @@ def run_selected_games(
     breaker_open = False
     breaker_reason = ""
 
+    def backoff_rate_if_needed(error: str) -> None:
+        nonlocal current_rpm
+        if not _is_transport_blocking_failure(error):
+            return
+        if current_rpm <= min_rpm:
+            return
+        next_rpm = max(min_rpm, int(current_rpm * factor))
+        if next_rpm >= current_rpm:
+            next_rpm = max(min_rpm, current_rpm - 1)
+        if next_rpm >= current_rpm:
+            return
+        current_rpm = int(provider.set_provider_request_rate_limit(next_rpm))
+        progress(
+            f"[{provider.key}] transport pressure detected; "
+            f"shared rate reduced to {current_rpm} rpm"
+        )
+
     def update_breaker(result: GameTestResult, runtime_failed: bool) -> None:
         nonlocal previous_failure_fingerprint
         nonlocal consecutive_equivalent_failures
         nonlocal breaker_open
         nonlocal breaker_reason
 
-        breaker_failure = runtime_failed or _is_transport_blocking_failure(result.error)
+        transport_failure = _is_transport_blocking_failure(result.error)
+        if transport_failure:
+            backoff_rate_if_needed(result.error)
+        breaker_failure = runtime_failed or transport_failure
         if breaker_failure:
             fingerprint = _runtime_failure_fingerprint(result.error)
             if fingerprint == previous_failure_fingerprint:
@@ -371,7 +401,6 @@ def run_selected_games(
                 rows.append(_persist_row(provider_root, game, result, coverage))
                 update_breaker(result, runtime_failed)
 
-        # Already-started games are allowed to finish cleanly after a breaker opens.
         while in_flight:
             done, _pending = wait(
                 tuple(in_flight),
@@ -427,7 +456,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--requests-per-minute",
         type=int,
         default=30,
-        help="Techo autoimpuesto de requests de protocolo por proveedor/minuto.",
+        help="Techo inicial de requests de protocolo por proveedor/minuto.",
+    )
+    parser.add_argument(
+        "--min-requests-per-minute",
+        type=int,
+        default=250,
+        help="Piso del descenso adaptativo ante presión del servidor.",
+    )
+    parser.add_argument(
+        "--rate-backoff-factor",
+        type=float,
+        default=0.5,
+        help="Factor multiplicativo aplicado al techo ante 403/429/503/timeout.",
     )
     parser.add_argument(
         "--concurrency",
@@ -527,6 +568,7 @@ def run_campaign(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
         )
         progress(
             f"[{key}] safety rpm={limiter_initial.get('requests_per_minute_limit')} "
+            f"floor={max(1, int(args.min_requests_per_minute))} "
             f"concurrency={effective_concurrency} "
             f"inter_game_delay={max(0.0, float(args.inter_game_delay)):g}s "
             f"circuit_breaker={max(0, int(args.circuit_breaker_threshold))}"
@@ -561,6 +603,8 @@ def run_campaign(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
             inter_game_delay_s=max(0.0, float(args.inter_game_delay)),
             circuit_breaker_threshold=max(0, int(args.circuit_breaker_threshold)),
             concurrency=max(1, int(args.concurrency)),
+            min_requests_per_minute=max(1, int(args.min_requests_per_minute)),
+            rate_backoff_factor=float(args.rate_backoff_factor),
         )
         coverages = [row["coverage"] for row in rows]
         aggregate = aggregate_purchase_coverages(coverages)
@@ -610,6 +654,8 @@ def run_campaign(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
             "timeout": float(args.timeout),
             "max_pages": int(args.max_pages),
             "requests_per_minute": int(args.requests_per_minute),
+            "min_requests_per_minute": int(args.min_requests_per_minute),
+            "rate_backoff_factor": float(args.rate_backoff_factor),
             "concurrency": int(args.concurrency),
             "inter_game_delay": float(args.inter_game_delay),
             "circuit_breaker_threshold": int(args.circuit_breaker_threshold),
