@@ -27,7 +27,8 @@ class RubyPlayOfficialGameListTests(unittest.TestCase):
         )
         self.assertEqual(
             build_sheet_csv_url(sheet),
-            "https://docs.google.com/spreadsheets/d/1AbC_def-123/gviz/tq?tqx=out%3Acsv&gid=987654321",
+            "https://docs.google.com/spreadsheets/d/1AbC_def-123/gviz/tq?"
+            "tqx=out%3Acsv&gid=987654321&range=A2%3AP&headers=1",
         )
 
     def test_parser_keeps_only_active_games_and_preserves_provider_identity(self) -> None:
