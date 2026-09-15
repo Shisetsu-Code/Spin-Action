@@ -17,6 +17,7 @@ _SECRET_RE = re.compile(
     r"\s*[:=]\s*([^\s,;]+)",
     re.IGNORECASE,
 )
+_DEFAULT_RETRY_REASON = "Purchase coverage unresolved; inspect per-game purchase-coverage.json."
 
 
 def _safe_text(value: Any, *, limit: int = 500) -> str:
@@ -48,6 +49,24 @@ def _pending_option(option: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _entry_reason(
+    coverage: dict[str, Any],
+    raw_row: dict[str, Any],
+    pending_options: list[dict[str, Any]],
+) -> str:
+    direct = _safe_text(coverage.get("reason") or raw_row.get("runtime_error"))
+    if direct:
+        return direct
+    option_reasons: list[str] = []
+    for option in pending_options:
+        reason = _safe_text(option.get("reason"))
+        if reason and reason not in option_reasons:
+            option_reasons.append(reason)
+    if option_reasons:
+        return _safe_text("; ".join(option_reasons))
+    return _DEFAULT_RETRY_REASON
+
+
 def build_retry_manifest(rows: Iterable[dict[str, Any]]) -> dict[str, Any]:
     entries: list[dict[str, Any]] = []
     for raw_row in rows:
@@ -71,7 +90,6 @@ def build_retry_manifest(rows: Iterable[dict[str, Any]]) -> dict[str, Any]:
             game.get("slug") or coverage.get("game_slug"),
             limit=200,
         )
-        reason = _safe_text(coverage.get("reason") or raw_row.get("runtime_error"))
 
         options = coverage.get("options")
         pending_options = [
@@ -85,7 +103,7 @@ def build_retry_manifest(rows: Iterable[dict[str, Any]]) -> dict[str, Any]:
                 "provider": provider,
                 "slug": slug,
                 "state": state,
-                "reason": reason,
+                "reason": _entry_reason(coverage, raw_row, pending_options),
                 "pending_options": pending_options,
             }
         )
@@ -112,6 +130,27 @@ def rows_from_campaign_summary(summary: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
+def provider_blockers_from_campaign_summary(summary: dict[str, Any]) -> list[dict[str, Any]]:
+    blockers: list[dict[str, Any]] = []
+    provider_summaries = summary.get("provider_summaries")
+    if not isinstance(provider_summaries, list):
+        return blockers
+    for provider_summary in provider_summaries:
+        if not isinstance(provider_summary, dict):
+            continue
+        catalog_error = _safe_text(provider_summary.get("catalog_error"))
+        if not catalog_error:
+            continue
+        blockers.append(
+            {
+                "provider": _safe_text(provider_summary.get("provider"), limit=100),
+                "state": PURCHASE_UNKNOWN,
+                "reason": catalog_error,
+            }
+        )
+    return blockers
+
+
 def write_retry_manifest(output_dir: Path | str) -> dict[str, Any]:
     root = Path(output_dir)
     source_path = root / "purchase-campaign.json"
@@ -123,6 +162,9 @@ def write_retry_manifest(output_dir: Path | str) -> dict[str, Any]:
     aggregate = summary.get("aggregate")
     if not isinstance(aggregate, dict):
         aggregate = {}
+    blockers = provider_blockers_from_campaign_summary(summary)
+    manifest["provider_blocker_count"] = len(blockers)
+    manifest["provider_blockers"] = blockers
     manifest["source_closed"] = summary.get("closed") is True
     manifest["source_overall_state"] = _safe_text(
         aggregate.get("overall_state"),
@@ -150,7 +192,9 @@ def main() -> int:
     args = build_parser().parse_args()
     manifest = write_retry_manifest(args.output_dir)
     print(
-        f"PURCHASE RETRY MANIFEST pending_games={manifest.get('count', 0)}",
+        "PURCHASE RETRY MANIFEST "
+        f"pending_games={manifest.get('count', 0)} "
+        f"provider_blockers={manifest.get('provider_blocker_count', 0)}",
         flush=True,
     )
     return 0
