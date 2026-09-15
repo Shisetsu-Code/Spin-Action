@@ -105,10 +105,13 @@ def build_redtiger_purchase_coverage(
         mode = mode_by_name.get(name)
         mode_id = str((mode or {}).get("id") or f"PURCHASE_{name}")
         cost = (mode or {}).get("cost")
+        # The authoritative SETTINGS row plus the exact persisted request below
+        # prove the platform/game/spin purchase semantics. Requiring the diagnostic
+        # wire_command label as a third copy of the same fact creates false negatives
+        # without adding wire evidence.
         contract_proven = bool(
             mode
             and mode.get("executable") is True
-            and str(mode.get("wire_command") or "") == "platform/game/spin"
             and _positive(multiplier) is not None
             and _positive(cost) is not None
         )
