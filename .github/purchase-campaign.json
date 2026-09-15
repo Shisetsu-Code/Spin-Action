@@ -1,5 +1,5 @@
 {
-  "run_sequence": 1,
+  "run_sequence": 2,
   "provider": "pragmatic",
   "slug": "frozen-charms",
   "game_url": "https://www.pragmaticplay.com/en/games/frozen-charms/",
@@ -9,5 +9,8 @@
   "game_limit": 1,
   "timeout": 45,
   "max_pages": 0,
-  "install_chromium": false
+  "install_chromium": false,
+  "requests_per_minute": 30,
+  "inter_game_delay": 4.0,
+  "circuit_breaker_threshold": 3
 }
