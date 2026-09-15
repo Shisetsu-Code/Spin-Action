@@ -79,6 +79,33 @@ class _AlwaysFailProvider(_FakeProvider):
         raise RuntimeError("HTTP 403 provider demo blocked")
 
 
+class _PartialBlockedProvider(_FakeProvider):
+    def test_purchase_paths(self, game, *, timeout_s, stop_event, progress):
+        self.seen.append(game.slug)
+        return GameTestResult(
+            provider=self.key,
+            slug=game.slug,
+            game_name=game.name,
+            game_url=game.url,
+            requested_spins=1,
+            successful_spins=0,
+            failed_spins=1,
+            status="PARCIAL",
+            symbol=game.symbol,
+            run_dir="",
+            error="HTTP 403 provider demo blocked",
+        )
+
+    def build_purchase_coverage(self, game, result):
+        return {
+            "state": PURCHASE_UNKNOWN,
+            "provider": self.key,
+            "game_slug": game.slug,
+            "counts": {"total": 0, "complete": 0, "failed": 0, "unknown": 0},
+            "options": [],
+        }
+
+
 class PurchaseCampaignTests(unittest.TestCase):
     def test_default_provider_set_excludes_bgaming(self) -> None:
         self.assertEqual(
@@ -139,6 +166,28 @@ class PurchaseCampaignTests(unittest.TestCase):
             )
         self.assertEqual(provider.seen, ["g-0", "g-1", "g-2"])
         self.assertEqual(len(rows), 6)
+        self.assertTrue(all(row["coverage"]["state"] == PURCHASE_UNKNOWN for row in rows))
+        self.assertIn("circuit breaker", rows[3]["runtime_error"].lower())
+        self.assertIn("HTTP 403 provider demo blocked", rows[3]["runtime_error"])
+
+    def test_repeated_partial_transport_block_also_opens_circuit(self) -> None:
+        games = [
+            Game(provider="fake", slug=f"p-{index}", name=f"P {index}", url=f"https://example/{index}")
+            for index in range(5)
+        ]
+        provider = _PartialBlockedProvider()
+        with tempfile.TemporaryDirectory() as temp:
+            rows = run_selected_games(
+                provider,
+                games,
+                timeout_s=5.0,
+                stop_event=threading.Event(),
+                output_dir=Path(temp),
+                progress=lambda _message: None,
+                circuit_breaker_threshold=3,
+            )
+        self.assertEqual(provider.seen, ["p-0", "p-1", "p-2"])
+        self.assertEqual(len(rows), 5)
         self.assertTrue(all(row["coverage"]["state"] == PURCHASE_UNKNOWN for row in rows))
         self.assertIn("circuit breaker", rows[3]["runtime_error"].lower())
         self.assertIn("HTTP 403 provider demo blocked", rows[3]["runtime_error"])
