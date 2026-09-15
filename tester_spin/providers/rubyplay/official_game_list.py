@@ -14,7 +14,7 @@ from tester_spin.models import Game
 _SHEET_PATH_RE = re.compile(r"^/spreadsheets/d/([A-Za-z0-9_-]+)/edit/?$")
 _PUBLIC_GAME_PATH_RE = re.compile(r"^/games/([a-z0-9][a-z0-9-]*)/?$", re.I)
 _GAME_ID_RE = re.compile(r"^rp_[A-Za-z0-9_-]+$", re.I)
-_REQUIRED_HEADERS = {"Name", "Status", "Release Date", "Game ID"}
+_REQUIRED_HEADERS = {"Name", "Status", "Release Date", "Game ID", "Demo Link"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,9 +75,10 @@ def build_sheet_csv_url(sheet_url: str) -> str:
         {
             "tqx": "out:csv",
             "gid": gids[0],
-            # The official sheet has changed column layout over time. Keep a
-            # bounded but deliberately wide export so metadata to the right of
-            # the stable identity columns remains available when published.
+            # The current official sheet has a deliberately blank column B and
+            # extends through Demo Link near the right edge. A2:P truncated the
+            # authoritative Demo Link column and forced a non-authoritative web
+            # fallback. Keep enough width for the documented table through T.
             "range": "A2:T",
             "headers": "1",
         }
@@ -109,14 +110,6 @@ def _header_index(rows: list[list[str]]) -> int:
         "RubyPlay Game List: encabezado oficial no encontrado; "
         f"primeras_filas={_bounded_row_preview(rows)!r}."
     )
-
-
-def _official_offline_demo_url(game_id: str) -> str:
-    """Build RubyPlay's published offline launcher from an authoritative Game ID."""
-    if not _GAME_ID_RE.fullmatch(str(game_id or "")):
-        raise ValueError(f"RubyPlay Game List: Game ID inválido: {game_id!r}.")
-    query = urlencode({"gamename": str(game_id).casefold(), "mode": "offline"})
-    return f"https://demo.rubyplay.com/launcher?{query}"
 
 
 def _validated_demo_identity(demo_url: str, game_id: str) -> tuple[str, str]:
@@ -161,13 +154,6 @@ def parse_official_game_list_csv(
     if not raw_rows:
         raise ValueError("RubyPlay Game List: CSV vacío.")
     header_index = _header_index(raw_rows)
-    header_names = {
-        str(cell or "").strip()
-        for cell in raw_rows[header_index]
-        if str(cell or "").strip()
-    }
-    has_demo_link_column = "Demo Link" in header_names
-
     payload = io.StringIO()
     writer = csv.writer(payload, lineterminator="\n")
     writer.writerows(raw_rows[header_index:])
@@ -193,21 +179,9 @@ def parse_official_game_list_csv(
         canonical_id = game_id.casefold()
         if canonical_id in seen_ids:
             raise ValueError(f"RubyPlay Game List: Game ID duplicado: {game_id}.")
-
-        if demo_url:
-            slug, canonical_url = _validated_demo_identity(demo_url, canonical_id)
-        elif has_demo_link_column:
-            # If the source explicitly publishes Demo Link, an empty Active row
-            # is ambiguous and must remain fail-closed rather than silently
-            # manufacturing a replacement target.
+        if not demo_url:
             raise ValueError(f"RubyPlay Game List: Demo Link vacío para {game_id}.")
-        else:
-            # The current official sheet may omit Demo Link entirely while still
-            # publishing the authoritative Game ID. RubyPlay's offline launcher
-            # contract is provider-wide and deterministic from that ID.
-            slug = canonical_id
-            canonical_url = _official_offline_demo_url(canonical_id)
-
+        slug, canonical_url = _validated_demo_identity(demo_url, canonical_id)
         if slug in seen_slugs:
             raise ValueError(f"RubyPlay Game List: slug duplicado: {slug}.")
 
