@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable
 
+from scripts.provider_catalog_manifest import enumerate_provider_targets
 from tester_spin.providers.base import ProviderAdapter
 from tester_spin.storage import Storage
 
@@ -102,7 +103,6 @@ def _run_one_provider(
     *,
     storage: Storage,
     requested_max_pages: int,
-    effective_max_pages: int,
     full_catalog_requested: bool,
     progress: BatchProgress,
 ) -> CatalogRunResult:
@@ -133,12 +133,14 @@ def _run_one_provider(
         emit(
             "Iniciando catálogo "
             + ("completo" if full_catalog_requested else f"limitado a {requested_max_pages} cargas")
-            + "."
+            + " en modo low-traffic."
         )
-        games = provider.crawl_catalog(
+        games = enumerate_provider_targets(
+            provider,
+            provider_key=key,
+            requested_pages=requested_max_pages,
             stop_event=stop_event,
             progress=emit,
-            max_pages=effective_max_pages,
         )
 
         if manual_exclusions:
@@ -249,7 +251,6 @@ def run_provider_catalogs(
     if requested_max_pages < 0:
         raise ValueError("max_pages debe ser 0 o un entero positivo")
     full_catalog_requested = requested_max_pages == 0
-    effective_max_pages = 10_000 if full_catalog_requested else max(1, requested_max_pages)
     max_workers = min(len(provider_list), max(1, int(workers)))
 
     future_to_provider: dict[Future[CatalogRunResult], ProviderAdapter] = {}
@@ -264,7 +265,6 @@ def run_provider_catalogs(
                 provider,
                 storage=storage,
                 requested_max_pages=requested_max_pages,
-                effective_max_pages=effective_max_pages,
                 full_catalog_requested=full_catalog_requested,
                 progress=progress,
             )
