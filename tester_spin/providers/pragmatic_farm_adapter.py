@@ -59,6 +59,54 @@ class PragmaticProvider(_PragmaticProvider):
     def farm_contract_dir(self, game: Game) -> Path | None:
         return self.game_dir(game)
 
+    def _http_bootstrap(
+        self,
+        source_url: str,
+        symbol: str,
+        cver: str | None,
+        base_bet: float,
+        timeout_s: float,
+    ):
+        # The direct bootstrap performs doInit plus one calibration doSpin.
+        # Reserve both provider-protocol slots up front so a campaign cannot
+        # create a bootstrap burst even though the base implementation owns the
+        # requests.Session internally.
+        for _ in range(2):
+            if not self.acquire_provider_request_slot():
+                raise InterruptedError("Pragmatic bootstrap cancelled while waiting for rate-limit slot")
+        return _BasePragmaticProvider._http_bootstrap(
+            self,
+            source_url,
+            symbol,
+            cver,
+            base_bet,
+            timeout_s,
+        )
+
+    def _post_and_store(
+        self,
+        bootstrap,
+        fields,
+        root,
+        *,
+        step: int,
+        label: str,
+        timeout_s: float,
+    ):
+        # Every state-changing gameService POST, including long feature
+        # continuations, consumes one shared provider slot.
+        if not self.acquire_provider_request_slot():
+            raise InterruptedError("Pragmatic state request cancelled while waiting for rate-limit slot")
+        return _BasePragmaticProvider._post_and_store(
+            self,
+            bootstrap,
+            fields,
+            root,
+            step=step,
+            label=label,
+            timeout_s=timeout_s,
+        )
+
     def test_purchase_paths(
         self,
         game: Game,
@@ -70,7 +118,7 @@ class PragmaticProvider(_PragmaticProvider):
         """Run the non-exhaustive Pragmatic executor for purchase coverage.
 
         The purchase campaign must not enter the exhaustive FSO/path-expansion
-        wrapper.  The base executor still derives purchase roots from the live
+        wrapper. The base executor still derives purchase roots from the live
         ``doInit`` response and exercises each enabled root once, which preserves
         exact wire evidence while avoiding the additional branch-expansion load.
         """
