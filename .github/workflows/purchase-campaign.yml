@@ -41,11 +41,15 @@ jobs:
           keys = (
               'run_sequence', 'provider', 'slug', 'game_url', 'game_name', 'symbol',
               'game_offset', 'game_limit', 'timeout', 'max_pages', 'install_chromium',
-              'requests_per_minute', 'inter_game_delay', 'circuit_breaker_threshold',
+              'requests_per_minute', 'min_requests_per_minute', 'rate_backoff_factor',
+              'concurrency', 'inter_game_delay', 'circuit_breaker_threshold',
           )
           defaults = {
-              'requests_per_minute': 30,
-              'inter_game_delay': 4.0,
+              'requests_per_minute': 2000,
+              'min_requests_per_minute': 250,
+              'rate_backoff_factor': 0.5,
+              'concurrency': 4,
+              'inter_game_delay': 0.25,
               'circuit_breaker_threshold': 3,
           }
           for key in keys:
@@ -71,6 +75,9 @@ jobs:
             --timeout "${{ steps.cfg.outputs.timeout }}"
             --max-pages "${{ steps.cfg.outputs.max_pages }}"
             --requests-per-minute "${{ steps.cfg.outputs.requests_per_minute }}"
+            --min-requests-per-minute "${{ steps.cfg.outputs.min_requests_per_minute }}"
+            --rate-backoff-factor "${{ steps.cfg.outputs.rate_backoff_factor }}"
+            --concurrency "${{ steps.cfg.outputs.concurrency }}"
             --inter-game-delay "${{ steps.cfg.outputs.inter_game_delay }}"
             --circuit-breaker-threshold "${{ steps.cfg.outputs.circuit_breaker_threshold }}"
             --data-root "purchase-results/data"
