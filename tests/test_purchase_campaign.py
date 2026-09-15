@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -30,14 +31,24 @@ class _RecordingEvent:
 
 class _FakeProvider:
     key = "fake"
+    max_test_concurrency = None
 
     def __init__(self) -> None:
         self.seen: list[str] = []
         self.finalizer_calls = 0
         self.limiter = None
 
+    def effective_test_concurrency(self, requested: int) -> int:
+        requested = max(1, int(requested))
+        if self.max_test_concurrency is None:
+            return requested
+        return min(requested, max(1, int(self.max_test_concurrency)))
+
     def set_request_rate_limiter(self, limiter) -> None:
         self.limiter = limiter
+
+    def set_provider_request_rate_limit(self, requests_per_minute: int) -> int:
+        return self.limiter.set_requests_per_minute(requests_per_minute)
 
     def provider_request_rate_snapshot(self):
         return {} if self.limiter is None else self.limiter.snapshot()
@@ -71,6 +82,31 @@ class _FakeProvider:
             "counts": {"total": 1, "complete": 1, "failed": 0, "unknown": 0},
             "options": [{"purchase_id": "P1"}],
         }
+
+
+class _ParallelProvider(_FakeProvider):
+    def __init__(self, cap: int) -> None:
+        super().__init__()
+        self.max_test_concurrency = cap
+        self._active = 0
+        self.max_active = 0
+        self._active_lock = threading.Lock()
+
+    def test_purchase_paths(self, game, *, timeout_s, stop_event, progress):
+        with self._active_lock:
+            self._active += 1
+            self.max_active = max(self.max_active, self._active)
+        try:
+            time.sleep(0.04)
+            return super().test_purchase_paths(
+                game,
+                timeout_s=timeout_s,
+                stop_event=stop_event,
+                progress=progress,
+            )
+        finally:
+            with self._active_lock:
+                self._active -= 1
 
 
 class _AlwaysFailProvider(_FakeProvider):
@@ -128,6 +164,45 @@ class PurchaseCampaignTests(unittest.TestCase):
         self.assertEqual(snapshot["requests_per_minute_limit"], 17)
         self.assertEqual(snapshot["window_seconds"], 60.0)
 
+    def test_parallel_provider_opens_multiple_games_up_to_provider_cap(self) -> None:
+        games = [
+            Game(provider="fake", slug=f"g-{index}", name=f"G {index}", url=f"https://example/{index}")
+            for index in range(6)
+        ]
+        provider = _ParallelProvider(cap=4)
+        with tempfile.TemporaryDirectory() as temp:
+            rows = run_selected_games(
+                provider,
+                games,
+                timeout_s=5.0,
+                stop_event=threading.Event(),
+                output_dir=Path(temp),
+                progress=lambda _message: None,
+                concurrency=4,
+            )
+        self.assertEqual(len(rows), 6)
+        self.assertGreaterEqual(provider.max_active, 2)
+        self.assertLessEqual(provider.max_active, 4)
+
+    def test_serial_provider_cap_overrides_requested_parallelism(self) -> None:
+        games = [
+            Game(provider="fake", slug=f"s-{index}", name=f"S {index}", url=f"https://example/{index}")
+            for index in range(4)
+        ]
+        provider = _ParallelProvider(cap=1)
+        with tempfile.TemporaryDirectory() as temp:
+            rows = run_selected_games(
+                provider,
+                games,
+                timeout_s=5.0,
+                stop_event=threading.Event(),
+                output_dir=Path(temp),
+                progress=lambda _message: None,
+                concurrency=8,
+            )
+        self.assertEqual(len(rows), 4)
+        self.assertEqual(provider.max_active, 1)
+
     def test_inter_game_cooldown_prevents_back_to_back_game_bursts(self) -> None:
         games = [
             Game(provider="fake", slug="ok-1", name="OK 1", url="https://example/1"),
@@ -144,6 +219,7 @@ class PurchaseCampaignTests(unittest.TestCase):
                 output_dir=Path(temp),
                 progress=lambda _message: None,
                 inter_game_delay_s=2.5,
+                concurrency=1,
             )
         self.assertEqual(len(rows), 2)
         self.assertEqual(event.waits, [2.5])
@@ -163,6 +239,7 @@ class PurchaseCampaignTests(unittest.TestCase):
                 output_dir=Path(temp),
                 progress=lambda _message: None,
                 circuit_breaker_threshold=3,
+                concurrency=1,
             )
         self.assertEqual(provider.seen, ["g-0", "g-1", "g-2"])
         self.assertEqual(len(rows), 6)
@@ -185,6 +262,7 @@ class PurchaseCampaignTests(unittest.TestCase):
                 output_dir=Path(temp),
                 progress=lambda _message: None,
                 circuit_breaker_threshold=3,
+                concurrency=1,
             )
         self.assertEqual(provider.seen, ["p-0", "p-1", "p-2"])
         self.assertEqual(len(rows), 5)
@@ -207,6 +285,7 @@ class PurchaseCampaignTests(unittest.TestCase):
                 stop_event=threading.Event(),
                 output_dir=Path(temp),
                 progress=lambda _message: None,
+                concurrency=1,
             )
         self.assertEqual(provider.seen, ["ok-1", "boom", "ok-2"])
         self.assertEqual(provider.finalizer_calls, 0)
@@ -228,6 +307,7 @@ class PurchaseCampaignTests(unittest.TestCase):
                 stop_event=threading.Event(),
                 output_dir=Path(temp),
                 progress=lambda _message: None,
+                concurrency=1,
             )
         self.assertEqual(rows[0]["coverage"]["state"], PURCHASE_UNKNOWN)
         self.assertFalse(rows[0]["coverage"].get("no_purchase_proven", False))
