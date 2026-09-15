@@ -1,0 +1,7 @@
+{
+  "providers": "pragmatic,1spin4win,belatra,rubyplay",
+  "workers": 4,
+  "max_pages": 0,
+  "install_browser": true,
+  "run_sequence": 1
+}
