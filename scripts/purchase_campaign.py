@@ -14,6 +14,7 @@ from scripts.actions_provider_probe import (
     select_games,
 )
 from tester_spin.models import Game, GameTestResult
+from tester_spin.provider_rate_limit import ProviderRequestRateLimiter
 from tester_spin.purchase_coverage import (
     PURCHASE_COMPLETE,
     PURCHASE_UNKNOWN,
@@ -52,6 +53,19 @@ def expand_provider_selection(value: str) -> list[str]:
     if not selected:
         raise ValueError("Debe seleccionarse al menos un proveedor.")
     return selected
+
+
+def attach_safety_limiter(provider, *, requests_per_minute: int) -> dict[str, Any]:
+    """Attach a conservative self-imposed protocol request ceiling.
+
+    This is a client-side safety policy, not a claim about any provider's published
+    limit. Providers that reserve protocol slots through ProviderAdapter share this
+    limiter across every game in the campaign.
+    """
+    limiter = ProviderRequestRateLimiter(requests_per_minute=int(requests_per_minute))
+    provider.set_request_rate_limiter(limiter)
+    snapshot = provider.provider_request_rate_snapshot()
+    return dict(snapshot) if isinstance(snapshot, dict) else limiter.snapshot()
 
 
 def _safe_component(value: str) -> str:
@@ -100,6 +114,48 @@ def _unknown_coverage(result: GameTestResult, reason: str) -> dict[str, Any]:
     )
 
 
+def _runtime_failure_fingerprint(error: str) -> str:
+    """Group repeated provider-level failures without depending on game identifiers."""
+    text = str(error or "").strip().lower()
+    markers = (
+        ("http 403", "http-403"),
+        ("403 client error", "http-403"),
+        ("forbidden", "http-403"),
+        ("cloudflare", "cloudflare"),
+        ("http 429", "http-429"),
+        ("429 client error", "http-429"),
+        ("too many requests", "http-429"),
+        ("http 503", "http-503"),
+        ("503 server error", "http-503"),
+        ("service unavailable", "http-503"),
+        ("timed out", "timeout"),
+        ("timeout", "timeout"),
+        ("no demo", "no-demo"),
+        ("sin demo", "no-demo"),
+    )
+    for marker, fingerprint in markers:
+        if marker in text:
+            return fingerprint
+    text = re.sub(r"https?://\S+", "<url>", text)
+    text = re.sub(r"\b[0-9a-f]{16,}\b", "<opaque>", text)
+    text = re.sub(r"\b\d+\b", "<n>", text)
+    text = re.sub(r"\s+", " ", text)
+    return text[:240] or "unknown-runtime-error"
+
+
+def _persist_row(provider_root: Path, game: Game, result: GameTestResult, coverage: dict[str, Any]) -> dict[str, Any]:
+    target = provider_root / _safe_component(game.slug)
+    _write_json(target / "result.json", result.to_dict())
+    _write_json(target / "purchase-coverage.json", coverage)
+    return {
+        "game": _game_dict(game),
+        "runtime_status": result.status,
+        "runtime_error": result.error,
+        "run_dir": result.run_dir,
+        "coverage": coverage,
+    }
+
+
 def run_selected_games(
     provider,
     games: list[Game],
@@ -108,13 +164,24 @@ def run_selected_games(
     stop_event: threading.Event,
     output_dir: Path,
     progress,
+    inter_game_delay_s: float = 0.0,
+    circuit_breaker_threshold: int = 0,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     provider_root = Path(output_dir) / _safe_component(provider.key)
+    previous_failure_fingerprint = ""
+    consecutive_equivalent_failures = 0
+    delay_s = max(0.0, float(inter_game_delay_s))
+    breaker_threshold = max(0, int(circuit_breaker_threshold))
 
-    for game in games:
+    for game_index, game in enumerate(games):
         if stop_event.is_set():
             break
+        if game_index > 0 and delay_s > 0:
+            progress(f"[{provider.key}] cooldown entre juegos: {delay_s:g}s")
+            if stop_event.wait(delay_s):
+                break
+
         prefix = f"[{provider.key}/{game.slug}]"
 
         def game_progress(message: str) -> None:
@@ -137,7 +204,12 @@ def run_selected_games(
             result = _error_result(game, exc)
             game_progress(f"runtime ERROR: {result.error}")
 
-        if runtime_exc is not None or str(result.status or "").upper() in {"ERROR", "CANCELADO", "CANCELLED"}:
+        runtime_failed = runtime_exc is not None or str(result.status or "").upper() in {
+            "ERROR",
+            "CANCELADO",
+            "CANCELLED",
+        }
+        if runtime_failed:
             coverage = _unknown_coverage(
                 result,
                 result.error or "Runtime stopped before purchase inventory could be trusted.",
@@ -156,10 +228,6 @@ def run_selected_games(
                     f"clasificación de compras ERROR: {type(exc).__name__}: {exc}"
                 )
 
-        target = provider_root / _safe_component(game.slug)
-        _write_json(target / "result.json", result.to_dict())
-        _write_json(target / "purchase-coverage.json", coverage)
-
         state = str(coverage.get("state") or PURCHASE_UNKNOWN)
         counts = coverage.get("counts") if isinstance(coverage.get("counts"), dict) else {}
         game_progress(
@@ -168,15 +236,38 @@ def run_selected_games(
             f"complete={counts.get('complete', 0)} "
             f"failed={counts.get('failed', 0)} unknown={counts.get('unknown', 0)}"
         )
-        rows.append(
-            {
-                "game": _game_dict(game),
-                "runtime_status": result.status,
-                "runtime_error": result.error,
-                "run_dir": result.run_dir,
-                "coverage": coverage,
-            }
-        )
+        rows.append(_persist_row(provider_root, game, result, coverage))
+
+        if runtime_failed:
+            fingerprint = _runtime_failure_fingerprint(result.error)
+            if fingerprint == previous_failure_fingerprint:
+                consecutive_equivalent_failures += 1
+            else:
+                previous_failure_fingerprint = fingerprint
+                consecutive_equivalent_failures = 1
+        else:
+            previous_failure_fingerprint = ""
+            consecutive_equivalent_failures = 0
+
+        if (
+            breaker_threshold > 0
+            and runtime_failed
+            and consecutive_equivalent_failures >= breaker_threshold
+            and game_index + 1 < len(games)
+        ):
+            reason = (
+                "Provider circuit breaker opened after "
+                f"{consecutive_equivalent_failures} consecutive equivalent runtime failures: "
+                f"{result.error}"
+            )
+            progress(f"[{provider.key}] {reason}; no se harán más llamadas de red en este lote.")
+            for skipped_game in games[game_index + 1 :]:
+                skipped_result = _error_result(skipped_game, RuntimeError(reason))
+                skipped_coverage = _unknown_coverage(skipped_result, reason)
+                rows.append(
+                    _persist_row(provider_root, skipped_game, skipped_result, skipped_coverage)
+                )
+            break
 
     return rows
 
@@ -202,6 +293,24 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=0,
         help="0 = catálogo completo por el enumerador low-traffic.",
+    )
+    parser.add_argument(
+        "--requests-per-minute",
+        type=int,
+        default=30,
+        help="Techo autoimpuesto de requests de protocolo por proveedor/minuto.",
+    )
+    parser.add_argument(
+        "--inter-game-delay",
+        type=float,
+        default=4.0,
+        help="Pausa autoimpuesta entre juegos para evitar ráfagas de bootstrap.",
+    )
+    parser.add_argument(
+        "--circuit-breaker-threshold",
+        type=int,
+        default=3,
+        help="Corta llamadas tras N fallos runtime equivalentes consecutivos; 0 desactiva.",
     )
     parser.add_argument("--data-root", default="purchase-results/data")
     parser.add_argument("--output-dir", default="purchase-results")
@@ -267,6 +376,15 @@ def run_campaign(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
 
     for key in providers:
         provider = provider_class_for(key)(data_root)
+        limiter_initial = attach_safety_limiter(
+            provider,
+            requests_per_minute=max(1, int(args.requests_per_minute)),
+        )
+        progress(
+            f"[{key}] safety rpm={limiter_initial.get('requests_per_minute_limit')} "
+            f"inter_game_delay={max(0.0, float(args.inter_game_delay)):g}s "
+            f"circuit_breaker={max(0, int(args.circuit_breaker_threshold))}"
+        )
         try:
             selected, catalog = _select_provider_games(provider, args, stop_event, progress)
         except BaseException as exc:
@@ -274,6 +392,7 @@ def run_campaign(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
                 {
                     "provider": key,
                     "selected_count": 0,
+                    "rate_limit": provider.provider_request_rate_snapshot(),
                     "aggregate": {
                         "overall_state": PURCHASE_UNKNOWN,
                         "closed": False,
@@ -293,6 +412,8 @@ def run_campaign(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
             stop_event=stop_event,
             output_dir=output_dir,
             progress=progress,
+            inter_game_delay_s=max(0.0, float(args.inter_game_delay)),
+            circuit_breaker_threshold=max(0, int(args.circuit_breaker_threshold)),
         )
         coverages = [row["coverage"] for row in rows]
         aggregate = aggregate_purchase_coverages(coverages)
@@ -305,6 +426,7 @@ def run_campaign(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
                 "provider": key,
                 "catalog": catalog,
                 "selected_count": len(selected),
+                "rate_limit": provider.provider_request_rate_snapshot(),
                 "aggregate": aggregate,
                 "results": rows,
             }
@@ -337,6 +459,9 @@ def run_campaign(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
             "game_limit": int(args.game_limit),
             "timeout": float(args.timeout),
             "max_pages": int(args.max_pages),
+            "requests_per_minute": int(args.requests_per_minute),
+            "inter_game_delay": float(args.inter_game_delay),
+            "circuit_breaker_threshold": int(args.circuit_breaker_threshold),
         },
         "selected_count": selected_count,
         "aggregate": global_aggregate,
