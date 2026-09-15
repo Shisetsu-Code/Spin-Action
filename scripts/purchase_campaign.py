@@ -143,6 +143,41 @@ def _runtime_failure_fingerprint(error: str) -> str:
     return text[:240] or "unknown-runtime-error"
 
 
+def _is_transport_blocking_failure(error: str) -> bool:
+    """Return true only for repeatable network/edge failures worth circuit-breaking.
+
+    A missing demo is deliberately excluded: several retired titles in a row must
+    not be mistaken for a provider-wide outage. This helper covers transport/edge
+    conditions that would make repeated retries both unhelpful and unfriendly to a
+    public demo service.
+    """
+    text = str(error or "").strip().lower()
+    if not text:
+        return False
+    markers = (
+        "http 403",
+        "403 client error",
+        "forbidden",
+        "cloudflare",
+        "http 429",
+        "429 client error",
+        "too many requests",
+        "http 503",
+        "503 server error",
+        "service unavailable",
+        "timed out",
+        "timeout",
+        "connection reset",
+        "connection refused",
+        "connection aborted",
+        "name resolution",
+        "dns",
+        "sslerror",
+        "ssl error",
+    )
+    return any(marker in text for marker in markers)
+
+
 def _persist_row(provider_root: Path, game: Game, result: GameTestResult, coverage: dict[str, Any]) -> dict[str, Any]:
     target = provider_root / _safe_component(game.slug)
     _write_json(target / "result.json", result.to_dict())
@@ -238,7 +273,8 @@ def run_selected_games(
         )
         rows.append(_persist_row(provider_root, game, result, coverage))
 
-        if runtime_failed:
+        breaker_failure = runtime_failed or _is_transport_blocking_failure(result.error)
+        if breaker_failure:
             fingerprint = _runtime_failure_fingerprint(result.error)
             if fingerprint == previous_failure_fingerprint:
                 consecutive_equivalent_failures += 1
@@ -251,7 +287,7 @@ def run_selected_games(
 
         if (
             breaker_threshold > 0
-            and runtime_failed
+            and breaker_failure
             and consecutive_equivalent_failures >= breaker_threshold
             and game_index + 1 < len(games)
         ):
