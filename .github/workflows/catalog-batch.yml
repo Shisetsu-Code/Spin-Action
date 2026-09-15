@@ -1,0 +1,134 @@
+name: Multi Provider Catalog Lab
+
+on:
+  workflow_dispatch:
+    inputs:
+      providers:
+        description: Comma-separated provider keys or all
+        required: true
+        default: pragmatic,1spin4win,belatra,rubyplay,redtiger
+        type: string
+      workers:
+        description: Maximum providers crawled simultaneously
+        required: true
+        default: '5'
+        type: string
+      max_pages:
+        description: Pages/loads per provider; 0 means full catalog
+        required: true
+        default: '0'
+        type: string
+      install_browser:
+        description: Install Chromium for provider fallbacks that need a browser
+        required: true
+        default: true
+        type: boolean
+  push:
+    branches:
+      - lab/actions-validation
+    paths:
+      - '.github/catalog-batch.json'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: catalog-batch-lab-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  catalog:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Resolve catalog configuration
+        id: config
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_PROVIDERS: ${{ inputs.providers }}
+          INPUT_WORKERS: ${{ inputs.workers }}
+          INPUT_MAX_PAGES: ${{ inputs.max_pages }}
+          INPUT_INSTALL_BROWSER: ${{ inputs.install_browser }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          if os.environ.get('EVENT_NAME') == 'workflow_dispatch':
+              cfg = {
+                  'providers': os.environ.get('INPUT_PROVIDERS') or 'all',
+                  'workers': int(os.environ.get('INPUT_WORKERS') or 5),
+                  'max_pages': int(os.environ.get('INPUT_MAX_PAGES') or 0),
+                  'install_browser': str(os.environ.get('INPUT_INSTALL_BROWSER') or 'true').lower() == 'true',
+              }
+          else:
+              cfg = json.loads(Path('.github/catalog-batch.json').read_text(encoding='utf-8'))
+
+          allowed = {'pragmatic', '1spin4win', 'belatra', 'rubyplay', 'redtiger'}
+          raw = str(cfg.get('providers') or '').strip().lower()
+          if raw == 'all':
+              keys = ['pragmatic', '1spin4win', 'belatra', 'rubyplay', 'redtiger']
+          else:
+              keys = []
+              for part in raw.split(','):
+                  key = part.strip()
+                  if not key or key in keys:
+                      continue
+                  if key not in allowed:
+                      raise SystemExit(f'unsupported batch provider: {key!r}')
+                  keys.append(key)
+          if not keys:
+              raise SystemExit('at least one provider is required')
+          workers = int(cfg.get('workers', len(keys)))
+          max_pages = int(cfg.get('max_pages', 0))
+          if workers < 1:
+              raise SystemExit('workers must be >= 1')
+          if max_pages < 0:
+              raise SystemExit('max_pages must be >= 0')
+
+          values = {
+              'providers': ','.join(keys),
+              'workers': min(workers, len(keys)),
+              'max_pages': max_pages,
+              'install_browser': 'true' if cfg.get('install_browser', True) else 'false',
+          }
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as out:
+              for key, value in values.items():
+                  print(f'{key}={value}', file=out)
+          print(json.dumps(values, ensure_ascii=False, indent=2))
+          PY
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Install Chromium for catalog fallbacks
+        if: steps.config.outputs.install_browser == 'true'
+        run: python -m playwright install --with-deps chromium
+
+      - name: Crawl provider catalogs in parallel
+        shell: bash
+        run: |
+          python -m scripts.multi_provider_catalog \
+            --providers "${{ steps.config.outputs.providers }}" \
+            --workers "${{ steps.config.outputs.workers }}" \
+            --max-pages "${{ steps.config.outputs.max_pages }}" \
+            --data-root action-results/data \
+            --summary action-results/catalog-batch-summary.json
+
+      - name: Upload catalog evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: catalog-batch-${{ github.run_id }}
+          path: action-results/
+          if-no-files-found: warn
+          retention-days: 7
