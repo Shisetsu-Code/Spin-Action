@@ -1,15 +1,15 @@
 {
   "provider": "1spin4win",
-  "slug": "",
-  "game_url": "",
-  "game_name": "",
+  "slug": "lucky-hercules-hold-and-win",
+  "game_url": "https://gs.1spin4win.com:10443/gmh5/games.html?game=LuckyHerculesHoldAndWin&currency=EUR&config=1&freeplay=true&language=en&exit=none",
+  "game_name": "Lucky Hercules Hold And Win",
   "symbol": "",
-  "game_offset": 8,
-  "game_limit": 10,
+  "game_offset": 0,
+  "game_limit": 1,
   "spins": 1,
   "timeout": 45,
-  "max_pages": 1,
+  "max_pages": 0,
   "allow_har_fallback": false,
-  "install_browser": false,
-  "run_sequence": 52
+  "install_browser": true,
+  "run_sequence": 53
 }
