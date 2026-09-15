@@ -71,7 +71,8 @@ def build_sheet_csv_url(sheet_url: str) -> str:
     if len(set(gids)) != 1:
         raise ValueError("RubyPlay Game List: gid no unívoco.")
     sheet_id = match.group(1)
-    return f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gids[0]}"
+    query = urlencode({"tqx": "out:csv", "gid": gids[0]})
+    return f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?{query}"
 
 
 def _normalize_row(row: dict[str, str | None]) -> dict[str, str]:
