@@ -71,7 +71,14 @@ def build_sheet_csv_url(sheet_url: str) -> str:
     if len(set(gids)) != 1:
         raise ValueError("RubyPlay Game List: gid no unívoco.")
     sheet_id = match.group(1)
-    query = urlencode({"tqx": "out:csv", "gid": gids[0]})
+    query = urlencode(
+        {
+            "tqx": "out:csv",
+            "gid": gids[0],
+            "range": "A2:P",
+            "headers": "1",
+        }
+    )
     return f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?{query}"
 
 
