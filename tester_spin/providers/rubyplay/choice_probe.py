@@ -385,8 +385,11 @@ def expand_rubyplay_index_domains(
             f"[{game.name}] RubyPlay {parent_mode}/{action}: "
             "probando dominio de índices en sesiones frescas."
         )
+        probe_counts: dict[int, int] = {}
 
         def probe(index: int) -> dict[str, Any]:
+            attempt_no = probe_counts.get(index, 0) + 1
+            probe_counts[index] = attempt_no
             artifact_dir = (
                 run_root
                 / "diagnostics"
@@ -394,10 +397,16 @@ def expand_rubyplay_index_domains(
                 / parent_mode
                 / action
                 / f"index-{index:03d}"
+                / f"attempt-{attempt_no:03d}"
                 if run_root is not None
-                else Path("diagnostics") / "choice-domain-probes" / parent_mode / action / f"index-{index:03d}"
+                else Path("diagnostics")
+                / "choice-domain-probes"
+                / parent_mode
+                / action
+                / f"index-{index:03d}"
+                / f"attempt-{attempt_no:03d}"
             )
-            return replay_fn(
+            outcome = replay_fn(
                 provider,
                 game,
                 result,
@@ -408,6 +417,9 @@ def expand_rubyplay_index_domains(
                 stop_event=stop_event,
                 artifact_dir=artifact_dir,
             )
+            row = dict(outcome) if isinstance(outcome, dict) else {}
+            row.setdefault("artifact_dir", str(artifact_dir))
+            return row
 
         proof = probe_contiguous_index_domain(probe, max_index=max_index)
         summary = {
