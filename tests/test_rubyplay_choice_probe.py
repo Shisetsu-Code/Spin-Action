@@ -247,7 +247,7 @@ class RubyPlayChoiceProbeTests(unittest.TestCase):
         def replay(*args, index: int, **kwargs):
             return {
                 "index": index,
-                "outcome": "SEMANTIC_REJECTION" if index == 2 else "TERMINAL",
+                "outcome": "SEMANTIC_REJECTION" if index in {2, 3} else "TERMINAL",
                 "target_reached": True,
             }
 
