@@ -39,7 +39,10 @@ class RubyPlayChoiceAuditProofTests(unittest.TestCase):
                         "coverage_required": True,
                         "required_options": ["0", "1"],
                         "covered_options": ["0", "1"],
-                        "domain_authority": "isolated-live-server-boundary",
+                        "domain_authority": "isolated-live-server-rejection-window",
+                        "boundary_index": 2,
+                        "boundary_confirmations": 2,
+                        "rejection_span": 2,
                     }
                 ],
             )
