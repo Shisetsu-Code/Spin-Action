@@ -106,6 +106,30 @@ class RubyPlayPurchaseBranchCoverageTests(unittest.TestCase):
         self.assertTrue(coverage["options"][0]["terminal"])
         self.assertIn("domain", coverage["options"][0]["reason"].lower())
 
+    def test_finite_same_parent_domain_without_authority_is_not_complete(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            result = self._purchase_result(
+                root,
+                [
+                    {
+                        "id": "PURCHASE_SELECT__SELECT_INDEX_DOMAIN",
+                        "kind": "INDEXED_CHOICE",
+                        "parent": "PURCHASE_SELECT",
+                        "prefix": [],
+                        "wire_command": "select",
+                        "coverage_required": True,
+                        "required_options": ["0"],
+                        "covered_options": ["0"],
+                    }
+                ],
+            )
+
+            coverage = build_rubyplay_purchase_coverage(result)
+
+        self.assertEqual(coverage["state"], PURCHASE_UNKNOWN)
+        self.assertEqual(coverage["options"][0]["execution_state"], "UNKNOWN")
+
     def test_closed_domain_from_another_purchase_cannot_close_select_purchase(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
