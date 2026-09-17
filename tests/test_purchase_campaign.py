@@ -6,8 +6,18 @@ import time
 import unittest
 from pathlib import Path
 
+from tester_spin.feature_sessions import (
+    enforce_complete_feature_sessions,
+    finalize_feature_session_report,
+    make_feature_session,
+)
 from tester_spin.models import Game, GameTestResult
-from tester_spin.purchase_coverage import PURCHASE_COMPLETE, PURCHASE_UNKNOWN
+from tester_spin.purchase_coverage import (
+    PURCHASE_COMPLETE,
+    PURCHASE_UNKNOWN,
+    finalize_purchase_coverage,
+    make_purchase_option,
+)
 from scripts.purchase_campaign import (
     DEFAULT_PURCHASE_PROVIDERS,
     attach_safety_limiter,
@@ -36,6 +46,7 @@ class _FakeProvider:
     def __init__(self) -> None:
         self.seen: list[str] = []
         self.finalizer_calls = 0
+        self.purchase_finalizer_calls = 0
         self.limiter = None
 
     def effective_test_concurrency(self, requested: int) -> int:
@@ -74,6 +85,10 @@ class _FakeProvider:
         self.finalizer_calls += 1
         raise AssertionError("purchase campaign must not invoke general sampling/path finalizer")
 
+    def finalize_purchase_result(self, result, *, progress):
+        self.purchase_finalizer_calls += 1
+        return result
+
     def build_purchase_coverage(self, game, result):
         return {
             "state": PURCHASE_COMPLETE,
@@ -82,6 +97,65 @@ class _FakeProvider:
             "counts": {"total": 1, "complete": 1, "failed": 0, "unknown": 0},
             "options": [{"purchase_id": "P1"}],
         }
+
+
+class _FeatureGateProvider(_FakeProvider):
+    def __init__(self, run_root: Path) -> None:
+        super().__init__()
+        self.run_root = Path(run_root)
+
+    def test_purchase_paths(self, game, *, timeout_s, stop_event, progress):
+        self.seen.append(game.slug)
+        return GameTestResult(
+            provider=self.key,
+            slug=game.slug,
+            game_name=game.name,
+            game_url=game.url,
+            requested_spins=1,
+            successful_spins=1,
+            failed_spins=0,
+            status="OK",
+            symbol=game.symbol,
+            run_dir=str(self.run_root),
+        )
+
+    def finalize_purchase_result(self, result, *, progress):
+        self.purchase_finalizer_calls += 1
+        session = make_feature_session(
+            session_id="P1:1",
+            trigger="PURCHASE",
+            parent_mode="P1",
+            attempt_number=1,
+            rounds=[],
+            choices=[],
+            terminal_proven=False,
+            returned_to_base=False,
+            wire_steps=1,
+            reasons=["synthetic feature remains active"],
+        )
+        report = finalize_feature_session_report(
+            result,
+            sessions=[session],
+            authority="synthetic-feature-gate",
+        )
+        return enforce_complete_feature_sessions(result, report, progress=progress)
+
+    def build_purchase_coverage(self, game, result):
+        option = make_purchase_option(
+            "P1",
+            provider_selector={"id": "P1"},
+            executable=True,
+            wire_contract_state="PROVEN",
+            execution_state="COMPLETE",
+            terminal=True,
+            reason="synthetic root purchase is terminal",
+        )
+        return finalize_purchase_coverage(
+            result,
+            options=[option],
+            inventory_state="COMPLETE",
+            authority="synthetic-root+feature-gate",
+        )
 
 
 class _ParallelProvider(_FakeProvider):
@@ -289,12 +363,39 @@ class PurchaseCampaignTests(unittest.TestCase):
             )
         self.assertEqual(provider.seen, ["ok-1", "boom", "ok-2"])
         self.assertEqual(provider.finalizer_calls, 0)
+        self.assertEqual(provider.purchase_finalizer_calls, 2)
         self.assertEqual([row["coverage"]["state"] for row in rows], [
             PURCHASE_COMPLETE,
             PURCHASE_UNKNOWN,
             PURCHASE_COMPLETE,
         ])
         self.assertIn("synthetic launcher failure", rows[1]["runtime_error"])
+
+    def test_incomplete_feature_session_blocks_purchase_complete(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            provider = _FeatureGateProvider(root / "runtime")
+            game = Game(
+                provider="fake",
+                slug="feature-open",
+                name="Feature Open",
+                url="https://example/feature-open",
+            )
+            rows = run_selected_games(
+                provider,
+                [game],
+                timeout_s=5.0,
+                stop_event=threading.Event(),
+                output_dir=root / "out",
+                progress=lambda _message: None,
+                concurrency=1,
+            )
+
+        self.assertEqual(provider.purchase_finalizer_calls, 1)
+        self.assertEqual(rows[0]["runtime_status"], "PARCIAL")
+        self.assertEqual(rows[0]["coverage"]["state"], PURCHASE_UNKNOWN)
+        self.assertEqual(rows[0]["coverage"]["counts"]["unknown"], 1)
+        self.assertIn("feature session", rows[0]["coverage"]["options"][0]["reason"].lower())
 
     def test_error_before_authoritative_inventory_never_becomes_no_purchase(self) -> None:
         provider = _FakeProvider()
