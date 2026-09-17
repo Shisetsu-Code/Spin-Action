@@ -40,7 +40,7 @@ class RubyPlayChoicePromptRetryTests(unittest.TestCase):
                         "outcome": "PROMPT_NOT_REACHED",
                         "target_reached": False,
                     }
-                if index == 1:
+                if index in {1, 2}:
                     return {
                         "index": index,
                         "outcome": "SEMANTIC_REJECTION",
@@ -67,6 +67,7 @@ class RubyPlayChoicePromptRetryTests(unittest.TestCase):
 
         self.assertEqual(calls[0], 3)
         self.assertEqual(calls[1], 2)
+        self.assertEqual(calls[2], 2)
         modes = [row for row in result.discovered_modes if row.get("kind") == "INDEXED_CHOICE"]
         self.assertEqual(len(modes), 1)
         self.assertEqual(modes[0]["parent"], "SPIN")
