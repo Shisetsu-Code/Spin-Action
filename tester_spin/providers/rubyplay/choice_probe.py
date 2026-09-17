@@ -749,12 +749,12 @@ def _upsert_prompt_mode(
         "required_samples": 1,
         "sample_counts": {value: 1 for value in covered},
         "domain_authority": (
-            "isolated-live-server-boundary" if proven else "unresolved-live-prompt"
+            "isolated-live-server-rejection-window" if proven else "unresolved-live-prompt"
         ),
         "reason": (
             "Every index below the boundary reached a clean terminal fresh-session "
-            "feature on the exact indexed prefix and the next index was explicitly "
-            "rejected twice by RubyPlay."
+            "feature on the exact indexed prefix and two adjacent out-of-domain "
+            "indices were explicitly rejected in repeated fresh sessions."
             if proven
             else "Indexed prompt was observed on this exact path, but its finite domain boundary is not proven."
         ),
