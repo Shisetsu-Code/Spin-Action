@@ -70,6 +70,13 @@ def _play_result_pairs(frames: list[Any]) -> list[tuple[dict[str, Any], dict[str
     return pairs
 
 
+def _state(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _attempt_session(result: GameTestResult, attempt: SpinAttempt) -> dict[str, Any] | None:
     artifact = _load_artifact(attempt)
     frames = artifact.get("frames")
@@ -80,25 +87,25 @@ def _attempt_session(result: GameTestResult, attempt: SpinAttempt) -> dict[str, 
         return None
 
     root_result = pairs[0][1]
-    try:
-        root_state = int(root_result.get("st"))
-    except (TypeError, ValueError):
-        return None
-    if root_state not in _ACTIVE_STATES:
+    root_state = _state(root_result.get("st"))
+    if root_state in _TERMINAL_STATES:
         return None
 
     rounds = []
     reasons: list[str] = []
-    known = True
+    known = root_state in _ACTIVE_STATES
+    if root_state is None:
+        reasons.append("D1 root type=3 result has no integer st state")
+    elif root_state not in _ACTIVE_STATES:
+        reasons.append(f"D1 root result state {root_state} is unclassified")
+
     final_state = root_state
     for ordinal, (_request, response, wire_step) in enumerate(pairs[1:], start=1):
-        try:
-            state = int(response.get("st"))
-        except (TypeError, ValueError):
+        state = _state(response.get("st"))
+        if state is None:
             known = False
             reasons.append("D1 continuation result has no integer st state")
-            state = None
-        if state is not None and state not in _ACTIVE_STATES and state not in _TERMINAL_STATES:
+        elif state not in _ACTIVE_STATES and state not in _TERMINAL_STATES:
             known = False
             reasons.append(f"D1 continuation result state {state} is unclassified")
         rounds.append(
