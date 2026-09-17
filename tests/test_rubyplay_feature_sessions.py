@@ -214,9 +214,91 @@ class RubyPlayFeatureSessionTests(unittest.TestCase):
 
         session = report["sessions"][0]
         self.assertEqual(session["state"], FEATURE_COMPLETE)
-        self.assertEqual(len(session["choices"]), 3)
+        self.assertEqual(len(session["choices"]), 1)
+        self.assertTrue(session["choices"][0]["complete"])
+        self.assertEqual(session["choices"][0]["prefix"], [])
+        self.assertEqual(
+            [
+                row["selected"]
+                for row in session["transitions"]
+                if row.get("provider_action") == "pick"
+            ],
+            ["0", "1", "2"],
+        )
+
+    def test_pick_after_non_index_action_opens_new_choice_prefix(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            result = _result(
+                root,
+                mode_id="PURCHASE_FREESPIN",
+                mode_kind="PURCHASE",
+                wire_steps=4,
+            )
+            attempt = Path(result.attempts[0].artifact_dir)
+            _write(
+                attempt / "request.json",
+                {"action": "buy_feature", "buy_feature_type": "freespin"},
+            )
+            _write(attempt / "response.json", {"data": {"next_action": "pick"}})
+            _write(
+                attempt / "step-002-request.json",
+                {"action": "pick", "index": 0},
+            )
+            _write(
+                attempt / "step-002-response.json",
+                {"data": {"next_action": "freespin"}},
+            )
+            _write(attempt / "step-003-request.json", {"action": "freespin"})
+            _write(
+                attempt / "step-003-response.json",
+                {"data": {"next_action": "pick"}},
+            )
+            _write(
+                attempt / "step-004-request.json",
+                {"action": "pick", "index": 1},
+            )
+            _write(
+                attempt / "step-004-response.json",
+                {"data": {"next_action": "spin"}},
+            )
+            result.attempts[0].na = "spin"
+            result.discovered_modes = [
+                {
+                    "id": "PURCHASE_FREESPIN__PICK_INDEX_DOMAIN",
+                    "kind": "INDEXED_CHOICE",
+                    "parent": "PURCHASE_FREESPIN",
+                    "prefix": [],
+                    "wire_command": "pick",
+                    "coverage_required": True,
+                    "required_options": ["0"],
+                    "covered_options": ["0"],
+                    "required_samples": 1,
+                    "sample_counts": {"0": 1},
+                },
+                {
+                    "id": "PURCHASE_FREESPIN__PICK_INDEX_DOMAIN__PREFIX_SECOND",
+                    "kind": "INDEXED_CHOICE",
+                    "parent": "PURCHASE_FREESPIN",
+                    "prefix": ["pick=0"],
+                    "wire_command": "pick",
+                    "coverage_required": True,
+                    "required_options": ["1"],
+                    "covered_options": ["1"],
+                    "required_samples": 1,
+                    "sample_counts": {"1": 1},
+                },
+            ]
+
+            report = build_rubyplay_feature_sessions(result)
+
+        session = report["sessions"][0]
+        self.assertEqual(session["state"], FEATURE_COMPLETE)
+        self.assertEqual(
+            [choice["prefix"] for choice in session["choices"]],
+            [[], ["pick=0"]],
+        )
         self.assertTrue(all(choice["complete"] for choice in session["choices"]))
-        self.assertTrue(all(choice["prefix"] == [] for choice in session["choices"]))
 
     def test_active_provider_build_hook_uses_rubyplay_normalizer(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
