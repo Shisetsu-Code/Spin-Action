@@ -166,6 +166,58 @@ class RubyPlayFeatureSessionTests(unittest.TestCase):
         self.assertEqual(session["state"], FEATURE_COMPLETE)
         self.assertTrue(session["choices"][0]["complete"])
 
+    def test_consecutive_picks_share_one_proven_domain(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            result = _result(
+                root,
+                mode_id="PURCHASE_FREESPIN",
+                mode_kind="PURCHASE",
+                wire_steps=4,
+            )
+            attempt = Path(result.attempts[0].artifact_dir)
+            _write(
+                attempt / "request.json",
+                {"action": "buy_feature", "buy_feature_type": "freespin"},
+            )
+            _write(attempt / "response.json", {"data": {"next_action": "pick"}})
+            for step, index, next_action in (
+                (2, 0, "pick"),
+                (3, 1, "pick"),
+                (4, 2, "spin"),
+            ):
+                _write(
+                    attempt / f"step-{step:03d}-request.json",
+                    {"action": "pick", "index": index},
+                )
+                _write(
+                    attempt / f"step-{step:03d}-response.json",
+                    {"data": {"next_action": next_action}},
+                )
+            result.attempts[0].na = "spin"
+            result.discovered_modes = [
+                {
+                    "id": "PURCHASE_FREESPIN__PICK_INDEX_DOMAIN",
+                    "kind": "INDEXED_CHOICE",
+                    "parent": "PURCHASE_FREESPIN",
+                    "prefix": [],
+                    "wire_command": "pick",
+                    "coverage_required": True,
+                    "required_options": ["0", "1", "2"],
+                    "covered_options": ["0", "1", "2"],
+                    "required_samples": 1,
+                    "sample_counts": {"0": 1, "1": 1, "2": 1},
+                }
+            ]
+
+            report = build_rubyplay_feature_sessions(result)
+
+        session = report["sessions"][0]
+        self.assertEqual(session["state"], FEATURE_COMPLETE)
+        self.assertEqual(len(session["choices"]), 3)
+        self.assertTrue(all(choice["complete"] for choice in session["choices"]))
+        self.assertTrue(all(choice["prefix"] == [] for choice in session["choices"]))
+
     def test_active_provider_build_hook_uses_rubyplay_normalizer(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
