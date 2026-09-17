@@ -69,6 +69,23 @@ class PragmaticFeatureSessionTests(unittest.TestCase):
         self.assertEqual(session["totals"]["wire_steps"], 12)
         self.assertEqual(session["state"], FEATURE_COMPLETE)
 
+    def test_unknown_entry_na_is_preserved_as_incomplete_feature(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            result = _result(root, mode_id="PURCHASE_X", kind="PURCHASE", steps=1)
+            attempt = Path(result.attempts[0].artifact_dir)
+            _wire(attempt, 0, "entry", {"action": "doSpin", "pur": "7"}, {"na": "xbonus"})
+            result.attempts[0].terminal = False
+            result.attempts[0].warning = "estado de continuación no automatizado: na='xbonus'"
+
+            report = build_pragmatic_feature_sessions(result)
+
+        self.assertEqual(report["session_count"], 1)
+        session = report["sessions"][0]
+        self.assertEqual(session["state"], FEATURE_INCOMPLETE)
+        self.assertEqual(session["entry"]["na"], "xbonus")
+        self.assertIn("xbonus", " ".join(session["reasons"]))
+
     def test_missing_fso_sibling_keeps_feature_incomplete(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
