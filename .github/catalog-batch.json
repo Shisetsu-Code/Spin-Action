@@ -3,5 +3,5 @@
   "workers": 1,
   "max_pages": 0,
   "install_browser": false,
-  "run_sequence": 4
+  "run_sequence": 5
 }
