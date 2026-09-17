@@ -23,6 +23,7 @@ from tester_spin.providers.rubyplay.runtime import (
 
 SAFE_CONTINUATIONS = {"respin"}
 CONTINUATION_GUARD = 256
+_EXECUTION_SCOPES = {"ALL", "NATURAL_ONLY", "PURCHASE_ONLY"}
 
 
 def _write_json(path: Path, payload: Any) -> None:
@@ -37,6 +38,29 @@ def _safe_timestamp() -> str:
 def _mode_id(value: str) -> str:
     clean = "".join(ch if ch.isalnum() else "_" for ch in value.upper()).strip("_")
     return clean or "UNKNOWN"
+
+
+def scope_allows_mode(scope: str, kind: str) -> bool:
+    normalized_scope = str(scope or "ALL").strip().upper()
+    if normalized_scope not in _EXECUTION_SCOPES:
+        normalized_scope = "ALL"
+    normalized_kind = str(kind or "").strip().upper()
+    if normalized_scope == "NATURAL_ONLY":
+        return normalized_kind == "SPIN"
+    if normalized_scope == "PURCHASE_ONLY":
+        return normalized_kind == "PURCHASE"
+    return normalized_kind in {"SPIN", "PURCHASE"}
+
+
+def _provider_execution_scope(provider) -> str:
+    hook = getattr(provider, "rubyplay_execution_scope", None)
+    if not callable(hook):
+        return "ALL"
+    try:
+        value = str(hook() or "ALL").strip().upper()
+    except Exception:
+        return "ALL"
+    return value if value in _EXECUTION_SCOPES else "ALL"
 
 
 def _persist_protocol_metadata(provider, game: Game, runtime: RubyPlayRuntime) -> None:
@@ -87,6 +111,7 @@ class RubyPlayExecutionMixin:
         progress: Progress,
     ) -> GameTestResult:
         repetitions = max(1, int(spins))
+        execution_scope = _provider_execution_scope(self)
         started_iso = utc_now_iso()
         started = time.monotonic()
         run_dir = self.game_dir(game) / "tests" / _safe_timestamp()
@@ -99,6 +124,7 @@ class RubyPlayExecutionMixin:
         discovered_modes: list[dict[str, Any]] = []
         responded_attempts = 0
         successes = 0
+        buy_available = False
 
         session = self._new_session()
         runtime: RubyPlayRuntime | None = None
@@ -130,7 +156,8 @@ class RubyPlayExecutionMixin:
                     "effective_stake": runtime.bet_plan.effective_stake,
                 }
             )
-            mode_specs.append({"id": "SPIN", "kind": "SPIN"})
+            if scope_allows_mode(execution_scope, "SPIN"):
+                mode_specs.append({"id": "SPIN", "kind": "SPIN"})
 
             init_body = runtime.init_data.get("data")
             buy_available = bool(
@@ -171,7 +198,7 @@ class RubyPlayExecutionMixin:
                         "bet_policy": "default",
                     }
                 )
-                if executable:
+                if executable and scope_allows_mode(execution_scope, "PURCHASE"):
                     mode_specs.append(
                         {
                             "id": purchase_id,
@@ -179,7 +206,7 @@ class RubyPlayExecutionMixin:
                             "feature_type": profile.buy_feature_type,
                         }
                     )
-                else:
+                elif not executable and scope_allows_mode(execution_scope, "PURCHASE"):
                     coverage_gaps.add("BUY_FEATURE_CONTRACT")
 
             progress(
@@ -187,7 +214,7 @@ class RubyPlayExecutionMixin:
                 f"protocol={profile.protocol_version}, math={profile.math_version}, "
                 f"bets={len(runtime.bets)}, default={runtime.default_bet}, "
                 f"wager={profile.wager if profile.wager is not None else '—'}, "
-                f"next={runtime.next_action}, modos={len(mode_specs)}."
+                f"next={runtime.next_action}, scope={execution_scope}, modos={len(mode_specs)}."
             )
         except Exception as exc:
             message = f"{type(exc).__name__}: {exc}"
@@ -407,9 +434,20 @@ class RubyPlayExecutionMixin:
             session.close()
 
         elapsed_total = (time.monotonic() - started) * 1000.0
+        empty_purchase_scope = bool(
+            execution_scope == "PURCHASE_ONLY"
+            and runtime is not None
+            and requested_total == 0
+        )
         if requested_total and successes == requested_total and not errors and not coverage_gaps:
             status = "OK"
             error = ""
+        elif empty_purchase_scope and not errors and not coverage_gaps and not buy_available:
+            status = "OK"
+            error = ""
+        elif empty_purchase_scope and coverage_gaps:
+            status = "PARCIAL"
+            error = "Cobertura pendiente: " + ", ".join(sorted(coverage_gaps)) + "."
         elif responded_attempts:
             status = "PARCIAL"
             parts = [
@@ -425,7 +463,10 @@ class RubyPlayExecutionMixin:
             status = "ERROR"
             error = errors[0] if errors else "RubyPlay no completó ninguna iteración."
 
-        total_expected = requested_total or repetitions
+        if empty_purchase_scope:
+            total_expected = 0
+        else:
+            total_expected = requested_total or repetitions
         result = GameTestResult(
             provider=self.key,
             slug=game.slug,
@@ -447,3 +488,6 @@ class RubyPlayExecutionMixin:
         if runtime is not None:
             result = annotate_rubyplay_action_inventory(result, runtime)
         return result
+
+
+__all__ = ["RubyPlayExecutionMixin", "scope_allows_mode"]
