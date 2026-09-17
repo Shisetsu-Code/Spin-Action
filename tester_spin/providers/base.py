@@ -121,13 +121,40 @@ class ProviderAdapter(ABC):
     def validate_farm_contract(self, contract: dict[str, Any]) -> list[str]:
         return []
 
+    def build_feature_sessions(self, result: GameTestResult) -> dict[str, Any]:
+        """Return provider-normalized feature-session evidence.
+
+        Provider adapters override this hook. The neutral default emits no
+        sessions and therefore never invents a feature lifecycle for an
+        unsupported provider.
+        """
+        from tester_spin.feature_sessions import finalize_feature_session_report
+
+        return finalize_feature_session_report(
+            result,
+            sessions=[],
+            authority=f"{self.key}:feature-session-normalization-unsupported",
+        )
+
+    def _finalize_feature_and_path_coverage(
+        self,
+        result: GameTestResult,
+        *,
+        progress: Progress,
+    ) -> GameTestResult:
+        from tester_spin.feature_sessions import enforce_complete_feature_sessions
+        from tester_spin.providers.path_coverage import enforce_complete_path_coverage
+
+        report = self.build_feature_sessions(result)
+        result = enforce_complete_feature_sessions(result, report, progress=progress)
+        return enforce_complete_path_coverage(result, progress=progress)
+
     def finalize_test_result(
         self,
         result: GameTestResult,
         *,
         progress: Progress,
     ) -> GameTestResult:
-        from tester_spin.providers.path_coverage import enforce_complete_path_coverage
         from tester_spin.sample_catalog import write_sample_catalog
 
         try:
@@ -143,7 +170,20 @@ class ProviderAdapter(ABC):
                 result.status = "PARCIAL"
                 result.error = (result.error + " " + message).strip()
             progress(message)
-        return enforce_complete_path_coverage(result, progress=progress)
+        return self._finalize_feature_and_path_coverage(result, progress=progress)
+
+    def finalize_purchase_result(
+        self,
+        result: GameTestResult,
+        *,
+        progress: Progress,
+    ) -> GameTestResult:
+        """Finalize purchase evidence without natural-spin sampling.
+
+        Purchase campaigns still require normalized feature sessions and complete
+        provider branch coverage before a root purchase can be promoted.
+        """
+        return self._finalize_feature_and_path_coverage(result, progress=progress)
 
     def test_natural_spins(
         self,
