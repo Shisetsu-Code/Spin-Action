@@ -4,6 +4,7 @@ import math
 from typing import Any
 
 from tester_spin.models import GameTestResult, SpinAttempt
+from tester_spin.providers.rubyplay.choice_domains import rubyplay_choice_domain_is_proven
 from tester_spin.purchase_coverage import (
     attempts_for_mode,
     clean_terminal_attempt,
@@ -47,21 +48,10 @@ def _indexed_domain_closed(
         and str(mode.get("parent") or "") == str(parent_mode or "")
         and str(mode.get("wire_command") or "").strip().lower() == action
     ]
-    if not candidates:
-        return False
-
-    for mode in candidates:
-        required_raw = mode.get("required_options")
-        covered_raw = mode.get("covered_options")
-        if not isinstance(required_raw, list) or not isinstance(covered_raw, list):
-            continue
-        required = {str(value) for value in required_raw}
-        covered = {str(value) for value in covered_raw}
-        if not required or "DOMAIN_UNRESOLVED" in required:
-            continue
-        if required.issubset(covered):
-            return True
-    return False
+    return bool(candidates) and all(
+        rubyplay_choice_domain_is_proven(mode)
+        for mode in candidates
+    )
 
 
 def _unresolved_indexed_actions(
