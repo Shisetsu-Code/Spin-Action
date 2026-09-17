@@ -21,6 +21,24 @@ _KNOWN_TRANSITIONS = {
     "collect",
     "mystery-scatter",
 }
+_KNOWN_ENTRY_NA = {"", "s", "b", "cb", "bc", "c", "fso", "m"}
+_FEATURE_STATE_FIELDS = (
+    "fs",
+    "fsmax",
+    "fs_total",
+    "fsleft",
+    "fs_left",
+    "fsmul",
+    "rs",
+    "rs_c",
+    "rs_t",
+    "rs_more",
+    "rs_p",
+    "rsc",
+    "respins",
+    "respin",
+)
+_INACTIVE_VALUES = {"", "0", "0.0", "false", "null", "none"}
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -61,6 +79,21 @@ def _wire_rows(attempt: SpinAttempt) -> list[dict[str, Any]]:
             }
         )
     return sorted(rows, key=lambda row: int(row["wire_step"]))
+
+
+def _entry_feature_signal(response: dict[str, Any]) -> bool:
+    na = str(response.get("na") or "").strip().lower()
+    if na in {"b", "cb", "bc", "fso", "m"}:
+        return True
+    if na != "s":
+        return False
+    for key in _FEATURE_STATE_FIELDS:
+        raw = response.get(key)
+        if raw is None:
+            continue
+        if str(raw).strip().casefold() not in _INACTIVE_VALUES:
+            return True
+    return False
 
 
 def _choices_for_mode(result: GameTestResult, parent_mode: str) -> list[dict[str, Any]]:
@@ -154,9 +187,16 @@ def _attempt_session(result: GameTestResult, attempt: SpinAttempt) -> dict[str, 
     parent_mode = str(attempt.mode_id or "UNKNOWN")
     choices = _choices_for_mode(result, parent_mode)
     labels = {str(row.get("label") or "") for row in rows}
+    entry = rows[0]
+    entry_request = entry.get("request") if isinstance(entry.get("request"), dict) else {}
+    entry_response = entry.get("response") if isinstance(entry.get("response"), dict) else {}
+    entry_na = str(entry_response.get("na") or "").strip().lower()
+    unknown_entry_state = entry_na not in _KNOWN_ENTRY_NA
     feature_observed = bool(
         rounds
         or choices
+        or _entry_feature_signal(entry_response)
+        or unknown_entry_state
         or labels.intersection(
             {"bonus", "collect-bonus", "mystery-scatter"}
         )
@@ -165,10 +205,11 @@ def _attempt_session(result: GameTestResult, attempt: SpinAttempt) -> dict[str, 
     if not feature_observed:
         return None
 
-    entry = rows[0]
-    entry_request = entry.get("request") if isinstance(entry.get("request"), dict) else {}
-    entry_response = entry.get("response") if isinstance(entry.get("response"), dict) else {}
     reasons: list[str] = []
+    if unknown_entry_state:
+        reasons.append(
+            f"Pragmatic entry na={entry_na!r} has no classified feature transition contract"
+        )
     if unknown_labels:
         reasons.append(
             "Pragmatic wire labels inside feature are unclassified: "
@@ -197,7 +238,7 @@ def _attempt_session(result: GameTestResult, attempt: SpinAttempt) -> dict[str, 
         terminal_proven=terminal,
         returned_to_base=terminal,
         wire_steps=int(attempt.wire_steps or len(rows)),
-        round_classification_complete=not unknown_labels,
+        round_classification_complete=(not unknown_entry_state and not unknown_labels),
         reasons=reasons,
     )
 
