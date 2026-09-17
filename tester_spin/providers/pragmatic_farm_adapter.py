@@ -120,14 +120,14 @@ class PragmaticProvider(_PragmaticProvider):
         stop_event,
         progress,
     ) -> GameTestResult:
-        """Run the non-exhaustive Pragmatic executor for purchase coverage.
+        """Run one exhaustive Pragmatic iteration for purchase coverage.
 
-        The purchase campaign must not enter the exhaustive FSO/path-expansion
-        wrapper. The base executor still derives purchase roots from the live
-        ``doInit`` response and exercises each enabled root once, which preserves
-        exact wire evidence while avoiding the additional branch-expansion load.
+        A root ``pur`` request is not enough to close a purchased feature. If the
+        purchased round exposes FSO selectors, the existing exhaustive wrapper
+        must replay every provider-announced sibling before purchase coverage can
+        be promoted.
         """
-        return _BasePragmaticProvider.test_game(
+        return _PragmaticProvider.test_game(
             self,
             game,
             spins=1,
