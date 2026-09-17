@@ -8,11 +8,13 @@ from typing import Any
 from tester_spin.models import Game, GameTestResult
 from tester_spin.providers.base import Progress
 from tester_spin.providers.rubyplay.adapter import RubyPlayProvider as _ExecutionProvider
-from tester_spin.providers.rubyplay.choice_probe import expand_rubyplay_index_domains
-from tester_spin.providers.rubyplay.exhaustive import (
-    RubyPlayProvider as _CatalogProvider,
-    _observed_index_actions,
+from tester_spin.providers.rubyplay.choice_probe import (
+    choice_domain_mode_id,
+    choice_domain_signature,
+    expand_rubyplay_index_domains,
+    observed_index_prompts,
 )
+from tester_spin.providers.rubyplay.exhaustive import RubyPlayProvider as _CatalogProvider
 
 
 def _domain_complete(mode: dict[str, Any]) -> bool:
@@ -29,13 +31,21 @@ def _domain_complete(mode: dict[str, Any]) -> bool:
     return bool(required and required.issubset(covered))
 
 
+def _prefix_matches(mode: dict[str, Any], prefix: tuple[str, ...]) -> bool:
+    raw = mode.get("prefix")
+    if isinstance(raw, list):
+        return [str(value) for value in raw] == list(prefix)
+    return not prefix
+
+
 def _proven_domain(
     result: GameTestResult,
     *,
     parent: str,
     action: str,
+    prefix: tuple[str, ...],
 ) -> dict[str, Any] | None:
-    mode_id = f"{parent}__{action.upper()}_INDEX_DOMAIN"
+    mode_id = choice_domain_mode_id(parent, action, prefix)
     candidates = [
         mode
         for mode in result.discovered_modes
@@ -44,6 +54,7 @@ def _proven_domain(
         and str(mode.get("kind") or "").upper() == "INDEXED_CHOICE"
         and str(mode.get("parent") or "") == parent
         and str(mode.get("wire_command") or "").strip().lower() == action
+        and _prefix_matches(mode, prefix)
         and _domain_complete(mode)
     ]
     return candidates[0] if len(candidates) == 1 else None
@@ -54,16 +65,16 @@ def apply_rubyplay_choice_audit(
     *,
     progress: Progress,
 ) -> GameTestResult:
-    """Fail closed for indexed RubyPlay choices unless a scoped domain is proven."""
+    """Fail closed unless every observed RubyPlay indexed prompt has proof."""
     if result.status in {"ERROR", "CANCELADO"} or not result.run_dir:
         return result
 
-    observed = _observed_index_actions(result)
+    observed = observed_index_prompts(result)
     if not observed:
         return result
 
-    # Drop only the obsolete global rows from the older audit. Parent-scoped
-    # proven rows are retained and checked below.
+    # Drop only obsolete global rows from the older audit. Parent/path-scoped
+    # proof rows are retained and checked below.
     result.discovered_modes = [
         item
         for item in result.discovered_modes
@@ -74,13 +85,26 @@ def apply_rubyplay_choice_audit(
         )
     ]
 
-    unresolved: list[tuple[str, str, set[int]]] = []
-    for (parent, action), indexes in sorted(observed.items()):
-        proven = _proven_domain(result, parent=parent, action=action)
+    unresolved: list[tuple[str, str, tuple[str, ...], set[int]]] = []
+    for (parent, action, prefix), indexes in sorted(
+        observed.items(),
+        key=lambda item: (
+            item[0][0],
+            item[0][1],
+            len(item[0][2]),
+            item[0][2],
+        ),
+    ):
+        proven = _proven_domain(
+            result,
+            parent=parent,
+            action=action,
+            prefix=prefix,
+        )
         if proven is not None:
             continue
 
-        mode_id = f"{parent}__{action.upper()}_INDEX_DOMAIN"
+        mode_id = choice_domain_mode_id(parent, action, prefix)
         result.discovered_modes = [
             mode
             for mode in result.discovered_modes
@@ -95,28 +119,29 @@ def apply_rubyplay_choice_audit(
                 "id": mode_id,
                 "kind": "INDEXED_CHOICE",
                 "parent": parent,
+                "prefix": list(prefix),
                 "observed": True,
                 "executable": True,
                 "wire_command": action,
                 "observed_indices": sorted(indexes),
                 "coverage_required": True,
-                "branch_signature": f"RUBYPLAY:{parent}:{action}:index-domain",
+                "branch_signature": choice_domain_signature(parent, action, prefix),
                 "required_options": ["DOMAIN_UNRESOLVED"],
                 "covered_options": [],
                 "reason": (
-                    "RubyPlay indexed choice was observed, but isolated live replay "
-                    "did not prove a finite domain boundary."
+                    "RubyPlay indexed prompt was observed on this exact path, but "
+                    "isolated live replay did not prove its finite domain boundary."
                 ),
             }
         )
-        unresolved.append((parent, action, indexes))
+        unresolved.append((parent, action, prefix, indexes))
 
     if unresolved:
         if result.status == "OK":
             result.status = "PARCIAL"
         detail = ", ".join(
-            f"{parent}/{action} indexes observados={sorted(indexes)}"
-            for parent, action, indexes in unresolved
+            f"{parent}/{action}/prefix={list(prefix)} indexes={sorted(indexes)}"
+            for parent, action, prefix, indexes in unresolved
         )
         message = (
             "RubyPlay cobertura indexada pendiente: " + detail
@@ -126,12 +151,13 @@ def apply_rubyplay_choice_audit(
             result.error = (str(result.error or "").strip() + " " + message).strip()
         progress(message)
     else:
+        observed_parents = {parent for parent, _action, _prefix in observed}
         total = sum(
             len(mode.get("required_options") or [])
             for mode in result.discovered_modes
             if isinstance(mode, dict)
             and str(mode.get("kind") or "").upper() == "INDEXED_CHOICE"
-            and str(mode.get("parent") or "") in {parent for parent, _action in observed}
+            and str(mode.get("parent") or "") in observed_parents
         )
         progress(f"RubyPlay cobertura indexada demostrada: {total}/{total} opciones.")
 
@@ -158,7 +184,7 @@ class RubyPlayProvider(_CatalogProvider):
         progress: Progress,
     ) -> GameTestResult:
         # Call the protocol executor directly so the legacy unresolved-domain audit
-        # does not run before isolated probes have a chance to prove the domain.
+        # does not run before isolated probes have a chance to prove each path.
         result = _ExecutionProvider.test_game(
             self,
             game,
@@ -168,7 +194,7 @@ class RubyPlayProvider(_CatalogProvider):
             progress=progress,
         )
         if result.status not in {"ERROR", "CANCELADO"} and result.run_dir:
-            observed = _observed_index_actions(result)
+            observed = observed_index_prompts(result)
             if observed:
                 result = expand_rubyplay_index_domains(
                     self,
