@@ -87,6 +87,17 @@ class RubyPlaySelectPathReplayTests(unittest.TestCase):
         self.assertEqual(select_indices, [1, 2])
         self.assertEqual(outcome["prefix"], ["select=1"])
         self.assertTrue(outcome["target_reached"])
+        self.assertEqual(
+            outcome["indexed_trace"],
+            [
+                {"action": "select", "prefix": [], "selected": "1"},
+                {
+                    "action": "select",
+                    "prefix": ["select=1"],
+                    "selected": "2",
+                },
+            ],
+        )
 
     def test_prefix_action_mismatch_is_not_silently_rewritten(self) -> None:
         runtime = SimpleNamespace(
@@ -142,6 +153,7 @@ class RubyPlaySelectPathReplayTests(unittest.TestCase):
 
         self.assertEqual(outcome["outcome"], "PROMPT_NOT_REACHED")
         self.assertFalse(outcome["target_reached"])
+        self.assertEqual(outcome["indexed_trace"], [])
 
 
 if __name__ == "__main__":
