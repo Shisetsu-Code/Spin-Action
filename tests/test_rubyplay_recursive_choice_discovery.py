@@ -36,7 +36,7 @@ class RubyPlayRecursiveChoiceDiscoveryTests(unittest.TestCase):
                 prefix = tuple(prefix)
                 calls.append((prefix, index))
                 if not prefix:
-                    if index == 1:
+                    if index in {1, 2}:
                         return {"index": index, "prefix": [], "outcome": "SEMANTIC_REJECTION"}
                     return {
                         "index": index,
@@ -53,7 +53,7 @@ class RubyPlayRecursiveChoiceDiscoveryTests(unittest.TestCase):
                         ],
                     }
                 if prefix == ("select=0",):
-                    if index == 1:
+                    if index in {1, 2}:
                         return {
                             "index": index,
                             "prefix": list(prefix),
@@ -113,7 +113,7 @@ class RubyPlayRecursiveChoiceDiscoveryTests(unittest.TestCase):
             def replay(*args, prefix=(), index: int, **kwargs):
                 prefix = tuple(prefix)
                 if not prefix:
-                    if index == 1:
+                    if index in {1, 2}:
                         return {"index": index, "outcome": "SEMANTIC_REJECTION"}
                     return {
                         "index": index,
