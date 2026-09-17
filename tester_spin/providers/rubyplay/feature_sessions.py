@@ -189,6 +189,7 @@ def _attempt_session(
     transitions: list[dict[str, Any]] = []
     unknown_actions: list[str] = []
     prefix: list[str] = []
+    pick_domain_recorded = False
 
     for row in rows[1:]:
         request = row.get("request") if isinstance(row.get("request"), dict) else {}
@@ -209,9 +210,32 @@ def _attempt_session(
             )
             continue
         if action in _CHOICE_ACTIONS:
-            choice = _choice_from_row(result, attempt, row, prefix=list(prefix))
-            choices.append(choice)
-            selected = str(choice.get("selected") or "")
+            selected_raw = request.get("index")
+            selected = (
+                str(selected_raw).strip()
+                if selected_raw is not None and not isinstance(selected_raw, bool)
+                else ""
+            )
+            choice_prefix = [] if action == "pick" else list(prefix)
+            if action != "pick" or not pick_domain_recorded:
+                choice = _choice_from_row(
+                    result,
+                    attempt,
+                    row,
+                    prefix=choice_prefix,
+                )
+                choices.append(choice)
+                if action == "pick":
+                    pick_domain_recorded = True
+            transitions.append(
+                {
+                    "wire_step": int(row.get("wire_step") or 0),
+                    "provider_action": action,
+                    "selected": selected,
+                    "next_action": _next_action(response),
+                    "evidence": evidence,
+                }
+            )
             if selected:
                 prefix.append(selected)
             continue
