@@ -237,7 +237,7 @@ def _attempt_session(
                 }
             )
             if selected:
-                prefix.append(selected)
+                prefix.append(f"{action}={selected}")
             continue
         if action:
             transitions.append(
