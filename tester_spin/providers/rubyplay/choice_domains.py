@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any, Iterable
 
 import requests
@@ -137,4 +138,51 @@ def prove_contiguous_index_domain(
     }
 
 
-__all__ = ["classify_probe_failure", "prove_contiguous_index_domain"]
+def probe_contiguous_index_domain(
+    probe_index: Callable[[int], dict[str, Any]],
+    *,
+    max_index: int = 32,
+) -> dict[str, Any]:
+    """Probe 0..N conservatively and stop at the first conclusive/inconclusive edge.
+
+    Each callback invocation must use an isolated logical round/session. The loop
+    never retries an index and never searches beyond the first non-terminal result.
+    Reaching the defensive guard without a semantic rejection remains unresolved.
+    """
+    try:
+        guard = max(0, int(max_index))
+    except (TypeError, ValueError):
+        guard = 32
+
+    rows: list[dict[str, Any]] = []
+    for index in range(guard + 1):
+        try:
+            raw = probe_index(index)
+        except BaseException as exc:
+            raw = {
+                "index": index,
+                "outcome": _PROTOCOL_ERROR,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+        row = dict(raw) if isinstance(raw, dict) else {}
+        row["index"] = index
+        outcome = str(row.get("outcome") or "").strip().upper()
+        if not outcome:
+            row["outcome"] = _PROTOCOL_ERROR
+            outcome = _PROTOCOL_ERROR
+        rows.append(row)
+
+        if outcome == _TERMINAL:
+            continue
+        # Semantic rejection may prove the boundary; every other outcome makes
+        # the run inconclusive. In both cases stop immediately.
+        break
+
+    return prove_contiguous_index_domain(rows)
+
+
+__all__ = [
+    "classify_probe_failure",
+    "probe_contiguous_index_domain",
+    "prove_contiguous_index_domain",
+]
