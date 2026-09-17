@@ -70,6 +70,42 @@ def _option_bucket(option: dict[str, Any]) -> str:
     return "unknown"
 
 
+def _apply_feature_session_gate(
+    result: GameTestResult,
+    option: dict[str, Any],
+) -> dict[str, Any]:
+    """Prevent root-only success from hiding an incomplete observed feature.
+
+    The gate only downgrades options that would otherwise be complete. Failed or
+    unresolved root requests keep their original classification. Absence of an
+    observed feature session is not treated as an error because some purchases
+    can legitimately resolve in a single provider action.
+    """
+    if _option_bucket(option) != "complete":
+        return option
+
+    from tester_spin.feature_sessions import (
+        FEATURE_INCOMPLETE,
+        FEATURE_UNKNOWN,
+        feature_session_state_for_mode,
+    )
+
+    purchase_id = str(option.get("purchase_id") or "")
+    feature_state = feature_session_state_for_mode(result, purchase_id)
+    if feature_state not in {FEATURE_INCOMPLETE, FEATURE_UNKNOWN}:
+        return option
+
+    gated = dict(option)
+    gated["execution_state"] = "UNKNOWN"
+    current_reason = str(gated.get("reason") or "").strip()
+    detail = (
+        f"Observed feature session for {purchase_id or 'purchase'} is "
+        f"{feature_state}; root purchase evidence alone cannot close coverage."
+    )
+    gated["reason"] = (current_reason + " " + detail).strip()
+    return gated
+
+
 def finalize_purchase_coverage(
     result: GameTestResult,
     *,
@@ -79,7 +115,11 @@ def finalize_purchase_coverage(
     no_purchase_proven: bool = False,
     reason: str = "",
 ) -> dict[str, Any]:
-    normalized = [dict(item) for item in options if isinstance(item, dict)]
+    normalized = [
+        _apply_feature_session_gate(result, dict(item))
+        for item in options
+        if isinstance(item, dict)
+    ]
     inventory = str(inventory_state or "UNKNOWN").upper()
     buckets = [_option_bucket(option) for option in normalized]
     counts = {
