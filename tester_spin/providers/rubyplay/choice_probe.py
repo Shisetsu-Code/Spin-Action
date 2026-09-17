@@ -371,10 +371,15 @@ def expand_rubyplay_index_domains(
     progress,
     replay_fn: Callable[..., dict[str, Any]] = replay_index_probe,
     max_index: int = 32,
+    prompt_retries: int = 8,
 ) -> GameTestResult:
     """Prove parent-scoped RubyPlay select/pick domains by isolated live replay."""
     summaries: list[dict[str, Any]] = []
     run_root = Path(str(result.run_dir or "")) if result.run_dir else None
+    try:
+        prompt_budget = max(1, int(prompt_retries))
+    except (TypeError, ValueError):
+        prompt_budget = 8
 
     for (parent_mode, action), observed_indices in sorted(observed.items()):
         if stop_event.is_set():
@@ -388,44 +393,63 @@ def expand_rubyplay_index_domains(
         probe_counts: dict[int, int] = {}
 
         def probe(index: int) -> dict[str, Any]:
-            attempt_no = probe_counts.get(index, 0) + 1
-            probe_counts[index] = attempt_no
-            artifact_dir = (
-                run_root
-                / "diagnostics"
-                / "choice-domain-probes"
-                / parent_mode
-                / action
-                / f"index-{index:03d}"
-                / f"attempt-{attempt_no:03d}"
-                if run_root is not None
-                else Path("diagnostics")
-                / "choice-domain-probes"
-                / parent_mode
-                / action
-                / f"index-{index:03d}"
-                / f"attempt-{attempt_no:03d}"
-            )
-            outcome = replay_fn(
-                provider,
-                game,
-                result,
-                parent_mode=parent_mode,
-                action=action,
-                index=index,
-                timeout_s=timeout_s,
-                stop_event=stop_event,
-                artifact_dir=artifact_dir,
-            )
-            row = dict(outcome) if isinstance(outcome, dict) else {}
-            row.setdefault("artifact_dir", str(artifact_dir))
-            return row
+            prompt_attempts: list[dict[str, Any]] = []
+            for _ in range(prompt_budget):
+                attempt_no = probe_counts.get(index, 0) + 1
+                probe_counts[index] = attempt_no
+                artifact_dir = (
+                    run_root
+                    / "diagnostics"
+                    / "choice-domain-probes"
+                    / parent_mode
+                    / action
+                    / f"index-{index:03d}"
+                    / f"attempt-{attempt_no:03d}"
+                    if run_root is not None
+                    else Path("diagnostics")
+                    / "choice-domain-probes"
+                    / parent_mode
+                    / action
+                    / f"index-{index:03d}"
+                    / f"attempt-{attempt_no:03d}"
+                )
+                outcome = replay_fn(
+                    provider,
+                    game,
+                    result,
+                    parent_mode=parent_mode,
+                    action=action,
+                    index=index,
+                    timeout_s=timeout_s,
+                    stop_event=stop_event,
+                    artifact_dir=artifact_dir,
+                )
+                row = dict(outcome) if isinstance(outcome, dict) else {}
+                row.setdefault("artifact_dir", str(artifact_dir))
+                prompt_attempts.append(row)
+                if str(row.get("outcome") or "").upper() != "PROMPT_NOT_REACHED":
+                    break
+                if stop_event.is_set():
+                    break
+
+            final = dict(prompt_attempts[-1]) if prompt_attempts else {
+                "index": index,
+                "outcome": "PROTOCOL_ERROR",
+            }
+            final["prompt_attempts"] = len(prompt_attempts)
+            final["prompt_attempt_artifacts"] = [
+                str(row.get("artifact_dir") or "")
+                for row in prompt_attempts
+                if str(row.get("artifact_dir") or "")
+            ]
+            return final
 
         proof = probe_contiguous_index_domain(probe, max_index=max_index)
         summary = {
             "parent_mode": parent_mode,
             "action": action,
             "observed_indices": sorted(int(value) for value in observed_indices),
+            "prompt_retry_budget": prompt_budget,
             **proof,
         }
         summaries.append(summary)
