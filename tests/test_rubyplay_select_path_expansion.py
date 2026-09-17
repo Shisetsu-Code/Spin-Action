@@ -39,7 +39,11 @@ class RubyPlaySelectPathExpansionTests(unittest.TestCase):
                 return {
                     "index": index,
                     "prefix": list(prefix),
-                    "outcome": "SEMANTIC_REJECTION" if index == boundary else "TERMINAL",
+                    "outcome": (
+                        "SEMANTIC_REJECTION"
+                        if index in {boundary, boundary + 1}
+                        else "TERMINAL"
+                    ),
                     "target_reached": True,
                 }
 
