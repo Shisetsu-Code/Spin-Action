@@ -34,12 +34,18 @@ def _same_number(left: Any, right: Any) -> bool:
     return a is not None and b is not None and math.isclose(a, b, rel_tol=0.0, abs_tol=1e-9)
 
 
-def _indexed_domain_closed(result: GameTestResult, action: str) -> bool:
-    target_id = f"RUBYPLAY_{action.upper()}_INDEX_DOMAIN"
+def _indexed_domain_closed(
+    result: GameTestResult,
+    parent_mode: str,
+    action: str,
+) -> bool:
     candidates = [
         mode
         for mode in result.discovered_modes
-        if isinstance(mode, dict) and str(mode.get("id") or "") == target_id
+        if isinstance(mode, dict)
+        and str(mode.get("kind") or "").upper() == "INDEXED_CHOICE"
+        and str(mode.get("parent") or "") == str(parent_mode or "")
+        and str(mode.get("wire_command") or "").strip().lower() == action
     ]
     if not candidates:
         return False
@@ -67,7 +73,11 @@ def _unresolved_indexed_actions(
         action = str(payload.get("action") or "").strip().lower()
         if action in _INDEXED_BRANCH_ACTIONS:
             observed.add(action)
-    return sorted(action for action in observed if not _indexed_domain_closed(result, action))
+    return sorted(
+        action
+        for action in observed
+        if not _indexed_domain_closed(result, str(attempt.mode_id or ""), action)
+    )
 
 
 def build_rubyplay_purchase_coverage(result: GameTestResult) -> dict[str, Any]:
@@ -126,7 +136,7 @@ def build_rubyplay_purchase_coverage(result: GameTestResult) -> dict[str, Any]:
             artifact_dir = unresolved_branch_artifact
             reason = (
                 "Exact RubyPlay buy_feature request reached terminal state, but indexed "
-                "choice domain coverage remains unresolved for: "
+                "choice domain coverage remains unresolved for this purchase mode: "
                 + ", ".join(unresolved_branch_actions)
                 + "."
             )
