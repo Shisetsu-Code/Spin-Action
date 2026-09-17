@@ -8,6 +8,7 @@ from pathlib import Path
 from tester_spin.feature_sessions import FEATURE_COMPLETE, FEATURE_INCOMPLETE
 from tester_spin.models import GameTestResult, SpinAttempt
 from tester_spin.providers.one_spin4win_feature_sessions import build_one_spin4win_feature_sessions
+from tester_spin.providers.one_spin4win_farm_adapter import OneSpin4WinProvider
 
 
 def _frame(direction: str, payload: dict, *, classification: str = "") -> dict:
@@ -98,6 +99,21 @@ class OneSpin4WinFeatureSessionTests(unittest.TestCase):
             report = build_one_spin4win_feature_sessions(result)
         self.assertEqual(report["session_count"], 0)
         self.assertTrue(report["complete"])
+
+    def test_active_provider_build_hook_uses_d1_normalizer(self) -> None:
+        frames = [
+            _frame("sent", {"type": 1}, classification="spin"),
+            _frame("received", {"type": 3, "st": 5}),
+            _frame("sent", {"type": 1}, classification="continuation"),
+            _frame("received", {"type": 3, "st": 0}),
+        ]
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            result = _result(root, frames)
+            provider = OneSpin4WinProvider(root / "data")
+            report = provider.build_feature_sessions(result)
+        self.assertEqual(report["authority"], "d1-websocket-type1-type3-state-machine")
+        self.assertEqual(report["sessions"][0]["totals"]["logical_rounds"], 1)
 
 
 if __name__ == "__main__":
