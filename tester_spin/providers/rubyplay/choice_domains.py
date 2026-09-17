@@ -2,10 +2,14 @@ from __future__ import annotations
 
 from typing import Any, Iterable
 
+import requests
+
 _PROVEN = "PROVEN"
 _UNRESOLVED = "UNRESOLVED"
 _TERMINAL = "TERMINAL"
 _SEMANTIC_REJECTION = "SEMANTIC_REJECTION"
+_TRANSPORT_ERROR = "TRANSPORT_ERROR"
+_PROTOCOL_ERROR = "PROTOCOL_ERROR"
 
 
 def _index(row: dict[str, Any]) -> int | None:
@@ -28,6 +32,40 @@ def _covered(rows: list[dict[str, Any]]) -> list[str]:
         if index not in values:
             values.append(index)
     return [str(value) for value in sorted(values)]
+
+
+def classify_probe_failure(
+    exc: BaseException,
+    *,
+    last_payload: dict[str, Any] | None,
+    action: str,
+) -> dict[str, Any]:
+    """Classify one failed isolated index probe without inventing a boundary."""
+    if isinstance(exc, requests.RequestException):
+        return {
+            "outcome": _TRANSPORT_ERROR,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+    payload = last_payload if isinstance(last_payload, dict) else {}
+    provider_status = str(payload.get("status") or "").strip().lower()
+    if provider_status and provider_status != "ok":
+        return {
+            "outcome": _SEMANTIC_REJECTION,
+            "provider_status": provider_status,
+            "provider_error": str(
+                payload.get("error")
+                or payload.get("message")
+                or payload.get("errorCode")
+                or ""
+            ),
+            "topic": str(payload.get("topic") or f"gameserver/{action}"),
+        }
+
+    return {
+        "outcome": _PROTOCOL_ERROR,
+        "error": f"{type(exc).__name__}: {exc}",
+    }
 
 
 def prove_contiguous_index_domain(
@@ -99,4 +137,4 @@ def prove_contiguous_index_domain(
     }
 
 
-__all__ = ["prove_contiguous_index_domain"]
+__all__ = ["classify_probe_failure", "prove_contiguous_index_domain"]
