@@ -70,6 +70,87 @@ def _option_bucket(option: dict[str, Any]) -> str:
     return "unknown"
 
 
+def _child_path_blockers(
+    result: GameTestResult,
+    purchase_id: str,
+) -> list[str]:
+    blockers: list[str] = []
+    target = str(purchase_id or "")
+    if not target:
+        return blockers
+
+    for mode in result.discovered_modes:
+        if not isinstance(mode, dict) or mode.get("coverage_required") is not True:
+            continue
+        parent = str(mode.get("parent") or mode.get("scope") or "")
+        if parent != target:
+            continue
+
+        mode_id = str(mode.get("id") or mode.get("branch_signature") or "UNKNOWN")
+        required_raw = mode.get("required_options")
+        covered_raw = mode.get("covered_options")
+        required = (
+            [str(value) for value in required_raw if str(value)]
+            if isinstance(required_raw, list)
+            else []
+        )
+        covered = (
+            {str(value) for value in covered_raw if str(value)}
+            if isinstance(covered_raw, list)
+            else set()
+        )
+
+        if not required or "DOMAIN_UNRESOLVED" in required:
+            blockers.append(mode_id)
+            continue
+        if any(value not in covered for value in required):
+            blockers.append(mode_id)
+            continue
+
+        try:
+            required_samples = max(1, int(mode.get("required_samples", 1)))
+        except (TypeError, ValueError):
+            required_samples = 1
+        if required_samples <= 1:
+            continue
+
+        counts = mode.get("sample_counts")
+        if not isinstance(counts, dict):
+            blockers.append(mode_id)
+            continue
+        if any(
+            int(counts.get(value, 0) or 0) < required_samples
+            for value in required
+        ):
+            blockers.append(mode_id)
+
+    return list(dict.fromkeys(blockers))
+
+
+def _apply_parent_path_gate(
+    result: GameTestResult,
+    option: dict[str, Any],
+) -> dict[str, Any]:
+    if _option_bucket(option) != "complete":
+        return option
+
+    purchase_id = str(option.get("purchase_id") or "")
+    blockers = _child_path_blockers(result, purchase_id)
+    if not blockers:
+        return option
+
+    gated = dict(option)
+    gated["execution_state"] = "UNKNOWN"
+    current_reason = str(gated.get("reason") or "").strip()
+    detail = (
+        f"Required child path coverage remains open for {purchase_id or 'purchase'}: "
+        + ", ".join(blockers[:12])
+        + "."
+    )
+    gated["reason"] = (current_reason + " " + detail).strip()
+    return gated
+
+
 def _apply_feature_session_gate(
     result: GameTestResult,
     option: dict[str, Any],
@@ -116,7 +197,10 @@ def finalize_purchase_coverage(
     reason: str = "",
 ) -> dict[str, Any]:
     normalized = [
-        _apply_feature_session_gate(result, dict(item))
+        _apply_parent_path_gate(
+            result,
+            _apply_feature_session_gate(result, dict(item)),
+        )
         for item in options
         if isinstance(item, dict)
     ]
