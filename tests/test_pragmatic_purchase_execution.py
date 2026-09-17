@@ -13,7 +13,7 @@ from tester_spin.providers.pragmatic_farm_adapter import PragmaticProvider
 
 
 class PragmaticPurchaseExecutionTests(unittest.TestCase):
-    def test_purchase_campaign_bypasses_exhaustive_fso_wrapper(self) -> None:
+    def test_purchase_campaign_uses_exhaustive_fso_wrapper(self) -> None:
         game = Game(
             provider="pragmatic",
             slug="synthetic",
@@ -35,11 +35,15 @@ class PragmaticPurchaseExecutionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             provider = PragmaticProvider(Path(temp))
             with (
-                patch.object(BasePragmaticProvider, "test_game", return_value=sentinel) as base_test,
+                patch.object(
+                    BasePragmaticProvider,
+                    "test_game",
+                    side_effect=AssertionError("purchase path must enter exhaustive Pragmatic wrapper"),
+                ) as base_test,
                 patch.object(
                     ExhaustivePragmaticProvider,
                     "test_game",
-                    side_effect=AssertionError("exhaustive Pragmatic wrapper must not run in purchase campaign"),
+                    return_value=sentinel,
                 ) as exhaustive_test,
             ):
                 result = provider.test_purchase_paths(
@@ -50,8 +54,8 @@ class PragmaticPurchaseExecutionTests(unittest.TestCase):
                 )
 
         self.assertIs(result, sentinel)
-        base_test.assert_called_once()
-        exhaustive_test.assert_not_called()
+        exhaustive_test.assert_called_once()
+        base_test.assert_not_called()
 
 
 if __name__ == "__main__":
