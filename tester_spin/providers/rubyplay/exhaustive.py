@@ -161,12 +161,29 @@ def _load_json(path: Path) -> dict[str, Any] | None:
     return value if isinstance(value, dict) else None
 
 
-def _observed_index_actions(result: GameTestResult) -> dict[str, set[int]]:
-    found: dict[str, set[int]] = {}
+def _mode_scope(root: Path, path: Path) -> str:
+    try:
+        relative = path.relative_to(root)
+    except ValueError:
+        return ""
+    if len(relative.parts) < 3:
+        return ""
+    parent = str(relative.parts[0]).strip()
+    if parent.casefold() in {"bootstrap", "catalog-pages", "diagnostics", "analysis"}:
+        return ""
+    return parent
+
+
+def _observed_index_actions(result: GameTestResult) -> dict[tuple[str, str], set[int]]:
+    """Collect RubyPlay indexed choices without mixing unrelated root modes."""
+    found: dict[tuple[str, str], set[int]] = {}
     root = Path(str(result.run_dir or ""))
     if not root.is_dir():
         return found
     for path in root.rglob("*request.json"):
+        parent = _mode_scope(root, path)
+        if not parent:
+            continue
         payload = _load_json(path)
         if not isinstance(payload, dict):
             continue
@@ -181,7 +198,7 @@ def _observed_index_actions(result: GameTestResult) -> dict[str, set[int]]:
         except (TypeError, ValueError):
             continue
         if parsed >= 0:
-            found.setdefault(action, set()).add(parsed)
+            found.setdefault((parent, action), set()).add(parsed)
     return found
 
 
@@ -197,17 +214,31 @@ def apply_rubyplay_path_audit(
     if not observed:
         return result
 
-    for action, indexes in sorted(observed.items()):
+    # Replace legacy global RubyPlay indexed-domain rows, if present, with
+    # parent-scoped rows so one purchase cannot borrow another purchase's picker
+    # evidence.
+    result.discovered_modes = [
+        item
+        for item in result.discovered_modes
+        if not (
+            isinstance(item, dict)
+            and str(item.get("kind") or "").upper() == "INDEXED_CHOICE"
+            and str(item.get("id") or "").startswith("RUBYPLAY_")
+        )
+    ]
+
+    for (parent, action), indexes in sorted(observed.items()):
         result.discovered_modes.append(
             {
-                "id": f"RUBYPLAY_{action.upper()}_INDEX_DOMAIN",
+                "id": f"{parent}__{action.upper()}_INDEX_DOMAIN",
                 "kind": "INDEXED_CHOICE",
+                "parent": parent,
                 "observed": True,
                 "executable": True,
                 "wire_command": action,
                 "observed_indices": sorted(indexes),
                 "coverage_required": True,
-                "branch_signature": f"RUBYPLAY:{action}:index-domain",
+                "branch_signature": f"RUBYPLAY:{parent}:{action}:index-domain",
                 "required_options": ["DOMAIN_UNRESOLVED"],
                 "covered_options": [],
                 "reason": (
@@ -221,8 +252,8 @@ def apply_rubyplay_path_audit(
     if result.status == "OK":
         result.status = "PARCIAL"
     detail = ", ".join(
-        f"{action} indexes observados={sorted(indexes)}"
-        for action, indexes in sorted(observed.items())
+        f"{parent}/{action} indexes observados={sorted(indexes)}"
+        for (parent, action), indexes in sorted(observed.items())
     )
     message = (
         "RubyPlay cobertura indexada pendiente: " + detail
