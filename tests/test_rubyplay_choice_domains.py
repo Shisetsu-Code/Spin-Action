@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import unittest
 
-from tester_spin.providers.rubyplay.choice_domains import prove_contiguous_index_domain
+from tester_spin.providers.rubyplay.choice_domains import (
+    probe_contiguous_index_domain,
+    prove_contiguous_index_domain,
+)
 
 
 class RubyPlayChoiceDomainProofTests(unittest.TestCase):
@@ -56,6 +59,44 @@ class RubyPlayChoiceDomainProofTests(unittest.TestCase):
         )
         self.assertEqual(proof["state"], "UNRESOLVED")
         self.assertEqual(proof["required_options"], ["DOMAIN_UNRESOLVED"])
+
+    def test_bounded_probe_stops_at_first_semantic_rejection(self) -> None:
+        called = []
+
+        def probe(index: int):
+            called.append(index)
+            return {
+                "index": index,
+                "outcome": "SEMANTIC_REJECTION" if index == 3 else "TERMINAL",
+            }
+
+        proof = probe_contiguous_index_domain(probe, max_index=16)
+
+        self.assertEqual(called, [0, 1, 2, 3])
+        self.assertEqual(proof["state"], "PROVEN")
+        self.assertEqual(proof["required_options"], ["0", "1", "2"])
+
+    def test_bounded_probe_stops_immediately_on_inconclusive_failure(self) -> None:
+        called = []
+
+        def probe(index: int):
+            called.append(index)
+            if index == 1:
+                return {"index": index, "outcome": "TRANSPORT_ERROR"}
+            return {"index": index, "outcome": "TERMINAL"}
+
+        proof = probe_contiguous_index_domain(probe, max_index=16)
+
+        self.assertEqual(called, [0, 1])
+        self.assertEqual(proof["state"], "UNRESOLVED")
+
+    def test_probe_guard_exhaustion_never_promotes_unbounded_domain(self) -> None:
+        proof = probe_contiguous_index_domain(
+            lambda index: {"index": index, "outcome": "TERMINAL"},
+            max_index=3,
+        )
+        self.assertEqual(proof["state"], "UNRESOLVED")
+        self.assertEqual(proof["covered_options"], ["0", "1", "2", "3"])
 
 
 if __name__ == "__main__":
