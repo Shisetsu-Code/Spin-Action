@@ -4,6 +4,7 @@ from pathlib import Path
 
 from tester_spin.models import Game, GameTestResult
 from tester_spin.providers.farm_structure import attach_execution_structure, select_domains
+from tester_spin.providers.redtiger.feature_sessions import build_redtiger_feature_sessions
 from tester_spin.providers.redtiger.provider import RedTigerProvider as _RedTigerProvider
 from tester_spin.providers.redtiger.purchase_coverage import build_redtiger_purchase_coverage
 from tester_spin.providers.result_farm_contract import (
@@ -61,12 +62,13 @@ _SPEC = ProviderFarmSpec(
 class RedTigerProvider(_RedTigerProvider):
     """Active Red Tiger provider with post-discovery farm export hooks."""
 
-    # Evolution/Red Tiger bootstrap currently depends on one browser/runtime flow
-    # at a time. Keep it serial until multi-session bootstrap is proven safe.
     max_test_concurrency = 1
 
     def farm_contract_dir(self, game: Game) -> Path | None:
         return self.game_dir(game)
+
+    def build_feature_sessions(self, result: GameTestResult) -> dict:
+        return build_redtiger_feature_sessions(result)
 
     def build_purchase_coverage(self, game: Game, result: GameTestResult) -> dict:
         return build_redtiger_purchase_coverage(result, self.game_dir(game))
