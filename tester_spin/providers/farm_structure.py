@@ -57,6 +57,25 @@ def _feature_summary(value: Any) -> dict[str, Any]:
     }
 
 
+def apply_feature_session_gate(
+    contract: dict[str, Any],
+    result,
+) -> dict[str, Any]:
+    structural = getattr(result, "structural_map", None)
+    raw = structural.get("feature_sessions") if isinstance(structural, dict) else None
+    summary = _feature_summary(raw)
+    contract["feature_sessions"] = summary
+    if summary["session_count"] > 0 and not summary["complete"]:
+        unresolved = contract.get("unresolved")
+        if not isinstance(unresolved, list):
+            unresolved = []
+            contract["unresolved"] = unresolved
+        if "FEATURE_SESSIONS_INCOMPLETE" not in unresolved:
+            unresolved.append("FEATURE_SESSIONS_INCOMPLETE")
+        contract["ready"] = False
+    return contract
+
+
 def build_execution_structure(
     modes: list[dict[str, Any]],
     *,
