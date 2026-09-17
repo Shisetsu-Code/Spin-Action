@@ -95,14 +95,29 @@ def rubyplay_choice_domain_is_proven(mode: dict[str, Any]) -> bool:
     covered: set[int] = set()
     for raw in covered_raw:
         if isinstance(raw, bool):
-            continue
+            return False
         try:
             value = int(raw)
         except (TypeError, ValueError):
-            continue
-        if value >= 0:
-            covered.add(value)
-    return set(required).issubset(covered)
+            return False
+        if value < 0:
+            return False
+        covered.add(value)
+    if covered != set(required):
+        return False
+
+    observed_raw = mode.get("observed_indices")
+    if isinstance(observed_raw, list):
+        for raw in observed_raw:
+            if isinstance(raw, bool):
+                return False
+            try:
+                value = int(raw)
+            except (TypeError, ValueError):
+                return False
+            if value < 0 or value >= boundary:
+                return False
+    return True
 
 
 def classify_probe_failure(
