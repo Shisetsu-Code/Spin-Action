@@ -53,6 +53,8 @@ class RubyPlayChoiceDomainProofTests(unittest.TestCase):
                 {"index": 1, "outcome": "TERMINAL"},
                 {"index": 2, "outcome": "SEMANTIC_REJECTION", "provider_status": "error"},
                 {"index": 2, "outcome": "SEMANTIC_REJECTION", "provider_status": "error"},
+                {"index": 3, "outcome": "SEMANTIC_REJECTION", "provider_status": "error"},
+                {"index": 3, "outcome": "SEMANTIC_REJECTION", "provider_status": "error"},
             ]
         )
         self.assertEqual(proof["state"], "PROVEN")
@@ -60,6 +62,19 @@ class RubyPlayChoiceDomainProofTests(unittest.TestCase):
         self.assertEqual(proof["covered_options"], ["0", "1"])
         self.assertEqual(proof["boundary_index"], 2)
         self.assertEqual(proof["boundary_confirmations"], 2)
+        self.assertEqual(proof["rejection_span"], 2)
+
+    def test_rejected_boundary_with_valid_successor_is_unresolved(self) -> None:
+        proof = prove_contiguous_index_domain(
+            [
+                {"index": 0, "outcome": "TERMINAL"},
+                {"index": 1, "outcome": "TERMINAL"},
+                {"index": 2, "outcome": "SEMANTIC_REJECTION"},
+                {"index": 2, "outcome": "SEMANTIC_REJECTION"},
+                {"index": 3, "outcome": "TERMINAL"},
+            ]
+        )
+        self.assertEqual(proof["state"], "UNRESOLVED")
 
     def test_single_semantic_rejection_does_not_prove_boundary(self) -> None:
         proof = prove_contiguous_index_domain(
@@ -120,12 +135,16 @@ class RubyPlayChoiceDomainProofTests(unittest.TestCase):
             called.append(index)
             return {
                 "index": index,
-                "outcome": "SEMANTIC_REJECTION" if index == 3 else "TERMINAL",
+                "outcome": (
+                    "SEMANTIC_REJECTION"
+                    if index in {3, 4}
+                    else "TERMINAL"
+                ),
             }
 
         proof = probe_contiguous_index_domain(probe, max_index=16)
 
-        self.assertEqual(called, [0, 1, 2, 3, 3])
+        self.assertEqual(called, [0, 1, 2, 3, 3, 4, 4])
         self.assertEqual(proof["state"], "PROVEN")
         self.assertEqual(proof["required_options"], ["0", "1", "2"])
 
