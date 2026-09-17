@@ -11,6 +11,7 @@ from tester_spin.models import Game, GameTestResult
 from tester_spin.providers.rubyplay.choice_domains import (
     classify_probe_failure,
     probe_contiguous_index_domain,
+    rubyplay_choice_domain_is_proven,
 )
 
 _CONTINUATION_GUARD = 256
@@ -263,11 +264,7 @@ def _known_prompt_indices(
             continue
 
         required = mode.get("required_options")
-        if (
-            isinstance(required, list)
-            and required
-            and "DOMAIN_UNRESOLVED" not in {str(value) for value in required}
-        ):
+        if rubyplay_choice_domain_is_proven(mode) and isinstance(required, list):
             parsed_required: list[int] = []
             valid = True
             for raw in required:
