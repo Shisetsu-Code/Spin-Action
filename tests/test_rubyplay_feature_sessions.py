@@ -137,6 +137,33 @@ class RubyPlayFeatureSessionTests(unittest.TestCase):
         self.assertEqual(session["state"], FEATURE_INCOMPLETE)
         self.assertEqual(session["choices"][0]["domain_state"], "UNRESOLVED")
 
+    def test_finite_parent_domain_without_authority_cannot_close_session(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            result = _result(root, mode_id="PURCHASE_SELECT", mode_kind="PURCHASE", wire_steps=2)
+            attempt = Path(result.attempts[0].artifact_dir)
+            _write(attempt / "request.json", {"action": "buy_feature", "buy_feature_type": "select"})
+            _write(attempt / "response.json", {"data": {"next_action": "select"}})
+            _write(attempt / "step-002-request.json", {"action": "select", "index": 0})
+            _write(attempt / "step-002-response.json", {"data": {"next_action": "spin"}})
+            result.discovered_modes = [
+                {
+                    "id": "PURCHASE_SELECT__SELECT_INDEX_DOMAIN",
+                    "kind": "INDEXED_CHOICE",
+                    "parent": "PURCHASE_SELECT",
+                    "prefix": [],
+                    "wire_command": "select",
+                    "coverage_required": True,
+                    "required_options": ["0"],
+                    "covered_options": ["0"],
+                }
+            ]
+
+            report = build_rubyplay_feature_sessions(result)
+
+        self.assertEqual(report["sessions"][0]["state"], FEATURE_INCOMPLETE)
+        self.assertEqual(report["sessions"][0]["choices"][0]["domain_state"], "UNRESOLVED")
+
     def test_parent_scoped_picker_domain_can_close_session(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -153,6 +180,10 @@ class RubyPlayFeatureSessionTests(unittest.TestCase):
                     "parent": "PURCHASE_SELECT",
                     "wire_command": "select",
                     "coverage_required": True,
+                    "domain_authority": "isolated-live-server-rejection-window",
+                    "boundary_index": 2,
+                    "boundary_confirmations": 2,
+                    "rejection_span": 2,
                     "required_options": ["0", "1"],
                     "covered_options": ["0", "1"],
                     "required_samples": 1,
@@ -203,6 +234,10 @@ class RubyPlayFeatureSessionTests(unittest.TestCase):
                     "prefix": [],
                     "wire_command": "pick",
                     "coverage_required": True,
+                    "domain_authority": "isolated-live-server-rejection-window",
+                    "boundary_index": 3,
+                    "boundary_confirmations": 2,
+                    "rejection_span": 2,
                     "required_options": ["0", "1", "2"],
                     "covered_options": ["0", "1", "2"],
                     "required_samples": 1,
@@ -271,6 +306,10 @@ class RubyPlayFeatureSessionTests(unittest.TestCase):
                     "prefix": [],
                     "wire_command": "pick",
                     "coverage_required": True,
+                    "domain_authority": "isolated-live-server-rejection-window",
+                    "boundary_index": 1,
+                    "boundary_confirmations": 2,
+                    "rejection_span": 2,
                     "required_options": ["0"],
                     "covered_options": ["0"],
                     "required_samples": 1,
@@ -283,10 +322,14 @@ class RubyPlayFeatureSessionTests(unittest.TestCase):
                     "prefix": ["pick=0"],
                     "wire_command": "pick",
                     "coverage_required": True,
-                    "required_options": ["1"],
-                    "covered_options": ["1"],
+                    "domain_authority": "isolated-live-server-rejection-window",
+                    "boundary_index": 2,
+                    "boundary_confirmations": 2,
+                    "rejection_span": 2,
+                    "required_options": ["0", "1"],
+                    "covered_options": ["0", "1"],
                     "required_samples": 1,
-                    "sample_counts": {"1": 1},
+                    "sample_counts": {"0": 1, "1": 1},
                 },
             ]
 
