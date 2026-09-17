@@ -56,6 +56,55 @@ def _provider_error_text(payload: dict[str, Any]) -> str:
     return " | ".join(values)
 
 
+def rubyplay_choice_domain_is_proven(mode: dict[str, Any]) -> bool:
+    if not isinstance(mode, dict):
+        return False
+    if str(mode.get("kind") or "").upper() != "INDEXED_CHOICE":
+        return False
+    if str(mode.get("domain_authority") or "") != "isolated-live-server-rejection-window":
+        return False
+
+    try:
+        boundary = int(mode.get("boundary_index"))
+        confirmations = int(mode.get("boundary_confirmations"))
+        rejection_span = int(mode.get("rejection_span"))
+    except (TypeError, ValueError):
+        return False
+    if boundary <= 0 or confirmations < 2 or rejection_span < 2:
+        return False
+
+    required_raw = mode.get("required_options")
+    covered_raw = mode.get("covered_options")
+    if not isinstance(required_raw, list) or not isinstance(covered_raw, list):
+        return False
+
+    required: list[int] = []
+    for raw in required_raw:
+        if isinstance(raw, bool):
+            return False
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            return False
+        if value < 0 or value in required:
+            return False
+        required.append(value)
+    if required != list(range(boundary)):
+        return False
+
+    covered: set[int] = set()
+    for raw in covered_raw:
+        if isinstance(raw, bool):
+            continue
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if value >= 0:
+            covered.add(value)
+    return set(required).issubset(covered)
+
+
 def classify_probe_failure(
     exc: BaseException,
     *,
@@ -284,6 +333,7 @@ def probe_contiguous_index_domain(
 
 __all__ = [
     "classify_probe_failure",
+    "rubyplay_choice_domain_is_proven",
     "probe_contiguous_index_domain",
     "prove_contiguous_index_domain",
 ]
