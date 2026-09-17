@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+import re
 from typing import Any, Iterable
 
 import requests
@@ -11,7 +12,15 @@ _TERMINAL = "TERMINAL"
 _SEMANTIC_REJECTION = "SEMANTIC_REJECTION"
 _TRANSPORT_ERROR = "TRANSPORT_ERROR"
 _PROTOCOL_ERROR = "PROTOCOL_ERROR"
-_INDEX_ERROR_MARKERS = ("index", "choice", "option", "selection", "select", "pick")
+_INDEX_ARGUMENT_NOUN = r"(?:index|choice|option|selection)"
+_INDEX_ARGUMENT_ERROR_PATTERNS = (
+    re.compile(rf"\\b(?:invalid|unknown|unsupported|bad|illegal)\\s+{_INDEX_ARGUMENT_NOUN}\\b", re.I),
+    re.compile(
+        rf"\\b{_INDEX_ARGUMENT_NOUN}\\b.{{0,40}}\\b(?:invalid|unknown|unsupported|bad|illegal|out\\s+of\\s+range)\\b",
+        re.I,
+    ),
+    re.compile(rf"\\bno\\s+such\\s+{_INDEX_ARGUMENT_NOUN}\\b", re.I),
+)
 
 
 def _index(row: dict[str, Any]) -> int | None:
@@ -70,8 +79,10 @@ def classify_probe_failure(
     topic = str(payload.get("topic") or "").strip().lower()
     expected_topic = f"gameserver/{str(action or '').strip().lower()}"
     provider_error = _provider_error_text(payload)
-    error_lower = provider_error.casefold()
-    index_specific = any(marker in error_lower for marker in _INDEX_ERROR_MARKERS)
+    index_specific = any(
+        pattern.search(provider_error)
+        for pattern in _INDEX_ARGUMENT_ERROR_PATTERNS
+    )
 
     if (
         provider_status
