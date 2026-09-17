@@ -6,10 +6,52 @@ from tester_spin.providers.rubyplay.choice_domains import (
     classify_probe_failure,
     probe_contiguous_index_domain,
     prove_contiguous_index_domain,
+    rubyplay_choice_domain_is_proven,
 )
 
 
 class RubyPlayChoiceDomainProofTests(unittest.TestCase):
+    def test_finite_required_and_covered_without_authority_is_not_proven(self) -> None:
+        self.assertFalse(
+            rubyplay_choice_domain_is_proven(
+                {
+                    "kind": "INDEXED_CHOICE",
+                    "required_options": ["0", "1"],
+                    "covered_options": ["0", "1"],
+                }
+            )
+        )
+
+    def test_rejection_window_authority_with_full_evidence_is_proven(self) -> None:
+        self.assertTrue(
+            rubyplay_choice_domain_is_proven(
+                {
+                    "kind": "INDEXED_CHOICE",
+                    "domain_authority": "isolated-live-server-rejection-window",
+                    "required_options": ["0", "1"],
+                    "covered_options": ["0", "1"],
+                    "boundary_index": 2,
+                    "boundary_confirmations": 2,
+                    "rejection_span": 2,
+                }
+            )
+        )
+
+    def test_server_authority_without_full_rejection_window_is_not_proven(self) -> None:
+        self.assertFalse(
+            rubyplay_choice_domain_is_proven(
+                {
+                    "kind": "INDEXED_CHOICE",
+                    "domain_authority": "isolated-live-server-rejection-window",
+                    "required_options": ["0", "1"],
+                    "covered_options": ["0", "1"],
+                    "boundary_index": 2,
+                    "boundary_confirmations": 2,
+                    "rejection_span": 1,
+                }
+            )
+        )
+
     def test_action_name_only_error_is_not_a_domain_boundary(self) -> None:
         failure = classify_probe_failure(
             ValueError("RubyPlay select: status='error'."),
