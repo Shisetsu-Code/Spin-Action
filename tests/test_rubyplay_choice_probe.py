@@ -271,7 +271,7 @@ class RubyPlayChoiceProbeTests(unittest.TestCase):
         self.assertEqual(modes[0]["parent"], "PURCHASE_SELECT")
         self.assertEqual(modes[0]["required_options"], ["0", "1"])
         self.assertEqual(modes[0]["covered_options"], ["0", "1"])
-        self.assertEqual(modes[0]["domain_authority"], "isolated-live-server-boundary")
+        self.assertEqual(modes[0]["domain_authority"], "isolated-live-server-rejection-window")
         self.assertEqual(modes[0]["boundary_confirmations"], 2)
         self.assertEqual(modes[0]["rejection_span"], 2)
 
