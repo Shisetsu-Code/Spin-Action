@@ -16,6 +16,7 @@ from tester_spin.providers.rubyplay.choice_domains import (
 _CONTINUATION_GUARD = 256
 _INDEX_ACTIONS = {"select", "pick"}
 _STEP_REQUEST_RE = re.compile(r"^step-(\d+)-request\.json$")
+_MAX_PROMPT_POINTS = 128
 
 
 def _write_json(path: Path, payload: Any) -> None:
@@ -108,28 +109,44 @@ def observed_index_prompts(
 ) -> dict[tuple[str, str, tuple[str, ...]], set[int]]:
     """Return indexed prompt points keyed by parent/action/path prefix.
 
-    ``select`` prompts are path-sensitive: every prior indexed choice is encoded
-    as an action-qualified token (for example ``select=1`` or ``pick=0``).
-    Repeated ``pick`` messages intentionally share one root domain because RubyPlay
-    pick chains consume distinct indices from the same initial option pool.
+    Select prompts are always path-sensitive. Consecutive pick requests share the
+    same picker domain, but a later pick after another action starts a new domain
+    at the current indexed path. Prefix tokens include the action name so mixed
+    pick/select paths cannot collide.
     """
     found: dict[tuple[str, str, tuple[str, ...]], set[int]] = {}
     for attempt in result.attempts:
         root = Path(str(attempt.artifact_dir or ""))
         if not root.is_dir():
             continue
-        prefix: list[str] = []
+        path_tokens: list[str] = []
+        last_indexed_action = ""
+        active_pick_prefix: tuple[str, ...] | None = None
         for payload in _ordered_requests(root):
             action = str(payload.get("action") or "").strip().lower()
             if action not in _INDEX_ACTIONS:
+                if action:
+                    last_indexed_action = ""
+                    active_pick_prefix = None
                 continue
             index = _index_value(payload)
             if index is None:
                 continue
-            prompt_prefix = () if action == "pick" else tuple(prefix)
+
+            if action == "pick":
+                if last_indexed_action == "pick" and active_pick_prefix is not None:
+                    prompt_prefix = active_pick_prefix
+                else:
+                    active_pick_prefix = tuple(path_tokens)
+                    prompt_prefix = active_pick_prefix
+            else:
+                active_pick_prefix = None
+                prompt_prefix = tuple(path_tokens)
+
             key = (str(attempt.mode_id or "UNKNOWN"), action, prompt_prefix)
             found.setdefault(key, set()).add(index)
-            prefix.append(_path_token(action, index))
+            path_tokens.append(_path_token(action, index))
+            last_indexed_action = action
     return found
 
 
@@ -232,10 +249,9 @@ def replay_index_probe(
 ) -> dict[str, Any]:
     """Replay one RubyPlay indexed option from a fresh session to terminal.
 
-    ``prefix`` encodes every indexed choice that must occur before the target
-    prompt, using action-qualified tokens such as ``select=1``. Prefix actions are
-    forced exactly; the candidate ``index`` is forced only at the next occurrence
-    of ``action``. Later pick continuations use distinct deterministic indices.
+    Prefix actions are forced exactly; the candidate index is forced only at the
+    target prompt. Every accepted indexed prompt is returned in ``indexed_trace``
+    so sibling replays can reveal deeper choice points absent from the base path.
     """
     command = str(action or "").strip().lower()
     normalized_prefix = tuple(str(value) for value in (prefix or ()))
@@ -246,6 +262,7 @@ def replay_index_probe(
             return {
                 "index": int(index),
                 "prefix": list(normalized_prefix),
+                "indexed_trace": [],
                 "outcome": "PROTOCOL_ERROR",
                 "error": f"invalid indexed prefix token: {token!r}",
             }
@@ -255,6 +272,7 @@ def replay_index_probe(
         return {
             "index": int(index),
             "prefix": list(normalized_prefix),
+            "indexed_trace": [],
             "outcome": "PROTOCOL_ERROR",
             "error": "unsupported indexed action",
         }
@@ -262,6 +280,7 @@ def replay_index_probe(
         return {
             "index": int(index),
             "prefix": list(normalized_prefix),
+            "indexed_trace": [],
             "outcome": "CANCELLED",
         }
 
@@ -277,6 +296,7 @@ def replay_index_probe(
         return {
             "index": int(index),
             "prefix": list(normalized_prefix),
+            "indexed_trace": [],
             "outcome": "PROTOCOL_ERROR",
             "error": f"parent mode {parent_mode!r} is not uniquely defined",
         }
@@ -290,12 +310,17 @@ def replay_index_probe(
     prefix_position = 0
     used_pick_indices: set[int] = set()
     wire_steps = 0
+    indexed_trace: list[dict[str, Any]] = []
+    path_tokens: list[str] = []
+    last_indexed_action = ""
+    active_pick_prefix: tuple[str, ...] | None = None
 
     def contextual(**payload: Any) -> dict[str, Any]:
         return {
             "index": int(index),
             "prefix": list(normalized_prefix),
             "target_reached": target_reached,
+            "indexed_trace": [dict(row) for row in indexed_trace],
             **payload,
         }
 
@@ -428,45 +453,79 @@ def replay_index_probe(
                     prefix_consumed=prefix_position,
                 )
 
+            if next_action not in _INDEX_ACTIONS:
+                last_indexed_action = ""
+                active_pick_prefix = None
+                try:
+                    send_and_store(next_action)
+                except BaseException as exc:
+                    failure = classify_probe_failure(
+                        exc,
+                        last_payload=(capture.last_payload if capture is not None else None),
+                        action=next_action,
+                    )
+                    if failure.get("outcome") == "SEMANTIC_REJECTION":
+                        failure["outcome"] = "PROTOCOL_ERROR"
+                    outcome = contextual(
+                        wire_steps=wire_steps,
+                        same_action_occurrences=same_action_occurrences,
+                        prefix_consumed=prefix_position,
+                        **failure,
+                    )
+                    _persist_failure(artifact_dir, capture, outcome)
+                    return outcome
+                continue
+
+            if next_action == "pick":
+                if last_indexed_action == "pick" and active_pick_prefix is not None:
+                    prompt_prefix = active_pick_prefix
+                else:
+                    active_pick_prefix = tuple(path_tokens)
+                    prompt_prefix = active_pick_prefix
+            else:
+                active_pick_prefix = None
+                prompt_prefix = tuple(path_tokens)
+
             action_index: int | None = None
             forced_target = False
-            if next_action in _INDEX_ACTIONS:
-                if prefix_position < len(parsed_prefix):
-                    expected_action, expected_index = parsed_prefix[prefix_position]
-                    if next_action != expected_action:
-                        return contextual(
-                            outcome="PROMPT_NOT_REACHED",
-                            wire_steps=wire_steps,
-                            prefix_consumed=prefix_position,
-                            expected_prefix_action=expected_action,
-                            observed_action=next_action,
-                        )
-                    action_index = expected_index
-                    prefix_position += 1
-                    if next_action == "pick":
-                        used_pick_indices.add(action_index)
-                elif not target_reached:
-                    if next_action != command:
-                        return contextual(
-                            outcome="PROMPT_NOT_REACHED",
-                            wire_steps=wire_steps,
-                            prefix_consumed=prefix_position,
-                            expected_target_action=command,
-                            observed_action=next_action,
-                        )
-                    target_reached = True
-                    forced_target = True
-                    action_index = int(index)
-                    if command == "pick":
-                        used_pick_indices.add(action_index)
-                elif next_action == "pick":
-                    action_index = _next_unused(used_pick_indices)
+            if prefix_position < len(parsed_prefix):
+                expected_action, expected_index = parsed_prefix[prefix_position]
+                if next_action != expected_action:
+                    return contextual(
+                        outcome="PROMPT_NOT_REACHED",
+                        wire_steps=wire_steps,
+                        prefix_consumed=prefix_position,
+                        expected_prefix_action=expected_action,
+                        observed_action=next_action,
+                    )
+                action_index = expected_index
+                prefix_position += 1
+                if next_action == "pick":
                     used_pick_indices.add(action_index)
-                else:
-                    action_index = 0
+            elif not target_reached:
+                if next_action != command or prompt_prefix != normalized_prefix:
+                    return contextual(
+                        outcome="PROMPT_NOT_REACHED",
+                        wire_steps=wire_steps,
+                        prefix_consumed=prefix_position,
+                        expected_target_action=command,
+                        expected_target_prefix=list(normalized_prefix),
+                        observed_action=next_action,
+                        observed_prefix=list(prompt_prefix),
+                    )
+                target_reached = True
+                forced_target = True
+                action_index = int(index)
+                if command == "pick":
+                    used_pick_indices.add(action_index)
+            elif next_action == "pick":
+                action_index = _next_unused(used_pick_indices)
+                used_pick_indices.add(action_index)
+            else:
+                action_index = 0
 
-                if next_action == command:
-                    same_action_occurrences += 1
+            if next_action == command:
+                same_action_occurrences += 1
 
             try:
                 send_and_store(next_action, action_index=action_index)
@@ -486,6 +545,17 @@ def replay_index_probe(
                 )
                 _persist_failure(artifact_dir, capture, outcome)
                 return outcome
+
+            if action_index is not None:
+                indexed_trace.append(
+                    {
+                        "action": next_action,
+                        "prefix": list(prompt_prefix),
+                        "selected": str(action_index),
+                    }
+                )
+                path_tokens.append(_path_token(next_action, action_index))
+                last_indexed_action = next_action
 
         return contextual(
             outcome="NONTERMINAL",
@@ -516,7 +586,7 @@ def replay_index_probe(
 
 def _normalize_observed(
     observed: dict[Any, set[int]],
-) -> list[tuple[str, str, tuple[str, ...], set[int]]]:
+) -> dict[tuple[str, str, tuple[str, ...]], set[int]]:
     merged: dict[tuple[str, str, tuple[str, ...]], set[int]] = {}
     for raw_key, raw_values in observed.items():
         if not isinstance(raw_key, tuple):
@@ -549,18 +619,82 @@ def _normalize_observed(
             continue
         key = (str(parent_mode or "UNKNOWN"), command, prefix)
         merged.setdefault(key, set()).update(values)
-    return [
-        (parent, action, prefix, values)
-        for (parent, action, prefix), values in sorted(
-            merged.items(),
-            key=lambda item: (
-                item[0][0],
-                item[0][1],
-                len(item[0][2]),
-                item[0][2],
-            ),
+    return merged
+
+
+def _upsert_prompt_mode(
+    result: GameTestResult,
+    *,
+    parent_mode: str,
+    action: str,
+    prefix: tuple[str, ...],
+    observed_indices: set[int],
+    proof: dict[str, Any] | None,
+) -> None:
+    mode_id = choice_domain_mode_id(parent_mode, action, prefix)
+    result.discovered_modes = [
+        mode
+        for mode in result.discovered_modes
+        if not (
+            isinstance(mode, dict)
+            and str(mode.get("id") or "") == mode_id
+            and str(mode.get("kind") or "").upper() == "INDEXED_CHOICE"
         )
     ]
+
+    proven = bool(proof and proof.get("state") == "PROVEN")
+    domain = [str(value) for value in (proof or {}).get("required_options", [])] if proven else ["DOMAIN_UNRESOLVED"]
+    covered = [str(value) for value in (proof or {}).get("covered_options", [])] if proven else []
+    mode: dict[str, Any] = {
+        "id": mode_id,
+        "kind": "INDEXED_CHOICE",
+        "parent": parent_mode,
+        "prefix": list(prefix),
+        "observed": True,
+        "executable": True,
+        "wire_command": action,
+        "observed_indices": sorted(observed_indices),
+        "coverage_required": True,
+        "branch_signature": choice_domain_signature(parent_mode, action, prefix),
+        "required_options": domain,
+        "covered_options": covered,
+        "required_samples": 1,
+        "sample_counts": {value: 1 for value in covered},
+        "domain_authority": (
+            "isolated-live-server-boundary" if proven else "unresolved-live-prompt"
+        ),
+        "reason": (
+            "Every index below the boundary reached a clean terminal fresh-session "
+            "feature on the exact indexed prefix and the next index was explicitly "
+            "rejected twice by RubyPlay."
+            if proven
+            else "Indexed prompt was observed on this exact path, but its finite domain boundary is not proven."
+        ),
+    }
+    if proof:
+        mode["boundary_index"] = proof.get("boundary_index")
+        mode["boundary_confirmations"] = proof.get("boundary_confirmations")
+    result.discovered_modes.append(mode)
+
+
+def _trace_prompt(row: dict[str, Any]) -> tuple[str, tuple[str, ...], int] | None:
+    action = str(row.get("action") or "").strip().lower()
+    if action not in _INDEX_ACTIONS:
+        return None
+    raw_prefix = row.get("prefix")
+    if not isinstance(raw_prefix, list):
+        return None
+    prefix = tuple(str(value) for value in raw_prefix)
+    raw_selected = row.get("selected")
+    if raw_selected is None or isinstance(raw_selected, bool):
+        return None
+    try:
+        selected = int(raw_selected)
+    except (TypeError, ValueError):
+        return None
+    if selected < 0:
+        return None
+    return action, prefix, selected
 
 
 def expand_rubyplay_index_domains(
@@ -575,18 +709,55 @@ def expand_rubyplay_index_domains(
     replay_fn: Callable[..., dict[str, Any]] = replay_index_probe,
     max_index: int = 32,
     prompt_retries: int = 8,
+    max_prompt_points: int = _MAX_PROMPT_POINTS,
 ) -> GameTestResult:
-    """Prove parent/path-scoped RubyPlay select/pick domains by live replay."""
+    """Recursively prove parent/path-scoped RubyPlay indexed prompt domains."""
     summaries: list[dict[str, Any]] = []
     run_root = Path(str(result.run_dir or "")) if result.run_dir else None
     try:
         prompt_budget = max(1, int(prompt_retries))
     except (TypeError, ValueError):
         prompt_budget = 8
+    try:
+        point_guard = max(1, int(max_prompt_points))
+    except (TypeError, ValueError):
+        point_guard = _MAX_PROMPT_POINTS
 
-    for parent_mode, action, prefix, observed_indices in _normalize_observed(observed):
-        if stop_event.is_set():
+    graph = _normalize_observed(observed)
+    queue = sorted(
+        graph,
+        key=lambda key: (key[0], key[1], len(key[2]), key[2]),
+    )
+    queued = set(queue)
+    processed: set[tuple[str, str, tuple[str, ...]]] = set()
+
+    for parent_mode, action, prefix in queue:
+        _upsert_prompt_mode(
+            result,
+            parent_mode=parent_mode,
+            action=action,
+            prefix=prefix,
+            observed_indices=graph[(parent_mode, action, prefix)],
+            proof=None,
+        )
+
+    while queue and not stop_event.is_set():
+        if len(processed) >= point_guard:
+            if result.status == "OK":
+                result.status = "PARCIAL"
+            message = f"RubyPlay choice prompt guard reached ({point_guard}); nested coverage remains unresolved."
+            if message not in str(result.error or ""):
+                result.error = (str(result.error or "").strip() + " " + message).strip()
+            progress(message)
             break
+
+        parent_mode, action, prefix = queue.pop(0)
+        queued.discard((parent_mode, action, prefix))
+        key = (parent_mode, action, prefix)
+        if key in processed:
+            continue
+        processed.add(key)
+        observed_indices = graph.setdefault(key, set())
         prefix_label = _prefix_label(prefix)
         progress(
             f"[{game.name}] RubyPlay {parent_mode}/{action}/{prefix_label}: "
@@ -641,6 +812,7 @@ def expand_rubyplay_index_domains(
             final = dict(prompt_attempts[-1]) if prompt_attempts else {
                 "index": index,
                 "prefix": list(prefix),
+                "indexed_trace": [],
                 "outcome": "PROTOCOL_ERROR",
             }
             final["prompt_attempts"] = len(prompt_attempts)
@@ -661,64 +833,121 @@ def expand_rubyplay_index_domains(
             **proof,
         }
         summaries.append(summary)
+        _upsert_prompt_mode(
+            result,
+            parent_mode=parent_mode,
+            action=action,
+            prefix=prefix,
+            observed_indices=observed_indices,
+            proof=proof,
+        )
 
-        if proof.get("state") != "PROVEN":
-            continue
-
-        mode_id = choice_domain_mode_id(parent_mode, action, prefix)
-        result.discovered_modes = [
-            mode
-            for mode in result.discovered_modes
-            if not (
-                isinstance(mode, dict)
-                and str(mode.get("id") or "") == mode_id
-                and str(mode.get("kind") or "").upper() == "INDEXED_CHOICE"
+        if proof.get("state") == "PROVEN":
+            domain = [str(value) for value in proof.get("required_options", [])]
+            progress(
+                f"[{game.name}] RubyPlay {parent_mode}/{action}/{prefix_label}: "
+                f"dominio demostrado={domain}, frontera={proof.get('boundary_index')}, "
+                f"confirmaciones={proof.get('boundary_confirmations')}."
             )
-        ]
-        domain = [str(value) for value in proof.get("required_options", [])]
-        result.discovered_modes.append(
-            {
-                "id": mode_id,
-                "kind": "INDEXED_CHOICE",
-                "parent": parent_mode,
-                "prefix": list(prefix),
-                "observed": True,
-                "executable": True,
-                "wire_command": action,
-                "observed_indices": sorted(
-                    {int(value) for value in observed_indices}
-                    | {int(value) for value in domain}
-                ),
-                "coverage_required": True,
-                "branch_signature": choice_domain_signature(parent_mode, action, prefix),
-                "required_options": domain,
-                "covered_options": list(domain),
-                "required_samples": 1,
-                "sample_counts": {value: 1 for value in domain},
-                "boundary_index": proof.get("boundary_index"),
-                "boundary_confirmations": proof.get("boundary_confirmations"),
-                "domain_authority": "isolated-live-server-boundary",
-                "reason": (
-                    "Every index below the boundary reached a clean terminal "
-                    "fresh-session feature on the exact indexed prefix and the "
-                    "next index was explicitly rejected twice by RubyPlay."
-                ),
-            }
-        )
-        progress(
-            f"[{game.name}] RubyPlay {parent_mode}/{action}/{prefix_label}: "
-            f"dominio demostrado={domain}, frontera={proof.get('boundary_index')}, "
-            f"confirmaciones={proof.get('boundary_confirmations')}."
-        )
+
+        # Every clean terminal sibling is structural discovery evidence. Ingest
+        # all indexed prompts it traversed and recursively schedule unseen points.
+        for probe_row in proof.get("probes", []):
+            if not isinstance(probe_row, dict):
+                continue
+            if str(probe_row.get("outcome") or "").upper() != "TERMINAL":
+                continue
+            trace = probe_row.get("indexed_trace")
+            if not isinstance(trace, list):
+                continue
+            for trace_row in trace:
+                if not isinstance(trace_row, dict):
+                    continue
+                parsed = _trace_prompt(trace_row)
+                if parsed is None:
+                    continue
+                child_action, child_prefix, selected = parsed
+                child_key = (parent_mode, child_action, child_prefix)
+                child_values = graph.setdefault(child_key, set())
+                before = len(child_values)
+                child_values.add(selected)
+                if child_key not in processed:
+                    _upsert_prompt_mode(
+                        result,
+                        parent_mode=parent_mode,
+                        action=child_action,
+                        prefix=child_prefix,
+                        observed_indices=child_values,
+                        proof=None,
+                    )
+                    if child_key not in queued:
+                        queue.append(child_key)
+                        queued.add(child_key)
+                elif len(child_values) > before:
+                    # A processed proven domain should already be exhaustive. If a
+                    # later sibling exposes an out-of-domain selected value, fail
+                    # closed by replacing the proof with an unresolved prompt.
+                    mode_id = choice_domain_mode_id(parent_mode, child_action, child_prefix)
+                    current = next(
+                        (
+                            mode
+                            for mode in result.discovered_modes
+                            if isinstance(mode, dict) and str(mode.get("id") or "") == mode_id
+                        ),
+                        None,
+                    )
+                    required = {
+                        str(value)
+                        for value in (current or {}).get("required_options", [])
+                        if str(value) != "DOMAIN_UNRESOLVED"
+                    }
+                    if required and str(selected) not in required:
+                        _upsert_prompt_mode(
+                            result,
+                            parent_mode=parent_mode,
+                            action=child_action,
+                            prefix=child_prefix,
+                            observed_indices=child_values,
+                            proof=None,
+                        )
+                        if result.status == "OK":
+                            result.status = "PARCIAL"
+                        message = (
+                            f"RubyPlay {parent_mode}/{child_action}/{list(child_prefix)}: "
+                            f"sibling replay exposed selected index {selected} outside the proven domain."
+                        )
+                        if message not in str(result.error or ""):
+                            result.error = (str(result.error or "").strip() + " " + message).strip()
+                        progress(message)
+
+        queue.sort(key=lambda item: (item[0], item[1], len(item[2]), item[2]))
 
     if run_root is not None:
         try:
             _write_json(
                 run_root / "diagnostics" / "rubyplay-choice-domain-probes.json",
                 {
-                    "schema": "tester-spin/rubyplay-choice-domain-probes/v2",
+                    "schema": "tester-spin/rubyplay-choice-domain-probes/v3",
                     "game": result.slug,
                     "domains": summaries,
+                    "prompt_points": [
+                        {
+                            "parent_mode": parent,
+                            "action": action,
+                            "prefix": list(prefix),
+                            "observed_indices": sorted(values),
+                            "processed": (parent, action, prefix) in processed,
+                        }
+                        for (parent, action, prefix), values in sorted(
+                            graph.items(),
+                            key=lambda item: (
+                                item[0][0],
+                                item[0][1],
+                                len(item[0][2]),
+                                item[0][2],
+                            ),
+                        )
+                    ],
                 },
             )
         except OSError:
