@@ -2,7 +2,7 @@
 
 ## Status
 
-Approved design for implementation on `lab/actions-validation`.
+Approved design and active implementation on `lab/actions-validation`.
 
 ## Goal
 
@@ -32,6 +32,8 @@ The design applies to all active providers: Pragmatic Play, RubyPlay, Red Tiger,
 6. Picker domains must come from provider/server/client evidence that proves the finite domain. Observing one accepted index never proves that it is the only option.
 7. If a wire step cannot be classified as round, choice or known state transition without guessing, the session remains incomplete/unknown.
 8. Natural and purchased features use the same normalized session model; only `trigger` differs.
+9. A provider state that is definitely non-base but semantically unknown must still create an incomplete session; unknown feature states may not disappear as `NOT_OBSERVED`.
+10. Natural-spin validation and purchase validation are separate execution scopes. An unrelated natural event must not contaminate purchase closure, and a natural soak must never execute a purchase root.
 
 ## Normalized schema
 
@@ -96,6 +98,8 @@ Fields include:
 
 If one response contains multiple independently identifiable round result nodes, each becomes a separate logical round while preserving the same wire step.
 
+The root purchase request itself is not a logical feature round. For example, RubyPlay `gameserver/buy_feature` pays/enters the feature; the following `gameserver/freespin`, `respin` or `minispin` response is the first logical feature round.
+
 ### `FEATURE_CHOICE`
 
 Fields include:
@@ -110,6 +114,8 @@ Fields include:
 - `evidence`.
 
 `choice_coverage_complete=true` only when every required option has the required number of terminal samples.
+
+A repeated picker chain is one finite choice domain used multiple times when the provider semantics prove that interpretation. Individual selections remain ordered `transitions`; they do not inflate the number of distinct choice domains.
 
 ## Completion semantics
 
@@ -162,8 +168,9 @@ Pragmatic is the reference implementation.
 - `doFSOption` is `FEATURE_CHOICE`.
 - `fs_opt` + `fs_opt_mask` is authoritative picker-domain evidence.
 - `pragmatic_exhaustive.py` already replays missing prefix-sensitive branches and remains the executor of record.
+- An unknown non-base `na` creates an incomplete feature session instead of disappearing from normalization.
 
-The purchase campaign must no longer bypass exhaustive FSO traversal when a purchased feature exposes FSO branches.
+The purchase campaign no longer bypasses exhaustive FSO traversal when a purchased feature exposes FSO branches.
 
 ### Red Tiger
 
@@ -196,22 +203,49 @@ BGaming stays outside the default purchase campaign until its campaign exclusion
 - `freespin`, `respin` and `minispin` are logical feature rounds.
 - `select` and `pick` are choices/transitions, not rounds.
 - A session terminates only when `next_action` returns to `spin`.
-- Current `select/pick` wire evidence proves use of an `index` but not a finite domain. Those branches remain `DOMAIN_UNRESOLVED` until client/server evidence proves the domain.
-- Branch evidence must be scoped to the concrete parent mode/attempt; one purchase must not inherit picker coverage observed in another mode.
+- Unknown non-base `next_action` values create an incomplete session and preserve the literal state.
+- Branch evidence is scoped to the concrete `parent_mode`; one purchase cannot inherit picker coverage from another mode.
+- Repeated `pick` selections are normalized as one picker domain plus ordered selection transitions.
+
+RubyPlay may promote an indexed choice domain only through isolated live proof:
+
+1. replay the same `SPIN` or `PURCHASE_*` root in a fresh session for candidate index `0`;
+2. follow all known continuations to terminal; an accepted index counts only if the complete feature returns cleanly to `spin`;
+3. repeat for contiguous indices `1,2,...`;
+4. the first candidate `N` outside the domain must be rejected by a valid RubyPlay response for the exact `gameserver/select` or `gameserver/pick` action;
+5. the provider error must explicitly identify an index/choice/option/selection problem; transport errors, generic session errors, malformed responses and timeouts never define a boundary;
+6. the same boundary `N` must be rejected in at least two independent fresh sessions;
+7. only then is the finite domain `0..N-1` marked `PROVEN`.
+
+Every live probe uses the provider-wide rate limiter and is persisted under:
+
+`diagnostics/choice-domain-probes/<parent>/<action>/index-NNN/attempt-NNN/`
+
+A rejected boundary persists a sanitized request, provider response and failure classification. Repeated confirmations never overwrite one another.
+
+For stochastic natural features, only `PROMPT_NOT_REACHED` may be retried (bounded budget). Transport/protocol failures stop immediately. If a `select` action appears more than once in one feature and the prompts cannot yet be distinguished by prefix, the domain remains unresolved rather than applying one global domain incorrectly.
+
+RubyPlay also has explicit execution scopes:
+
+- `ALL`: ordinary exhaustive validation;
+- `NATURAL_ONLY`: natural soak, only `SPIN` roots;
+- `PURCHASE_ONLY`: purchase campaign, only purchase roots.
+
+Discovery from current init/client still records the full root inventory in every scope. Therefore authoritative no-purchase can close without sending an unrelated base spin.
 
 ### 1spin4win / D1
 
 - One outbound type=1 play plus the following received type=3 result is one logical round.
 - The first type=1 is the root spin. Subsequent type=1 messages caused by active states `{5,6,11,12}` are feature rounds.
 - A session begins when the root result enters an active state and ends when a proven terminal result state is reached.
-- Unknown type=3 states remain fail-closed.
+- Unknown non-terminal root or continuation type=3 states create incomplete sessions and preserve their exact `st` value.
 - No picker domain is inferred from client method names alone. If a future WS state requires a choice, it remains unresolved until message type, payload and domain are proven.
 
 ### Belatra
 
 - Current base `start/finish` behavior remains authoritative.
 - A non-terminal phase after `start` is normalized as an observed but incomplete feature/state session if it is outside the known paid/idle terminal path.
-- `toDoubleDialog` is a choice state with required `DECLINE` and `GAMBLE`; only the demonstrated branch counts as covered.
+- `toDoubleDialog` is a choice state with required `DECLINE` and `GAMBLE`; only the demonstrated `finish(ghistId)`/decline branch counts as covered.
 - `buyBonus.buyTotalBetK` remains advertised purchase evidence only until the request mapping is proven.
 - No guessed `buyBonus`, `selectId` or gamble payload is permitted.
 
@@ -219,7 +253,7 @@ BGaming stays outside the default purchase campaign until its campaign exclusion
 
 ### Provider finalization
 
-`ProviderAdapter` gains a provider-local feature-session builder hook and two finalizers:
+`ProviderAdapter` has a provider-local feature-session builder hook and two finalizers:
 
 - `finalize_test_result`: normal sampling + feature-session gate + path gate.
 - `finalize_purchase_result`: feature-session gate + path gate only; it must not run natural sampling logic.
@@ -240,7 +274,7 @@ If an option would otherwise be `COMPLETE` but its observed feature session stat
 
 ### Farm contract
 
-`execution_structure` gains a read-only `feature_sessions` summary. It is not a universal request DSL. Provider-local protocol blocks continue to own actual execution semantics.
+`execution_structure` includes a read-only `feature_sessions` summary. It is not a universal request DSL. Provider-local protocol blocks continue to own actual execution semantics.
 
 A farm contract cannot be `ready=true` when an observed feature session required by a demonstrated mode remains incomplete.
 
@@ -251,6 +285,7 @@ A farm contract cannot be `ready=true` when an observed feature session required
 - Defensive guard reached: `INCOMPLETE`.
 - Provider runtime failure before feature entry: ordinary runtime error; no fabricated feature session.
 - Feature root succeeds but branch replay fails: root evidence remains, session/purchase coverage stays incomplete.
+- An isolated RubyPlay choice probe that cannot reproduce a stochastic prompt remains unresolved after its bounded retry budget; it does not become absence evidence.
 
 ## Acceptance criteria
 
@@ -258,9 +293,12 @@ A farm contract cannot be `ready=true` when an observed feature session required
 2. Pragmatic purchased/natural FSO flows retain exhaustive prefix-sensitive coverage.
 3. Red Tiger purchased/natural choice flows retain exhaustive prefix-sensitive coverage.
 4. BGaming flow choices and feature rounds map into the common schema without replacing its executor.
-5. RubyPlay records every freespin/respin/minispin round and keeps unknown picker domains open, scoped to the correct parent mode.
-6. D1 records every continuation type=1/type=3 pair as a logical feature round.
-7. Belatra reports unresolved feature/buy/gamble states without invented wire.
-8. Purchase coverage cannot be `PURCHASE_COMPLETE` for an observed incomplete feature session.
-9. Farm contracts expose the normalized session summary and do not promote unresolved sessions.
-10. Existing provider-specific wire contracts and path coverage remain isolated and fail closed.
+5. RubyPlay records every freespin/respin/minispin round and keeps unproven picker domains open, scoped to the correct parent mode.
+6. RubyPlay may close an indexed domain only after contiguous terminal live replays plus two index-specific semantic boundary rejections in fresh sessions.
+7. D1 records every continuation type=1/type=3 pair as a logical feature round and preserves unknown states.
+8. Belatra reports unresolved feature/buy/gamble states without invented wire.
+9. Purchase coverage cannot be `PURCHASE_COMPLETE` for an observed incomplete feature session.
+10. Purchase and natural execution scopes cannot execute one another's root actions.
+11. Farm contracts expose the normalized session summary and do not promote unresolved sessions.
+12. Existing provider-specific wire contracts and path coverage remain isolated and fail closed.
+13. GitHub Actions must execute the real test steps successfully before this branch is considered CI-validated; pre-runner failures are infrastructure blockers, not test success.
