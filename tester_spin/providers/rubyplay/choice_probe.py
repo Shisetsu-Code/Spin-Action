@@ -49,13 +49,16 @@ def _cached_profile(provider, game: Game):
 
 
 class _CaptureSession:
-    """Delegate a RubyPlay session while retaining the last parseable response."""
+    """Delegate a RubyPlay session while retaining the last request/response."""
 
     def __init__(self, inner) -> None:
         self.inner = inner
+        self.last_request: dict[str, Any] | None = None
         self.last_payload: dict[str, Any] | None = None
 
     def post(self, *args, **kwargs):
+        request = kwargs.get("json")
+        self.last_request = dict(request) if isinstance(request, dict) else None
         self.last_payload = None
         response = self.inner.post(*args, **kwargs)
         try:
@@ -71,6 +74,27 @@ class _CaptureSession:
 
     def __getattr__(self, name):
         return getattr(self.inner, name)
+
+
+def _persist_failure(
+    artifact_dir: Path,
+    capture: _CaptureSession | None,
+    failure: dict[str, Any],
+) -> None:
+    try:
+        if capture is not None and isinstance(capture.last_request, dict):
+            _write_json(
+                artifact_dir / "failure-request.json",
+                _sanitize_request(capture.last_request),
+            )
+        if capture is not None and isinstance(capture.last_payload, dict):
+            _write_json(
+                artifact_dir / "failure-response.json",
+                capture.last_payload,
+            )
+        _write_json(artifact_dir / "failure.json", dict(failure))
+    except OSError:
+        pass
 
 
 def _next_unused(used: set[int]) -> int:
@@ -149,6 +173,7 @@ def replay_index_probe(
             root: bool = False,
         ) -> None:
             nonlocal wire_steps
+            capture.last_request = None
             capture.last_payload = None
             kwargs: dict[str, Any] = {"timeout_s": max(1.0, float(timeout_s))}
             if action_index is not None:
@@ -222,7 +247,9 @@ def replay_index_probe(
             )
             if failure.get("outcome") == "SEMANTIC_REJECTION":
                 failure["outcome"] = "PROTOCOL_ERROR"
-            return {"index": int(index), "target_reached": False, **failure}
+            outcome = {"index": int(index), "target_reached": False, **failure}
+            _persist_failure(artifact_dir, capture, outcome)
+            return outcome
 
         for _ in range(_CONTINUATION_GUARD):
             if stop_event.is_set():
@@ -295,13 +322,15 @@ def replay_index_probe(
                 )
                 if failure.get("outcome") == "SEMANTIC_REJECTION" and not forced_now:
                     failure["outcome"] = "PROTOCOL_ERROR"
-                return {
+                outcome = {
                     "index": int(index),
                     "target_reached": target_reached,
                     "wire_steps": wire_steps,
                     "same_action_occurrences": same_action_occurrences,
                     **failure,
                 }
+                _persist_failure(artifact_dir, capture, outcome)
+                return outcome
 
         return {
             "index": int(index),
@@ -318,7 +347,9 @@ def replay_index_probe(
         )
         if failure.get("outcome") == "SEMANTIC_REJECTION":
             failure["outcome"] = "PROTOCOL_ERROR"
-        return {"index": int(index), "target_reached": target_reached, **failure}
+        outcome = {"index": int(index), "target_reached": target_reached, **failure}
+        _persist_failure(artifact_dir, capture, outcome)
+        return outcome
     finally:
         try:
             if runtime is not None:
@@ -433,17 +464,19 @@ def expand_rubyplay_index_domains(
                 "required_samples": 1,
                 "sample_counts": {value: 1 for value in domain},
                 "boundary_index": proof.get("boundary_index"),
+                "boundary_confirmations": proof.get("boundary_confirmations"),
                 "domain_authority": "isolated-live-server-boundary",
                 "reason": (
                     "Every index below the boundary reached a clean terminal "
                     "fresh-session feature and the next index was explicitly "
-                    "rejected by the RubyPlay protocol."
+                    "rejected twice by the RubyPlay protocol."
                 ),
             }
         )
         progress(
             f"[{game.name}] RubyPlay {parent_mode}/{action}: "
-            f"dominio demostrado={domain}, frontera={proof.get('boundary_index')}."
+            f"dominio demostrado={domain}, frontera={proof.get('boundary_index')}, "
+            f"confirmaciones={proof.get('boundary_confirmations')}."
         )
 
     if run_root is not None:
