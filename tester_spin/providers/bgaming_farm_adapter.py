@@ -7,6 +7,7 @@ from tester_spin.providers.bgaming.farm_contract import (
     build_bgaming_farm_contract,
     validate_bgaming_farm_contract,
 )
+from tester_spin.providers.bgaming.feature_sessions import build_bgaming_feature_sessions
 from tester_spin.providers.bgaming_paths_v2 import BGamingProvider as _BGamingProvider
 from tester_spin.providers.farm_structure import attach_execution_structure, select_domains
 
@@ -16,6 +17,9 @@ class BGamingProvider(_BGamingProvider):
 
     def farm_contract_dir(self, game: Game) -> Path | None:
         return self.game_dir(game)
+
+    def build_feature_sessions(self, result: GameTestResult) -> dict:
+        return build_bgaming_feature_sessions(result)
 
     def build_farm_contract(
         self,
@@ -40,7 +44,6 @@ class BGamingProvider(_BGamingProvider):
         return validate_bgaming_farm_contract(contract)
 
 
-# Preserve the public provider identity used by existing wiring/regression tests.
 BGamingProvider.__module__ = "tester_spin.providers.bgaming"
 
 __all__ = ["BGamingProvider"]
