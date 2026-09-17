@@ -73,6 +73,61 @@ class RubyPlayChoicePromptRetryTests(unittest.TestCase):
         self.assertEqual(modes[0]["parent"], "SPIN")
         self.assertEqual(modes[0]["required_options"], ["0"])
 
+    def test_natural_prompt_uses_extended_retry_budget(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            result = GameTestResult(
+                provider="rubyplay",
+                slug="g",
+                game_name="G",
+                game_url="https://example.invalid/g",
+                requested_spins=1,
+                successful_spins=1,
+                failed_spins=0,
+                status="OK",
+                run_dir=str(root),
+                discovered_modes=[{"id": "SPIN", "kind": "SPIN"}],
+            )
+            game = Game(provider="rubyplay", slug="g", name="G", url=result.game_url)
+            calls: dict[int, int] = {}
+
+            def replay(*args, index: int, **kwargs):
+                calls[index] = calls.get(index, 0) + 1
+                if index == 0 and calls[index] < 12:
+                    return {
+                        "index": index,
+                        "outcome": "PROMPT_NOT_REACHED",
+                        "target_reached": False,
+                    }
+                if index in {1, 2}:
+                    return {
+                        "index": index,
+                        "outcome": "SEMANTIC_REJECTION",
+                        "target_reached": True,
+                    }
+                return {
+                    "index": index,
+                    "outcome": "TERMINAL",
+                    "target_reached": True,
+                }
+
+            expand_rubyplay_index_domains(
+                _Provider(),
+                game,
+                result,
+                observed={("SPIN", "select"): {0}},
+                timeout_s=5.0,
+                stop_event=threading.Event(),
+                progress=lambda _message: None,
+                replay_fn=replay,
+                max_index=8,
+            )
+
+        self.assertEqual(calls[0], 12)
+        modes = [row for row in result.discovered_modes if row.get("kind") == "INDEXED_CHOICE"]
+        self.assertEqual(modes[0]["required_options"], ["0"])
+        self.assertEqual(modes[0]["prompt_retry_budget"], 64)
+
     def test_transport_failure_is_not_retried_as_prompt_absence(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
