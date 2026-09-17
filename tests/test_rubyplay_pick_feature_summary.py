@@ -64,7 +64,10 @@ class RubyPlayPickFeatureSummaryTests(unittest.TestCase):
                         "covered_options": ["0", "1", "2"],
                         "required_samples": 1,
                         "sample_counts": {"0": 1, "1": 1, "2": 1},
-                        "domain_authority": "isolated-live-server-boundary",
+                        "domain_authority": "isolated-live-server-rejection-window",
+                        "boundary_index": 3,
+                        "boundary_confirmations": 2,
+                        "rejection_span": 2,
                     }
                 ],
             )
