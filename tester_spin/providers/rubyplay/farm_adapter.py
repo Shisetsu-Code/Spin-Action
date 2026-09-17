@@ -9,7 +9,7 @@ from tester_spin.providers.result_farm_contract import (
     build_result_farm_contract,
     validate_result_farm_contract,
 )
-from tester_spin.providers.rubyplay.exhaustive import RubyPlayProvider as _RubyPlayProvider
+from tester_spin.providers.rubyplay.choice_exhaustive import RubyPlayProvider as _RubyPlayProvider
 from tester_spin.providers.rubyplay.feature_sessions import build_rubyplay_feature_sessions
 from tester_spin.providers.rubyplay.purchase_coverage import build_rubyplay_purchase_coverage
 
@@ -44,6 +44,8 @@ _SPEC = ProviderFarmSpec(
         "feature_multiplier",
         "default_price",
         "observed_indices",
+        "boundary_index",
+        "domain_authority",
     ),
     runtime_outputs=("launcher_parameters", "gameserver_endpoint", "action_number"),
     protocol_static={
