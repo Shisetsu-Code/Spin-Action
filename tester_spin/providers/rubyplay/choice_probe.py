@@ -718,6 +718,7 @@ def _upsert_prompt_mode(
     prefix: tuple[str, ...],
     observed_indices: set[int],
     proof: dict[str, Any] | None,
+    prompt_retry_budget: int | None = None,
 ) -> None:
     mode_id = choice_domain_mode_id(parent_mode, action, prefix)
     result.discovered_modes = [
@@ -759,6 +760,11 @@ def _upsert_prompt_mode(
             else "Indexed prompt was observed on this exact path, but its finite domain boundary is not proven."
         ),
     }
+    if prompt_retry_budget is not None:
+        try:
+            mode["prompt_retry_budget"] = max(1, int(prompt_retry_budget))
+        except (TypeError, ValueError):
+            pass
     if proof:
         mode["boundary_index"] = proof.get("boundary_index")
         mode["boundary_confirmations"] = proof.get("boundary_confirmations")
@@ -798,6 +804,7 @@ def expand_rubyplay_index_domains(
     replay_fn: Callable[..., dict[str, Any]] = replay_index_probe,
     max_index: int = 32,
     prompt_retries: int = 8,
+    natural_prompt_retries: int = 64,
     max_prompt_points: int = _MAX_PROMPT_POINTS,
 ) -> GameTestResult:
     """Recursively prove parent/path-scoped RubyPlay indexed prompt domains."""
@@ -807,6 +814,14 @@ def expand_rubyplay_index_domains(
         prompt_budget = max(1, int(prompt_retries))
     except (TypeError, ValueError):
         prompt_budget = 8
+    try:
+        natural_prompt_budget = max(prompt_budget, int(natural_prompt_retries))
+    except (TypeError, ValueError):
+        natural_prompt_budget = max(prompt_budget, 64)
+
+    def retry_budget(parent_mode: str) -> int:
+        return natural_prompt_budget if str(parent_mode or "") == "SPIN" else prompt_budget
+
     try:
         point_guard = max(1, int(max_prompt_points))
     except (TypeError, ValueError):
@@ -828,6 +843,7 @@ def expand_rubyplay_index_domains(
             prefix=prefix,
             observed_indices=graph[(parent_mode, action, prefix)],
             proof=None,
+            prompt_retry_budget=retry_budget(parent_mode),
         )
 
     while queue and not stop_event.is_set():
@@ -853,10 +869,11 @@ def expand_rubyplay_index_domains(
             "probando dominio de índices en sesiones frescas."
         )
         probe_counts: dict[int, int] = {}
+        point_prompt_budget = retry_budget(parent_mode)
 
         def probe(index: int) -> dict[str, Any]:
             prompt_attempts: list[dict[str, Any]] = []
-            for _ in range(prompt_budget):
+            for _ in range(point_prompt_budget):
                 attempt_no = probe_counts.get(index, 0) + 1
                 probe_counts[index] = attempt_no
                 artifact_dir = (
@@ -918,7 +935,7 @@ def expand_rubyplay_index_domains(
             "action": action,
             "prefix": list(prefix),
             "observed_indices": sorted(int(value) for value in observed_indices),
-            "prompt_retry_budget": prompt_budget,
+            "prompt_retry_budget": point_prompt_budget,
             **proof,
         }
         summaries.append(summary)
@@ -929,6 +946,7 @@ def expand_rubyplay_index_domains(
             prefix=prefix,
             observed_indices=observed_indices,
             proof=proof,
+            prompt_retry_budget=point_prompt_budget,
         )
 
         if proof.get("state") == "PROVEN":
