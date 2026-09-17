@@ -12,6 +12,10 @@ from urllib.parse import parse_qs, urljoin, urlparse
 import requests
 from bs4 import BeautifulSoup
 
+from tester_spin.providers.rubyplay.choice_client_evidence import (
+    write_choice_client_evidence,
+)
+
 
 @dataclass(slots=True)
 class LauncherConfig:
@@ -493,6 +497,11 @@ def bootstrap_game(
             response = session.get(url, timeout=timeout_s)
             response.raise_for_status()
             scripts.append((url, response.text))
+        if artifact_dir is not None:
+            try:
+                write_choice_client_evidence(artifact_dir, scripts)
+            except OSError:
+                pass
         profile = discover_client_profile(scripts)
     if profile.protocol_version is None:
         raise ValueError("RubyPlay: no se pudo descubrir v_protocol desde el cliente.")
