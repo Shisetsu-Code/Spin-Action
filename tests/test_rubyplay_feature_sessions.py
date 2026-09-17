@@ -8,6 +8,7 @@ from pathlib import Path
 from tester_spin.feature_sessions import FEATURE_COMPLETE, FEATURE_INCOMPLETE
 from tester_spin.models import GameTestResult, SpinAttempt
 from tester_spin.providers.rubyplay.feature_sessions import build_rubyplay_feature_sessions
+from tester_spin.providers.rubyplay.farm_adapter import RubyPlayProvider
 
 
 def _write(path: Path, payload: dict) -> None:
@@ -138,6 +139,23 @@ class RubyPlayFeatureSessionTests(unittest.TestCase):
         session = report["sessions"][0]
         self.assertEqual(session["state"], FEATURE_COMPLETE)
         self.assertTrue(session["choices"][0]["complete"])
+
+    def test_active_provider_build_hook_uses_rubyplay_normalizer(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            result = _result(root, mode_id="SPIN", mode_kind="SPIN", wire_steps=2)
+            attempt = Path(result.attempts[0].artifact_dir)
+            _write(attempt / "request.json", {"action": "spin"})
+            _write(attempt / "response.json", {"data": {"next_action": "respin"}})
+            _write(attempt / "step-002-request.json", {"action": "respin"})
+            _write(attempt / "step-002-response.json", {"data": {"next_action": "spin"}})
+            provider = RubyPlayProvider(root / "data")
+
+            report = provider.build_feature_sessions(result)
+
+        self.assertEqual(report["authority"], "rubyplay-next_action+runtime-wire+parent-scoped-choice-domain")
+        self.assertEqual(report["session_count"], 1)
+        self.assertEqual(report["sessions"][0]["totals"]["logical_rounds"], 1)
 
 
 if __name__ == "__main__":
