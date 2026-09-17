@@ -37,6 +37,37 @@ class RubyPlayChoiceDomainProofTests(unittest.TestCase):
             )
         )
 
+    def test_boundary_contradicted_by_covered_index_is_not_proven(self) -> None:
+        self.assertFalse(
+            rubyplay_choice_domain_is_proven(
+                {
+                    "kind": "INDEXED_CHOICE",
+                    "domain_authority": "isolated-live-server-rejection-window",
+                    "required_options": ["0", "1"],
+                    "covered_options": ["0", "1", "2"],
+                    "boundary_index": 2,
+                    "boundary_confirmations": 2,
+                    "rejection_span": 2,
+                }
+            )
+        )
+
+    def test_boundary_contradicted_by_observed_index_is_not_proven(self) -> None:
+        self.assertFalse(
+            rubyplay_choice_domain_is_proven(
+                {
+                    "kind": "INDEXED_CHOICE",
+                    "domain_authority": "isolated-live-server-rejection-window",
+                    "required_options": ["0", "1"],
+                    "covered_options": ["0", "1"],
+                    "observed_indices": [0, 2],
+                    "boundary_index": 2,
+                    "boundary_confirmations": 2,
+                    "rejection_span": 2,
+                }
+            )
+        )
+
     def test_server_authority_without_full_rejection_window_is_not_proven(self) -> None:
         self.assertFalse(
             rubyplay_choice_domain_is_proven(
