@@ -7,6 +7,7 @@ from tester_spin.models import Game, GameTestResult
 from tester_spin.providers.base import Progress
 from tester_spin.providers.belatra import BelatraProvider as _BaseBelatraProvider
 from tester_spin.providers.belatra_exhaustive import BelatraProvider as _BelatraProvider
+from tester_spin.providers.belatra_feature_sessions import build_belatra_feature_sessions
 from tester_spin.providers.belatra_purchase_coverage import build_belatra_purchase_coverage
 from tester_spin.providers.farm_structure import attach_execution_structure
 from tester_spin.providers.result_farm_contract import (
@@ -47,8 +48,6 @@ _SPEC = ProviderFarmSpec(
 class BelatraProvider(_BelatraProvider):
     """Active Belatra provider with post-discovery farm export hooks."""
 
-    # Keep purchase validation serial until the encrypted demo runtime has been
-    # explicitly proven safe with multiple simultaneous game sessions.
     max_test_concurrency = 1
 
     def _post_direct_game(
@@ -79,9 +78,6 @@ class BelatraProvider(_BelatraProvider):
         stop_event: threading.Event,
         progress: Progress,
     ) -> GameTestResult:
-        # Deliberately bypass belatra_exhaustive.test_game(): the exhaustive
-        # wrapper multiplies selector branches by `spins`. The soak budget applies
-        # only to the base natural START/FINISH path.
         return _BaseBelatraProvider.test_game(
             self,
             game,
@@ -99,9 +95,6 @@ class BelatraProvider(_BelatraProvider):
         stop_event: threading.Event,
         progress: Progress,
     ) -> GameTestResult:
-        # Purchase discovery only needs the authoritative ENTER metadata. Reusing
-        # the direct one-spin path avoids expanding unrelated math/VIP selector
-        # matrices just to learn that buyBonus wire semantics are still unresolved.
         return _BaseBelatraProvider.test_game(
             self,
             game,
@@ -110,6 +103,9 @@ class BelatraProvider(_BelatraProvider):
             stop_event=stop_event,
             progress=progress,
         )
+
+    def build_feature_sessions(self, result: GameTestResult) -> dict:
+        return build_belatra_feature_sessions(result)
 
     def build_purchase_coverage(self, game: Game, result: GameTestResult) -> dict:
         del game
