@@ -75,6 +75,21 @@ class OneSpin4WinFeatureSessionTests(unittest.TestCase):
         self.assertEqual(session["totals"]["logical_rounds"], 10)
         self.assertEqual(session["state"], FEATURE_COMPLETE)
 
+    def test_unknown_root_result_state_is_preserved_as_incomplete_feature(self) -> None:
+        frames = [
+            _frame("sent", {"type": 1}, classification="spin"),
+            _frame("received", {"type": 3, "st": 99}),
+        ]
+        with tempfile.TemporaryDirectory() as temp:
+            result = _result(Path(temp), frames, terminal=False)
+            report = build_one_spin4win_feature_sessions(result)
+
+        self.assertEqual(report["session_count"], 1)
+        session = report["sessions"][0]
+        self.assertEqual(session["state"], FEATURE_INCOMPLETE)
+        self.assertEqual(session["entry"]["result_state"], 99)
+        self.assertIn("99", " ".join(session["reasons"]))
+
     def test_unknown_result_state_keeps_feature_incomplete(self) -> None:
         frames = [
             _frame("sent", {"type": 1}, classification="spin"),
