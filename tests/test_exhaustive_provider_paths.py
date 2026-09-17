@@ -81,8 +81,41 @@ class ExhaustiveProviderPathTests(unittest.TestCase):
             result = self._result(root, "rubyplay")
             apply_rubyplay_path_audit(result, progress=lambda _message: None)
             self.assertEqual(result.status, "PARCIAL")
-            self.assertIn("DOMAIN_UNRESOLVED", result.discovered_modes[-1]["required_options"])
-            self.assertEqual(result.discovered_modes[-1]["observed_indices"], [0])
+            mode = result.discovered_modes[-1]
+            self.assertEqual(mode["parent"], "SPIN")
+            self.assertEqual(mode["id"], "SPIN__SELECT_INDEX_DOMAIN")
+            self.assertIn("DOMAIN_UNRESOLVED", mode["required_options"])
+            self.assertEqual(mode["observed_indices"], [0])
+
+    def test_rubyplay_picker_domains_are_separate_for_each_parent_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            first = root / "PURCHASE_SELECT" / "attempt-001"
+            second = root / "PURCHASE_PICK" / "attempt-001"
+            first.mkdir(parents=True)
+            second.mkdir(parents=True)
+            (first / "step-002-request.json").write_text(
+                json.dumps({"action": "select", "index": 0}),
+                encoding="utf-8",
+            )
+            (second / "step-002-request.json").write_text(
+                json.dumps({"action": "pick", "index": 3}),
+                encoding="utf-8",
+            )
+            result = self._result(root, "rubyplay")
+
+            apply_rubyplay_path_audit(result, progress=lambda _message: None)
+
+            indexed = {
+                (str(item.get("parent")), str(item.get("wire_command"))): item
+                for item in result.discovered_modes
+                if isinstance(item, dict)
+                and str(item.get("kind") or "") == "INDEXED_CHOICE"
+            }
+            self.assertEqual(indexed[("PURCHASE_SELECT", "select")]["observed_indices"], [0])
+            self.assertEqual(indexed[("PURCHASE_PICK", "pick")]["observed_indices"], [3])
+            self.assertNotIn(("PURCHASE_SELECT", "pick"), indexed)
+            self.assertNotIn(("PURCHASE_PICK", "select"), indexed)
 
     def test_d1_unknown_result_state_is_never_treated_as_terminal_ok(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
