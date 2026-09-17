@@ -56,12 +56,44 @@ _SPEC = ProviderFarmSpec(
 )
 
 
+class _RateLimitedRubyPlaySession:
+    """Transparent session proxy using the provider-wide request budget."""
+
+    def __init__(self, provider: "RubyPlayProvider", inner) -> None:
+        self._provider = provider
+        self._inner = inner
+        self.headers = inner.headers
+
+    def _reserve(self) -> None:
+        if not self._provider.acquire_provider_request_slot():
+            raise InterruptedError(
+                "RubyPlay request cancelled while waiting for provider rate-limit slot"
+            )
+
+    def get(self, *args, **kwargs):
+        self._reserve()
+        return self._inner.get(*args, **kwargs)
+
+    def post(self, *args, **kwargs):
+        self._reserve()
+        return self._inner.post(*args, **kwargs)
+
+    def close(self):
+        return self._inner.close()
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
 class RubyPlayProvider(_RubyPlayProvider):
     """Active RubyPlay provider with post-discovery farm export hooks."""
 
     # Keep one launcher/runtime at a time until RubyPlay multi-session behavior is
     # explicitly validated. This avoids shared launcher/session state collisions.
     max_test_concurrency = 1
+
+    def _new_session(self):
+        return _RateLimitedRubyPlaySession(self, super()._new_session())
 
     def farm_contract_dir(self, game: Game) -> Path | None:
         return self.game_dir(game)
@@ -86,4 +118,4 @@ class RubyPlayProvider(_RubyPlayProvider):
 
 RubyPlayProvider.__module__ = "tester_spin.providers.rubyplay.exhaustive"
 
-__all__ = ["RubyPlayProvider"]
+__all__ = ["RubyPlayProvider", "_RateLimitedRubyPlaySession"]
