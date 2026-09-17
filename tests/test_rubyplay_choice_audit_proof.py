@@ -120,6 +120,10 @@ class RubyPlayChoiceAuditProofTests(unittest.TestCase):
                         "prefix": [],
                         "wire_command": "select",
                         "coverage_required": True,
+                        "domain_authority": "isolated-live-server-rejection-window",
+                        "boundary_index": 2,
+                        "boundary_confirmations": 2,
+                        "rejection_span": 2,
                         "required_options": ["0", "1"],
                         "covered_options": ["0", "1"],
                     }
