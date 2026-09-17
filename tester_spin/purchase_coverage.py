@@ -118,10 +118,14 @@ def _child_path_blockers(
         if not isinstance(counts, dict):
             blockers.append(mode_id)
             continue
-        if any(
-            int(counts.get(value, 0) or 0) < required_samples
-            for value in required
-        ):
+
+        def sample_count(value: str) -> int:
+            try:
+                return max(0, int(counts.get(value, 0) or 0))
+            except (TypeError, ValueError):
+                return 0
+
+        if any(sample_count(value) < required_samples for value in required):
             blockers.append(mode_id)
 
     return list(dict.fromkeys(blockers))
