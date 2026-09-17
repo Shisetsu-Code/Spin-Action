@@ -8,6 +8,7 @@ from typing import Any
 from tester_spin.models import Game, GameTestResult
 from tester_spin.providers.base import Progress
 from tester_spin.providers.rubyplay.adapter import RubyPlayProvider as _ExecutionProvider
+from tester_spin.providers.rubyplay.choice_domains import rubyplay_choice_domain_is_proven
 from tester_spin.providers.rubyplay.choice_probe import (
     choice_domain_mode_id,
     choice_domain_signature,
@@ -18,17 +19,7 @@ from tester_spin.providers.rubyplay.exhaustive import RubyPlayProvider as _Catal
 
 
 def _domain_complete(mode: dict[str, Any]) -> bool:
-    required_raw = mode.get("required_options")
-    covered_raw = mode.get("covered_options")
-    if not isinstance(required_raw, list) or not required_raw:
-        return False
-    if not isinstance(covered_raw, list):
-        return False
-    required = {str(value) for value in required_raw}
-    covered = {str(value) for value in covered_raw}
-    if "DOMAIN_UNRESOLVED" in required:
-        return False
-    return bool(required and required.issubset(covered))
+    return rubyplay_choice_domain_is_proven(mode)
 
 
 def _prefix_matches(mode: dict[str, Any], prefix: tuple[str, ...]) -> bool:
