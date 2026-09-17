@@ -7,6 +7,7 @@ from tester_spin.providers.farm_structure import attach_execution_structure
 from tester_spin.providers.pragmatic import PragmaticProvider as _BasePragmaticProvider
 from tester_spin.providers.pragmatic_action_inventory import annotate_pragmatic_action_inventory
 from tester_spin.providers.pragmatic_exhaustive import PragmaticProvider as _PragmaticProvider
+from tester_spin.providers.pragmatic_feature_sessions import build_pragmatic_feature_sessions
 from tester_spin.providers.pragmatic_purchase_coverage import build_pragmatic_purchase_coverage
 from tester_spin.providers.result_farm_contract import (
     ProviderFarmSpec,
@@ -56,9 +57,6 @@ _SPEC = ProviderFarmSpec(
 class PragmaticProvider(_PragmaticProvider):
     """Active Pragmatic provider with post-discovery farm export hooks."""
 
-    # Pragmatic execution creates isolated runtime sessions per game. Keep the
-    # initial purchase campaign cap at four simultaneous games; all protocol
-    # requests still share one paced provider-wide limiter.
     max_test_concurrency = 4
 
     def farm_contract_dir(self, game: Game) -> Path | None:
@@ -72,10 +70,6 @@ class PragmaticProvider(_PragmaticProvider):
         base_bet: float,
         timeout_s: float,
     ):
-        # The direct bootstrap performs doInit plus one calibration doSpin.
-        # Reserve both provider-protocol slots up front so a campaign cannot
-        # create a bootstrap burst even though the base implementation owns the
-        # requests.Session internally.
         for _ in range(2):
             if not self.acquire_provider_request_slot():
                 raise InterruptedError("Pragmatic bootstrap cancelled while waiting for rate-limit slot")
@@ -98,8 +92,6 @@ class PragmaticProvider(_PragmaticProvider):
         label: str,
         timeout_s: float,
     ):
-        # Every state-changing gameService POST, including long feature
-        # continuations, consumes one shared provider slot.
         if not self.acquire_provider_request_slot():
             raise InterruptedError("Pragmatic state request cancelled while waiting for rate-limit slot")
         return _BasePragmaticProvider._post_and_store(
@@ -120,13 +112,7 @@ class PragmaticProvider(_PragmaticProvider):
         stop_event,
         progress,
     ) -> GameTestResult:
-        """Run one exhaustive Pragmatic iteration for purchase coverage.
-
-        A root ``pur`` request is not enough to close a purchased feature. If the
-        purchased round exposes FSO selectors, the existing exhaustive wrapper
-        must replay every provider-announced sibling before purchase coverage can
-        be promoted.
-        """
+        """Run one exhaustive Pragmatic iteration for purchase coverage."""
         return _PragmaticProvider.test_game(
             self,
             game,
@@ -135,6 +121,9 @@ class PragmaticProvider(_PragmaticProvider):
             stop_event=stop_event,
             progress=progress,
         )
+
+    def build_feature_sessions(self, result: GameTestResult) -> dict:
+        return build_pragmatic_feature_sessions(result)
 
     def finalize_test_result(self, result: GameTestResult, *, progress) -> GameTestResult:
         result = super().finalize_test_result(result, progress=progress)
