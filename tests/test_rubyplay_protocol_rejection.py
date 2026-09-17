@@ -2,72 +2,41 @@ from __future__ import annotations
 
 import unittest
 
-from tester_spin.providers.rubyplay.runtime import LauncherConfig, RubyPlayClientProfile, RubyPlayRuntime
-from tester_spin.providers.rubyplay.runtime_contracts import RubyPlayProtocolRejection, post_action
+import requests
 
-
-class _Response:
-    status_code = 200
-
-    def raise_for_status(self):
-        return None
-
-    def json(self):
-        return {
-            "status": "error",
-            "topic": "gameserver/select",
-            "error": "invalid index",
-            "data": {"next_action": "select", "an": 4},
-        }
-
-
-class _Session:
-    def post(self, url, *, json, timeout):
-        return _Response()
-
-
-def _runtime() -> RubyPlayRuntime:
-    return RubyPlayRuntime(
-        session=_Session(),  # type: ignore[arg-type]
-        launcher=LauncherConfig(
-            launcher_url="https://example.invalid/launcher?gamename=rp_test&operator=x&server_url=https://srv.example.invalid&currency=EUR&mode=fun&lang=en",
-            gamename="rp_test",
-            operator="x",
-            server_url="https://srv.example.invalid",
-            currency="EUR",
-            mode="fun",
-            lang="en",
-        ),
-        client_profile=RubyPlayClientProfile(
-            protocol_version=2,
-            math_version=123,
-            actions=["spin", "select"],
-        ),
-        session_key="secret",
-        fun_mode_data={"gameId": 1},
-        init_data={},
-        bets=[10],
-        default_bet=10,
-        default_bet_index=0,
-        currency="EUR",
-        subunit=100,
-        action_number=3,
-        next_action="select",
-    )
+from tester_spin.providers.rubyplay.choice_domains import classify_probe_failure
 
 
 class RubyPlayProtocolRejectionTests(unittest.TestCase):
-    def test_provider_status_error_is_typed_semantic_rejection(self) -> None:
-        runtime = _runtime()
-        with self.assertRaises(RubyPlayProtocolRejection) as caught:
-            post_action(runtime, "select", timeout_s=5.0, action_index=2)
+    def test_provider_status_error_is_semantic_rejection(self) -> None:
+        outcome = classify_probe_failure(
+            ValueError("RubyPlay select: status='error'."),
+            last_payload={
+                "status": "error",
+                "topic": "gameserver/select",
+                "error": "invalid index",
+            },
+            action="select",
+        )
+        self.assertEqual(outcome["outcome"], "SEMANTIC_REJECTION")
+        self.assertEqual(outcome["provider_status"], "error")
+        self.assertEqual(outcome["provider_error"], "invalid index")
 
-        rejection = caught.exception
-        self.assertEqual(rejection.action, "select")
-        self.assertEqual(rejection.provider_status, "error")
-        self.assertEqual(rejection.payload["error"], "invalid index")
-        self.assertEqual(runtime.action_number, 3)
-        self.assertEqual(runtime.next_action, "select")
+    def test_transport_error_is_never_semantic_boundary(self) -> None:
+        outcome = classify_probe_failure(
+            requests.Timeout("timed out"),
+            last_payload=None,
+            action="select",
+        )
+        self.assertEqual(outcome["outcome"], "TRANSPORT_ERROR")
+
+    def test_malformed_protocol_error_is_not_semantic_boundary(self) -> None:
+        outcome = classify_probe_failure(
+            ValueError("RubyPlay select: data.next_action vacío."),
+            last_payload={"status": "ok", "data": {}},
+            action="select",
+        )
+        self.assertEqual(outcome["outcome"], "PROTOCOL_ERROR")
 
 
 if __name__ == "__main__":
