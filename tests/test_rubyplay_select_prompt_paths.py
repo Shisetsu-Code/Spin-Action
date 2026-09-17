@@ -49,8 +49,46 @@ class RubyPlaySelectPromptPathTests(unittest.TestCase):
             prompts = observed_index_prompts(result)
 
         self.assertEqual(prompts[("PURCHASE_SELECT", "select", ())], {1})
-        self.assertEqual(prompts[("PURCHASE_SELECT", "select", (1,))], {0})
+        self.assertEqual(
+            prompts[("PURCHASE_SELECT", "select", ("select=1",))],
+            {0},
+        )
         self.assertEqual(len(prompts), 2)
+
+    def test_mixed_indexed_actions_preserve_action_in_select_prefix(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            attempt_dir = root / "SPIN" / "attempt-00001"
+            attempt_dir.mkdir(parents=True)
+            _write(attempt_dir / "request.json", {"action": "spin"})
+            _write(attempt_dir / "step-002-request.json", {"action": "pick", "index": 2})
+            _write(attempt_dir / "step-003-request.json", {"action": "select", "index": 1})
+            result = GameTestResult(
+                provider="rubyplay",
+                slug="g",
+                game_name="G",
+                game_url="https://example.invalid/g",
+                requested_spins=1,
+                successful_spins=1,
+                failed_spins=0,
+                status="OK",
+                run_dir=str(root),
+                attempts=[
+                    SpinAttempt(
+                        number=1,
+                        ok=True,
+                        mode_id="SPIN",
+                        mode_kind="SPIN",
+                        terminal=True,
+                        artifact_dir=str(attempt_dir),
+                    )
+                ],
+            )
+
+            prompts = observed_index_prompts(result)
+
+        self.assertEqual(prompts[("SPIN", "pick", ())], {2})
+        self.assertEqual(prompts[("SPIN", "select", ("pick=2",))], {1})
 
     def test_repeated_picks_share_one_domain_point(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
