@@ -84,6 +84,32 @@ class RubyPlayFeatureSessionTests(unittest.TestCase):
         self.assertEqual(session["totals"]["logical_rounds"], 2)
         self.assertEqual(session["state"], FEATURE_COMPLETE)
 
+    def test_unknown_entry_next_action_is_preserved_as_incomplete_feature(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            result = _result(
+                root,
+                mode_id="PURCHASE_MYSTERY",
+                mode_kind="PURCHASE",
+                wire_steps=1,
+                terminal=False,
+            )
+            attempt = Path(result.attempts[0].artifact_dir)
+            _write(
+                attempt / "request.json",
+                {"action": "buy_feature", "buy_feature_type": "mystery"},
+            )
+            _write(attempt / "response.json", {"data": {"next_action": "mystery_step"}})
+            result.attempts[0].warning = "estado de continuación no automatizado: mystery_step"
+
+            report = build_rubyplay_feature_sessions(result)
+
+        self.assertEqual(report["session_count"], 1)
+        session = report["sessions"][0]
+        self.assertEqual(session["state"], FEATURE_INCOMPLETE)
+        self.assertEqual(session["entry"]["next_action"], "mystery_step")
+        self.assertIn("mystery_step", " ".join(session["reasons"]))
+
     def test_picker_domain_from_another_parent_cannot_close_this_purchase(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
