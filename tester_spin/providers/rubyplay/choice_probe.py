@@ -231,6 +231,79 @@ def _next_unused(used: set[int]) -> int:
     return value
 
 
+def _known_prompt_indices(
+    result: GameTestResult,
+    *,
+    parent_mode: str,
+    action: str,
+    prefix: tuple[str, ...],
+) -> list[int]:
+    """Return evidence-backed candidates for one exact indexed prompt.
+
+    Proven finite domains are preferred. If the domain is still unresolved, an
+    index previously accepted on this exact parent/action/prefix is safer than a
+    blind default and is used only to continue an outer-domain replay.
+    """
+    proven: list[int] = []
+    observed: list[int] = []
+    for mode in result.discovered_modes:
+        if not isinstance(mode, dict):
+            continue
+        if str(mode.get("kind") or "").upper() != "INDEXED_CHOICE":
+            continue
+        if str(mode.get("parent") or "") != parent_mode:
+            continue
+        if str(mode.get("wire_command") or "").strip().lower() != action:
+            continue
+        raw_prefix = mode.get("prefix")
+        if not isinstance(raw_prefix, list):
+            if prefix:
+                continue
+        elif tuple(str(value) for value in raw_prefix) != prefix:
+            continue
+
+        required = mode.get("required_options")
+        if (
+            isinstance(required, list)
+            and required
+            and "DOMAIN_UNRESOLVED" not in {str(value) for value in required}
+        ):
+            parsed_required: list[int] = []
+            valid = True
+            for raw in required:
+                if isinstance(raw, bool):
+                    valid = False
+                    break
+                try:
+                    value = int(raw)
+                except (TypeError, ValueError):
+                    valid = False
+                    break
+                if value < 0:
+                    valid = False
+                    break
+                if value not in parsed_required:
+                    parsed_required.append(value)
+            if valid:
+                for value in sorted(parsed_required):
+                    if value not in proven:
+                        proven.append(value)
+
+        raw_observed = mode.get("observed_indices")
+        if isinstance(raw_observed, list):
+            for raw in raw_observed:
+                if isinstance(raw, bool):
+                    continue
+                try:
+                    value = int(raw)
+                except (TypeError, ValueError):
+                    continue
+                if value >= 0 and value not in observed:
+                    observed.append(value)
+
+    return proven or sorted(observed)
+
+
 def replay_index_probe(
     provider,
     game: Game,
@@ -519,10 +592,25 @@ def replay_index_probe(
                 if command == "pick":
                     used_pick_indices.add(action_index)
             elif next_action == "pick":
-                action_index = _next_unused(used_pick_indices)
+                known = _known_prompt_indices(
+                    result,
+                    parent_mode=parent_mode,
+                    action=next_action,
+                    prefix=prompt_prefix,
+                )
+                action_index = next(
+                    (value for value in known if value not in used_pick_indices),
+                    _next_unused(used_pick_indices),
+                )
                 used_pick_indices.add(action_index)
             else:
-                action_index = 0
+                known = _known_prompt_indices(
+                    result,
+                    parent_mode=parent_mode,
+                    action=next_action,
+                    prefix=prompt_prefix,
+                )
+                action_index = known[0] if known else 0
 
             if next_action == command:
                 same_action_occurrences += 1
