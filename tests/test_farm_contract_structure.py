@@ -12,7 +12,7 @@ from tester_spin.providers.farm_structure import build_execution_structure
 
 
 class FarmContractStructureTests(unittest.TestCase):
-    def test_generic_structure_exposes_wagers_and_choice_domains(self) -> None:
+    def test_generic_structure_exposes_wagers_choices_and_feature_summary(self) -> None:
         structure = build_execution_structure(
             [
                 {
@@ -43,7 +43,19 @@ class FarmContractStructureTests(unittest.TestCase):
                         "sample_counts": {"0": 1, "1": 1},
                     },
                 },
-            ]
+            ],
+            feature_sessions={
+                "complete": True,
+                "session_count": 1,
+                "authority": "synthetic",
+                "by_parent_mode": {
+                    "PURCHASE_BONUS": {
+                        "state": "COMPLETE",
+                        "session_count": 1,
+                        "logical_rounds": 10,
+                    }
+                },
+            },
         )
 
         wagers = {item["mode_id"]: item for item in structure["wagers"]}
@@ -59,8 +71,13 @@ class FarmContractStructureTests(unittest.TestCase):
         self.assertEqual(choice["domain"], ["0", "1"])
         self.assertEqual(choice["covered"], ["0", "1"])
         self.assertTrue(choice["coverage_complete"])
+        self.assertTrue(structure["feature_sessions"]["complete"])
+        self.assertEqual(
+            structure["feature_sessions"]["by_parent_mode"]["PURCHASE_BONUS"]["logical_rounds"],
+            10,
+        )
 
-    def test_bgaming_provider_exposes_profile_bet_and_choice_domains(self) -> None:
+    def test_bgaming_provider_exposes_profile_bet_and_choice_domains_and_blocks_incomplete_features(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             provider = BGamingProvider(Path(temp))
             try:
@@ -143,6 +160,24 @@ class FarmContractStructureTests(unittest.TestCase):
                             "validated": True,
                         },
                     ],
+                    structural_map={
+                        "feature_sessions": {
+                            "schema": "tester-spin/feature-sessions/v1",
+                            "artifact": "feature-sessions.json",
+                            "complete": False,
+                            "session_count": 1,
+                            "authority": "synthetic",
+                            "by_parent_mode": {
+                                "PURCHASE_BONUS_BUY": {
+                                    "state": "INCOMPLETE",
+                                    "session_count": 1,
+                                    "logical_rounds": 10,
+                                    "wire_steps": 12,
+                                    "choices": 1,
+                                }
+                            },
+                        }
+                    },
                 )
 
                 contract = provider.build_farm_contract(game, result)
@@ -162,6 +197,9 @@ class FarmContractStructureTests(unittest.TestCase):
                     wagers["PURCHASE_BONUS_BUY"]["parameters"]["purchased_feature"],
                     "bonus_buy",
                 )
+                self.assertFalse(contract["ready"])
+                self.assertIn("FEATURE_SESSIONS_INCOMPLETE", contract["unresolved"])
+                self.assertFalse(structure["feature_sessions"]["complete"])
             finally:
                 provider.http.close()
 
