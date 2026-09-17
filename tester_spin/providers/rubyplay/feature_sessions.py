@@ -188,8 +188,9 @@ def _attempt_session(
     choices: list[dict[str, Any]] = []
     transitions: list[dict[str, Any]] = []
     unknown_actions: list[str] = []
-    prefix: list[str] = []
-    pick_domain_recorded = False
+    path_tokens: list[str] = []
+    last_indexed_action = ""
+    active_pick_prefix: tuple[str, ...] | None = None
 
     for row in rows[1:]:
         request = row.get("request") if isinstance(row.get("request"), dict) else {}
@@ -197,6 +198,8 @@ def _attempt_session(
         action = str(request.get("action") or "").strip().lower()
         evidence = _relative_evidence(result, Path(row["request_path"]))
         if action in _ROUND_ACTIONS:
+            last_indexed_action = ""
+            active_pick_prefix = None
             rounds.append(
                 make_feature_round(
                     len(rounds) + 1,
@@ -216,30 +219,45 @@ def _attempt_session(
                 if selected_raw is not None and not isinstance(selected_raw, bool)
                 else ""
             )
-            choice_prefix = [] if action == "pick" else list(prefix)
-            if action != "pick" or not pick_domain_recorded:
+
+            record_choice = True
+            if action == "pick":
+                if last_indexed_action == "pick" and active_pick_prefix is not None:
+                    prompt_prefix = active_pick_prefix
+                    record_choice = False
+                else:
+                    active_pick_prefix = tuple(path_tokens)
+                    prompt_prefix = active_pick_prefix
+            else:
+                active_pick_prefix = None
+                prompt_prefix = tuple(path_tokens)
+
+            if record_choice:
                 choice = _choice_from_row(
                     result,
                     attempt,
                     row,
-                    prefix=choice_prefix,
+                    prefix=list(prompt_prefix),
                 )
                 choices.append(choice)
-                if action == "pick":
-                    pick_domain_recorded = True
+
             transitions.append(
                 {
                     "wire_step": int(row.get("wire_step") or 0),
                     "provider_action": action,
                     "selected": selected,
+                    "choice_prefix": list(prompt_prefix),
                     "next_action": _next_action(response),
                     "evidence": evidence,
                 }
             )
             if selected:
-                prefix.append(f"{action}={selected}")
+                path_tokens.append(f"{action}={selected}")
+            last_indexed_action = action
             continue
         if action:
+            last_indexed_action = ""
+            active_pick_prefix = None
             transitions.append(
                 {
                     "wire_step": int(row.get("wire_step") or 0),
