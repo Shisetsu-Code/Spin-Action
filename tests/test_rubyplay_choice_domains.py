@@ -3,12 +3,49 @@ from __future__ import annotations
 import unittest
 
 from tester_spin.providers.rubyplay.choice_domains import (
+    classify_probe_failure,
     probe_contiguous_index_domain,
     prove_contiguous_index_domain,
 )
 
 
 class RubyPlayChoiceDomainProofTests(unittest.TestCase):
+    def test_action_name_only_error_is_not_a_domain_boundary(self) -> None:
+        failure = classify_probe_failure(
+            ValueError("RubyPlay select: status='error'."),
+            last_payload={
+                "status": "error",
+                "topic": "gameserver/select",
+                "error": "select unavailable in current state",
+            },
+            action="select",
+        )
+        self.assertEqual(failure["outcome"], "PROTOCOL_ERROR")
+
+    def test_explicit_invalid_index_is_a_semantic_boundary_candidate(self) -> None:
+        failure = classify_probe_failure(
+            ValueError("RubyPlay select: status='error'."),
+            last_payload={
+                "status": "error",
+                "topic": "gameserver/select",
+                "error": "invalid index",
+            },
+            action="select",
+        )
+        self.assertEqual(failure["outcome"], "SEMANTIC_REJECTION")
+
+    def test_out_of_range_choice_is_a_semantic_boundary_candidate(self) -> None:
+        failure = classify_probe_failure(
+            ValueError("RubyPlay pick: status='error'."),
+            last_payload={
+                "status": "error",
+                "topic": "gameserver/pick",
+                "message": "choice index out of range",
+            },
+            action="pick",
+        )
+        self.assertEqual(failure["outcome"], "SEMANTIC_REJECTION")
+
     def test_terminal_prefix_plus_repeated_semantic_rejection_proves_finite_domain(self) -> None:
         proof = prove_contiguous_index_domain(
             [
