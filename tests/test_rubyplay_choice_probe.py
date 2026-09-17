@@ -273,6 +273,7 @@ class RubyPlayChoiceProbeTests(unittest.TestCase):
         self.assertEqual(modes[0]["covered_options"], ["0", "1"])
         self.assertEqual(modes[0]["domain_authority"], "isolated-live-server-boundary")
         self.assertEqual(modes[0]["boundary_confirmations"], 2)
+        self.assertEqual(modes[0]["rejection_span"], 2)
 
 
 if __name__ == "__main__":
