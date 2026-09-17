@@ -227,11 +227,16 @@ def _attempt_session(
             unknown_actions.append(action)
 
     entry_next = _next_action(entry_response)
+    unknown_entry_state = bool(
+        entry_next
+        and entry_next != "spin"
+        and entry_next not in (_ROUND_ACTIONS | _CHOICE_ACTIONS)
+    )
     feature_observed = bool(
         rounds
         or choices
         or len(rows) > 1
-        or entry_next in (_ROUND_ACTIONS | _CHOICE_ACTIONS)
+        or (entry_next and entry_next != "spin")
     )
     if not feature_observed:
         return None
@@ -244,11 +249,17 @@ def _attempt_session(
     terminal = bool(attempt.terminal and returned_to_base)
     trigger = "PURCHASE" if str(attempt.mode_kind or "").upper() == "PURCHASE" else "NATURAL"
     reasons = []
+    if unknown_entry_state:
+        reasons.append(
+            f"RubyPlay entry next_action={entry_next!r} has no classified round/choice contract"
+        )
     if unknown_actions:
         reasons.append(
             "RubyPlay continuation actions are not classified as round/choice: "
             + ", ".join(sorted(set(unknown_actions)))
         )
+    if attempt.warning:
+        reasons.append(str(attempt.warning))
 
     return make_feature_session(
         session_id=f"{attempt.mode_id}:{attempt.number}",
@@ -267,7 +278,7 @@ def _attempt_session(
         terminal_proven=terminal,
         returned_to_base=returned_to_base,
         wire_steps=int(attempt.wire_steps or len(rows)),
-        round_classification_complete=not unknown_actions,
+        round_classification_complete=(not unknown_entry_state and not unknown_actions),
         reasons=reasons,
     )
 
