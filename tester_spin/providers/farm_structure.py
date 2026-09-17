@@ -37,17 +37,33 @@ def _coverage_complete(parameters: dict[str, Any], domain: list[Any]) -> bool | 
     )
 
 
+def _feature_summary(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {
+            "complete": True,
+            "session_count": 0,
+            "authority": "",
+            "by_parent_mode": {},
+        }
+    return {
+        "complete": bool(value.get("complete")),
+        "session_count": max(0, int(value.get("session_count") or 0)),
+        "authority": str(value.get("authority") or ""),
+        "by_parent_mode": deepcopy(
+            value.get("by_parent_mode")
+            if isinstance(value.get("by_parent_mode"), dict)
+            else {}
+        ),
+    }
+
+
 def build_execution_structure(
     modes: list[dict[str, Any]],
     *,
     provider_domains: dict[str, Any] | None = None,
+    feature_sessions: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Build a read-only summary of discovered wagers and selections.
-
-    This is deliberately not a request DSL. It mirrors only stable information
-    already present in the provider contract so a later farm program can read the
-    discovered betting/choice surface without repeating discovery.
-    """
+    """Build a read-only summary of discovered wagers, choices and features."""
 
     wagers: list[dict[str, Any]] = []
     choices: list[dict[str, Any]] = []
@@ -101,6 +117,7 @@ def build_execution_structure(
     return {
         "wagers": wagers,
         "choices": choices,
+        "feature_sessions": _feature_summary(feature_sessions),
         "provider_domains": deepcopy(provider_domains or {}),
     }
 
@@ -111,9 +128,13 @@ def attach_execution_structure(
     provider_domains: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     modes = contract.get("modes")
+    feature_sessions = contract.get("feature_sessions")
     contract["execution_structure"] = build_execution_structure(
         modes if isinstance(modes, list) else [],
         provider_domains=provider_domains,
+        feature_sessions=(
+            feature_sessions if isinstance(feature_sessions, dict) else None
+        ),
     )
     return contract
 
