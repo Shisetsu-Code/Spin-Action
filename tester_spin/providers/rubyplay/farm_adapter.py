@@ -10,6 +10,7 @@ from tester_spin.providers.result_farm_contract import (
     validate_result_farm_contract,
 )
 from tester_spin.providers.rubyplay.exhaustive import RubyPlayProvider as _RubyPlayProvider
+from tester_spin.providers.rubyplay.feature_sessions import build_rubyplay_feature_sessions
 from tester_spin.providers.rubyplay.purchase_coverage import build_rubyplay_purchase_coverage
 
 
@@ -48,7 +49,7 @@ _SPEC = ProviderFarmSpec(
     protocol_static={
         "state_authority": "response.data.next_action",
         "base_action": "spin",
-        "known_continuation_actions": ["respin"],
+        "known_continuation_actions": ["freespin", "respin", "minispin", "select", "pick"],
     },
 )
 
@@ -62,6 +63,9 @@ class RubyPlayProvider(_RubyPlayProvider):
 
     def farm_contract_dir(self, game: Game) -> Path | None:
         return self.game_dir(game)
+
+    def build_feature_sessions(self, result: GameTestResult) -> dict:
+        return build_rubyplay_feature_sessions(result)
 
     def build_purchase_coverage(self, game: Game, result: GameTestResult) -> dict:
         del game
