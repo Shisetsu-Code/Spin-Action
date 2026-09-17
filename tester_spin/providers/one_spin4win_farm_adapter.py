@@ -7,6 +7,7 @@ from tester_spin.models import Game, GameTestResult
 from tester_spin.providers.base import Progress
 from tester_spin.providers.farm_structure import attach_execution_structure
 from tester_spin.providers.one_spin4win_exhaustive import OneSpin4WinProvider as _OneSpin4WinProvider
+from tester_spin.providers.one_spin4win_feature_sessions import build_one_spin4win_feature_sessions
 from tester_spin.providers.one_spin4win_purchase_coverage import build_one_spin4win_purchase_coverage
 from tester_spin.providers.result_farm_contract import (
     ProviderFarmSpec,
@@ -88,6 +89,9 @@ class OneSpin4WinProvider(_OneSpin4WinProvider):
             stop_event=stop_event,
             progress=progress,
         )
+
+    def build_feature_sessions(self, result: GameTestResult) -> dict:
+        return build_one_spin4win_feature_sessions(result)
 
     def build_purchase_coverage(self, game: Game, result: GameTestResult) -> dict:
         del game
