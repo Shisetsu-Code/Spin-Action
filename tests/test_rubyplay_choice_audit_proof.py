@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 from tester_spin.models import GameTestResult
-from tester_spin.providers.rubyplay.exhaustive import apply_rubyplay_path_audit
+from tester_spin.providers.rubyplay.choice_exhaustive import apply_rubyplay_choice_audit
 
 
 class RubyPlayChoiceAuditProofTests(unittest.TestCase):
@@ -43,7 +43,7 @@ class RubyPlayChoiceAuditProofTests(unittest.TestCase):
                 ],
             )
 
-            apply_rubyplay_path_audit(result, progress=lambda _message: None)
+            apply_rubyplay_choice_audit(result, progress=lambda _message: None)
 
         indexed = [
             row for row in result.discovered_modes
@@ -54,6 +54,32 @@ class RubyPlayChoiceAuditProofTests(unittest.TestCase):
         self.assertEqual(indexed[0]["covered_options"], ["0", "1"])
         self.assertEqual(result.status, "OK")
         self.assertNotIn("DOMAIN_UNRESOLVED", str(result.discovered_modes))
+
+    def test_missing_proof_is_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            attempt = root / "PURCHASE_SELECT" / "attempt-00001"
+            attempt.mkdir(parents=True)
+            (attempt / "step-002-request.json").write_text(
+                json.dumps({"action": "select", "index": 0}),
+                encoding="utf-8",
+            )
+            result = GameTestResult(
+                provider="rubyplay",
+                slug="synthetic",
+                game_name="Synthetic",
+                game_url="https://example.invalid/game",
+                requested_spins=1,
+                successful_spins=1,
+                failed_spins=0,
+                status="OK",
+                run_dir=str(root),
+            )
+
+            apply_rubyplay_choice_audit(result, progress=lambda _message: None)
+
+        self.assertEqual(result.status, "PARCIAL")
+        self.assertIn("DOMAIN_UNRESOLVED", str(result.discovered_modes))
 
 
 if __name__ == "__main__":
