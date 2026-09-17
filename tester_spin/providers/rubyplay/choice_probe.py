@@ -762,6 +762,7 @@ def _upsert_prompt_mode(
     if proof:
         mode["boundary_index"] = proof.get("boundary_index")
         mode["boundary_confirmations"] = proof.get("boundary_confirmations")
+        mode["rejection_span"] = proof.get("rejection_span")
     result.discovered_modes.append(mode)
 
 
