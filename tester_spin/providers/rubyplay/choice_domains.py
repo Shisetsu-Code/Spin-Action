@@ -110,14 +110,14 @@ def prove_contiguous_index_domain(
     probes: Iterable[dict[str, Any]],
     *,
     min_boundary_confirmations: int = 2,
+    min_rejection_span: int = 2,
 ) -> dict[str, Any]:
-    """Prove a finite 0..N-1 RubyPlay index domain from isolated live probes.
+    """Prove a finite 0..N-1 domain from a confirmed rejection boundary window.
 
-    A domain closes only when every index below the boundary reached a clean
-    terminal result and the immediately following index was explicitly rejected
-    by the RubyPlay protocol in multiple fresh sessions. Network failures,
-    malformed responses, nonterminal branches, gaps, contradictory outcomes, or
-    rejection at index zero remain unresolved.
+    Every index below N must terminate cleanly. N and the immediately following
+    rejection-window indices must be explicitly rejected by the RubyPlay
+    protocol in multiple fresh sessions. A valid successor therefore disproves
+    the contiguous-boundary hypothesis instead of being silently ignored.
     """
     rows = [dict(row) for row in probes if isinstance(row, dict)]
     covered = _covered(rows)
@@ -125,12 +125,18 @@ def prove_contiguous_index_domain(
         required_confirmations = max(2, int(min_boundary_confirmations))
     except (TypeError, ValueError):
         required_confirmations = 2
+    try:
+        required_span = max(2, int(min_rejection_span))
+    except (TypeError, ValueError):
+        required_span = 2
+
     unresolved = {
         "state": _UNRESOLVED,
         "required_options": ["DOMAIN_UNRESOLVED"],
         "covered_options": covered,
         "boundary_index": None,
         "boundary_confirmations": 0,
+        "rejection_span": 0,
         "probes": rows,
     }
     if not rows:
@@ -146,7 +152,6 @@ def prove_contiguous_index_domain(
             return unresolved
         by_index.setdefault(index, []).append(outcome)
 
-    # Contradictory repeats are never promoted.
     if any(len(set(outcomes)) != 1 for outcomes in by_index.values()):
         return unresolved
 
@@ -155,13 +160,17 @@ def prove_contiguous_index_domain(
         for index, outcomes in by_index.items()
         if outcomes and outcomes[0] == _SEMANTIC_REJECTION
     )
-    if len(rejection_indexes) != 1:
+    if not rejection_indexes:
         return unresolved
     boundary = rejection_indexes[0]
     if boundary <= 0:
         return unresolved
 
-    expected_indexes = list(range(boundary + 1))
+    expected_rejections = list(range(boundary, boundary + required_span))
+    if rejection_indexes != expected_rejections:
+        return unresolved
+
+    expected_indexes = list(range(boundary + required_span))
     if sorted(by_index) != expected_indexes:
         return unresolved
 
@@ -170,12 +179,15 @@ def prove_contiguous_index_domain(
         if not outcomes or any(outcome != _TERMINAL for outcome in outcomes):
             return unresolved
 
-    boundary_outcomes = by_index.get(boundary) or []
-    if (
-        len(boundary_outcomes) < required_confirmations
-        or any(outcome != _SEMANTIC_REJECTION for outcome in boundary_outcomes)
-    ):
-        return unresolved
+    confirmations: list[int] = []
+    for index in expected_rejections:
+        outcomes = by_index.get(index) or []
+        if (
+            len(outcomes) < required_confirmations
+            or any(outcome != _SEMANTIC_REJECTION for outcome in outcomes)
+        ):
+            return unresolved
+        confirmations.append(len(outcomes))
 
     domain = [str(index) for index in range(boundary)]
     return {
@@ -183,7 +195,8 @@ def prove_contiguous_index_domain(
         "required_options": domain,
         "covered_options": domain,
         "boundary_index": boundary,
-        "boundary_confirmations": len(boundary_outcomes),
+        "boundary_confirmations": min(confirmations),
+        "rejection_span": required_span,
         "probes": rows,
     }
 
@@ -193,14 +206,9 @@ def probe_contiguous_index_domain(
     *,
     max_index: int = 32,
     boundary_confirmations: int = 2,
+    rejection_span: int = 2,
 ) -> dict[str, Any]:
-    """Probe 0..N conservatively and confirm a boundary in fresh sessions.
-
-    Each callback invocation must use an isolated logical round/session. Valid
-    indices are sampled once. A semantic rejection is repeated at the same index
-    to distinguish a stable provider boundary from a transient semantic failure.
-    Any inconclusive result stops expansion immediately.
-    """
+    """Probe 0..N and confirm a contiguous rejection window in fresh sessions."""
     try:
         guard = max(0, int(max_index))
     except (TypeError, ValueError):
@@ -209,9 +217,14 @@ def probe_contiguous_index_domain(
         confirmations = max(2, int(boundary_confirmations))
     except (TypeError, ValueError):
         confirmations = 2
+    try:
+        span = max(2, int(rejection_span))
+    except (TypeError, ValueError):
+        span = 2
 
     rows: list[dict[str, Any]] = []
-    for index in range(guard + 1):
+
+    def one(index: int) -> str:
         try:
             raw = probe_index(index)
         except BaseException as exc:
@@ -227,35 +240,45 @@ def probe_contiguous_index_domain(
             row["outcome"] = _PROTOCOL_ERROR
             outcome = _PROTOCOL_ERROR
         rows.append(row)
+        return outcome
 
+    boundary: int | None = None
+    for index in range(guard + 1):
+        outcome = one(index)
         if outcome == _TERMINAL:
             continue
-        if outcome == _SEMANTIC_REJECTION:
+        if outcome != _SEMANTIC_REJECTION:
+            break
+
+        boundary = index
+        for _ in range(confirmations - 1):
+            if one(index) != _SEMANTIC_REJECTION:
+                break
+        if any(
+            str(row.get("outcome") or "").upper() != _SEMANTIC_REJECTION
+            for row in rows
+            if _index(row) == index
+        ):
+            break
+
+        for successor in range(index + 1, index + span):
+            if one(successor) != _SEMANTIC_REJECTION:
+                break
             for _ in range(confirmations - 1):
-                try:
-                    repeated_raw = probe_index(index)
-                except BaseException as exc:
-                    repeated_raw = {
-                        "index": index,
-                        "outcome": _PROTOCOL_ERROR,
-                        "error": f"{type(exc).__name__}: {exc}",
-                    }
-                repeated = dict(repeated_raw) if isinstance(repeated_raw, dict) else {}
-                repeated["index"] = index
-                repeated_outcome = str(repeated.get("outcome") or "").strip().upper()
-                if not repeated_outcome:
-                    repeated["outcome"] = _PROTOCOL_ERROR
-                    repeated_outcome = _PROTOCOL_ERROR
-                rows.append(repeated)
-                if repeated_outcome != _SEMANTIC_REJECTION:
+                if one(successor) != _SEMANTIC_REJECTION:
                     break
-        # Semantic rejection may prove the boundary; every other outcome makes
-        # the run inconclusive. In all cases stop probing larger indices.
+            if any(
+                str(row.get("outcome") or "").upper() != _SEMANTIC_REJECTION
+                for row in rows
+                if _index(row) == successor
+            ):
+                break
         break
 
     return prove_contiguous_index_domain(
         rows,
         min_boundary_confirmations=confirmations,
+        min_rejection_span=span,
     )
 
 
