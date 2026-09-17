@@ -36,7 +36,7 @@ class RubyPlayChoiceProbeArtifactTests(unittest.TestCase):
                 seen.append((index, Path(artifact_dir)))
                 return {
                     "index": index,
-                    "outcome": "SEMANTIC_REJECTION" if index == 2 else "TERMINAL",
+                    "outcome": "SEMANTIC_REJECTION" if index in {2, 3} else "TERMINAL",
                     "target_reached": True,
                 }
 
@@ -59,6 +59,9 @@ class RubyPlayChoiceProbeArtifactTests(unittest.TestCase):
         self.assertEqual(boundary_paths[1].name, "attempt-002")
         self.assertEqual(boundary_paths[0].parent.name, "index-002")
         self.assertEqual(boundary_paths[1].parent.name, "index-002")
+        successor_paths = [path for index, path in seen if index == 3]
+        self.assertEqual(len(successor_paths), 2)
+        self.assertNotEqual(successor_paths[0], successor_paths[1])
 
 
 if __name__ == "__main__":
