@@ -45,6 +45,7 @@ _SPEC = ProviderFarmSpec(
         "default_price",
         "observed_indices",
         "boundary_index",
+        "boundary_confirmations",
         "domain_authority",
     ),
     runtime_outputs=("launcher_parameters", "gameserver_endpoint", "action_number"),
