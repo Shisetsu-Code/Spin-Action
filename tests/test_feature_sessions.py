@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -18,7 +19,8 @@ from tester_spin.feature_sessions import (
     make_feature_round,
     make_feature_session,
 )
-from tester_spin.models import GameTestResult
+from tester_spin.models import Game, GameTestResult
+from tester_spin.providers.base import ProviderAdapter
 
 
 class FeatureSessionCoreTests(unittest.TestCase):
@@ -167,6 +169,61 @@ class FeatureSessionCoreTests(unittest.TestCase):
             attach_feature_session_report(result, report)
             self.assertTrue(report["complete"])
             self.assertEqual(feature_session_state_for_mode(result, "PURCHASE_NONE"), FEATURE_NOT_OBSERVED)
+
+
+class _FeatureProvider(ProviderAdapter):
+    key = "feature-test"
+    display_name = "Feature Test"
+    catalog_url = "https://example.invalid/catalog"
+
+    def crawl_catalog(self, *, stop_event, progress, max_pages=100, on_game=None):
+        return []
+
+    def test_game(self, game, *, spins, timeout_s, stop_event, progress):
+        raise AssertionError("not used")
+
+    def build_feature_sessions(self, result: GameTestResult) -> dict:
+        session = make_feature_session(
+            session_id="PURCHASE_PICK:1",
+            trigger="PURCHASE",
+            parent_mode="PURCHASE_PICK",
+            attempt_number=1,
+            entry={"command": "buy"},
+            rounds=[make_feature_round(1, provider_action="round", source="wire")],
+            choices=[
+                make_feature_choice(
+                    command="pick",
+                    required_options=["DOMAIN_UNRESOLVED"],
+                    covered_options=[],
+                    domain_state="UNRESOLVED",
+                )
+            ],
+            terminal_proven=True,
+            returned_to_base=True,
+            wire_steps=3,
+        )
+        return finalize_feature_session_report(result, sessions=[session], authority="feature-test")
+
+
+class ProviderFeatureFinalizerTests(unittest.TestCase):
+    def test_purchase_finalizer_runs_feature_gate_without_general_sampling(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            provider = _FeatureProvider(Path(temp) / "data")
+            result = FeatureSessionCoreTests._result(Path(temp) / "run")
+
+            finalized = provider.finalize_purchase_result(
+                result,
+                progress=lambda _message: None,
+            )
+
+            self.assertIs(finalized, result)
+            self.assertEqual(result.status, "PARCIAL")
+            self.assertEqual(
+                feature_session_state_for_mode(result, "PURCHASE_PICK"),
+                FEATURE_INCOMPLETE,
+            )
+            self.assertTrue(Path(result.run_dir, "feature-sessions.json").is_file())
+            self.assertFalse(Path(result.run_dir, "sample-catalog.json").is_file())
 
 
 if __name__ == "__main__":
