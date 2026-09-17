@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
 from tester_spin.models import Game, GameTestResult
+from tester_spin.providers.base import Progress
 from tester_spin.providers.farm_structure import attach_execution_structure, select_domains
 from tester_spin.providers.result_farm_contract import (
     ProviderFarmSpec,
@@ -13,6 +15,8 @@ from tester_spin.providers.rubyplay.choice_exhaustive import RubyPlayProvider as
 from tester_spin.providers.rubyplay.feature_sessions import build_rubyplay_feature_sessions
 from tester_spin.providers.rubyplay.purchase_coverage import build_rubyplay_purchase_coverage
 
+
+_SCOPE_LOCAL = threading.local()
 
 _SPEC = ProviderFarmSpec(
     provider="rubyplay",
@@ -95,6 +99,73 @@ class RubyPlayProvider(_RubyPlayProvider):
 
     def _new_session(self):
         return _RateLimitedRubyPlaySession(self, super()._new_session())
+
+    def rubyplay_execution_scope(self) -> str:
+        return str(getattr(_SCOPE_LOCAL, "value", "ALL") or "ALL")
+
+    def _run_scoped(
+        self,
+        scope: str,
+        game: Game,
+        *,
+        spins: int,
+        timeout_s: float,
+        stop_event: threading.Event,
+        progress: Progress,
+    ) -> GameTestResult:
+        previous = getattr(_SCOPE_LOCAL, "value", None)
+        _SCOPE_LOCAL.value = str(scope or "ALL").upper()
+        try:
+            return self.test_game(
+                game,
+                spins=spins,
+                timeout_s=timeout_s,
+                stop_event=stop_event,
+                progress=progress,
+            )
+        finally:
+            if previous is None:
+                try:
+                    delattr(_SCOPE_LOCAL, "value")
+                except AttributeError:
+                    pass
+            else:
+                _SCOPE_LOCAL.value = previous
+
+    def test_natural_spins(
+        self,
+        game: Game,
+        *,
+        spins: int,
+        timeout_s: float,
+        stop_event: threading.Event,
+        progress: Progress,
+    ) -> GameTestResult:
+        return self._run_scoped(
+            "NATURAL_ONLY",
+            game,
+            spins=max(1, int(spins)),
+            timeout_s=timeout_s,
+            stop_event=stop_event,
+            progress=progress,
+        )
+
+    def test_purchase_paths(
+        self,
+        game: Game,
+        *,
+        timeout_s: float,
+        stop_event: threading.Event,
+        progress: Progress,
+    ) -> GameTestResult:
+        return self._run_scoped(
+            "PURCHASE_ONLY",
+            game,
+            spins=1,
+            timeout_s=timeout_s,
+            stop_event=stop_event,
+            progress=progress,
+        )
 
     def farm_contract_dir(self, game: Game) -> Path | None:
         return self.game_dir(game)
