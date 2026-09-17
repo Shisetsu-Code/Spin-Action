@@ -224,16 +224,35 @@ def _execute_purchase_game(
             result.error or "Runtime stopped before purchase inventory could be trusted.",
         )
     else:
+        finalization_exc: BaseException | None = None
         try:
-            coverage = provider.build_purchase_coverage(game, result)
-            if not isinstance(coverage, dict):
-                raise TypeError("build_purchase_coverage() no devolvió un objeto")
+            result = provider.finalize_purchase_result(
+                result,
+                progress=game_progress,
+            )
         except BaseException as exc:
+            finalization_exc = exc
+            game_progress(
+                f"finalización de feature/path ERROR: {type(exc).__name__}: {exc}"
+            )
+
+        if finalization_exc is not None:
             coverage = _unknown_coverage(
                 result,
-                f"Purchase coverage adapter failed: {type(exc).__name__}: {exc}",
+                "Feature/path finalization failed before purchase coverage: "
+                f"{type(finalization_exc).__name__}: {finalization_exc}",
             )
-            game_progress(f"clasificación de compras ERROR: {type(exc).__name__}: {exc}")
+        else:
+            try:
+                coverage = provider.build_purchase_coverage(game, result)
+                if not isinstance(coverage, dict):
+                    raise TypeError("build_purchase_coverage() no devolvió un objeto")
+            except BaseException as exc:
+                coverage = _unknown_coverage(
+                    result,
+                    f"Purchase coverage adapter failed: {type(exc).__name__}: {exc}",
+                )
+                game_progress(f"clasificación de compras ERROR: {type(exc).__name__}: {exc}")
 
     state = str(coverage.get("state") or PURCHASE_UNKNOWN)
     counts = coverage.get("counts") if isinstance(coverage.get("counts"), dict) else {}
