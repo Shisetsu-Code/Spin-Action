@@ -105,6 +105,30 @@ class PurchaseParentPathGateTests(unittest.TestCase):
         self.assertEqual(coverage["state"], PURCHASE_COMPLETE)
         self.assertEqual(coverage["options"][0]["execution_state"], "COMPLETE")
 
+    def test_malformed_child_sample_count_fails_closed_without_exception(self) -> None:
+        result = _result()
+        result.discovered_modes = [
+            {
+                "id": "PURCHASE_A__SELECT_ROOT",
+                "kind": "INDEXED_CHOICE",
+                "parent": "PURCHASE_A",
+                "coverage_required": True,
+                "required_options": ["0"],
+                "covered_options": ["0"],
+                "required_samples": 2,
+                "sample_counts": {"0": "not-a-number"},
+            }
+        ]
+
+        coverage = finalize_purchase_coverage(
+            result,
+            options=[_purchase("PURCHASE_A")],
+            inventory_state="COMPLETE",
+            authority="synthetic",
+        )
+
+        self.assertEqual(coverage["state"], PURCHASE_UNKNOWN)
+
     def test_sample_deficit_on_child_branch_blocks_parent_purchase(self) -> None:
         result = _result()
         result.discovered_modes = [
