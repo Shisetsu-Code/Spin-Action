@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
-from tester_spin.models import GameTestResult
+from tester_spin.models import GameTestResult, SpinAttempt
 from tester_spin.purchase_coverage import (
     attempts_for_mode,
     clean_terminal_attempt,
@@ -11,7 +11,11 @@ from tester_spin.purchase_coverage import (
     inventory_state,
     make_purchase_option,
     matching_request,
+    request_payloads,
 )
+
+
+_INDEXED_BRANCH_ACTIONS = {"select", "pick"}
 
 
 def _positive_number(value: Any) -> float | None:
@@ -28,6 +32,42 @@ def _same_number(left: Any, right: Any) -> bool:
     a = _positive_number(left)
     b = _positive_number(right)
     return a is not None and b is not None and math.isclose(a, b, rel_tol=0.0, abs_tol=1e-9)
+
+
+def _indexed_domain_closed(result: GameTestResult, action: str) -> bool:
+    target_id = f"RUBYPLAY_{action.upper()}_INDEX_DOMAIN"
+    candidates = [
+        mode
+        for mode in result.discovered_modes
+        if isinstance(mode, dict) and str(mode.get("id") or "") == target_id
+    ]
+    if not candidates:
+        return False
+
+    for mode in candidates:
+        required_raw = mode.get("required_options")
+        covered_raw = mode.get("covered_options")
+        if not isinstance(required_raw, list) or not isinstance(covered_raw, list):
+            continue
+        required = {str(value) for value in required_raw}
+        covered = {str(value) for value in covered_raw}
+        if not required or "DOMAIN_UNRESOLVED" in required:
+            continue
+        if required.issubset(covered):
+            return True
+    return False
+
+
+def _unresolved_indexed_actions(
+    result: GameTestResult,
+    attempt: SpinAttempt,
+) -> list[str]:
+    observed: set[str] = set()
+    for payload in request_payloads(result, attempt):
+        action = str(payload.get("action") or "").strip().lower()
+        if action in _INDEXED_BRANCH_ACTIONS:
+            observed.add(action)
+    return sorted(action for action in observed if not _indexed_domain_closed(result, action))
 
 
 def build_rubyplay_purchase_coverage(result: GameTestResult) -> dict[str, Any]:
@@ -54,6 +94,8 @@ def build_rubyplay_purchase_coverage(result: GameTestResult) -> dict[str, Any]:
         )
         exact_attempt = None
         attempted_with_contract = False
+        unresolved_branch_actions: list[str] = []
+        unresolved_branch_artifact = ""
 
         if contract_proven:
             for attempt in attempts_for_mode(result, mode_id):
@@ -70,10 +112,25 @@ def build_rubyplay_purchase_coverage(result: GameTestResult) -> dict[str, Any]:
                     continue
                 attempted_with_contract = True
                 if clean_terminal_attempt(attempt):
+                    unresolved = _unresolved_indexed_actions(result, attempt)
+                    if unresolved:
+                        unresolved_branch_actions = unresolved
+                        unresolved_branch_artifact = attempt.artifact_dir
+                        break
                     exact_attempt = attempt
                     break
 
-        if exact_attempt is not None:
+        if unresolved_branch_actions:
+            execution_state = "UNKNOWN"
+            terminal = True
+            artifact_dir = unresolved_branch_artifact
+            reason = (
+                "Exact RubyPlay buy_feature request reached terminal state, but indexed "
+                "choice domain coverage remains unresolved for: "
+                + ", ".join(unresolved_branch_actions)
+                + "."
+            )
+        elif exact_attempt is not None:
             execution_state = "COMPLETE"
             terminal = True
             artifact_dir = exact_attempt.artifact_dir
