@@ -28,6 +28,7 @@ from tester_spin.providers.bgaming.server_guided import (
 
 
 _LOCAL = threading.local()
+_RESOLVED_LOCAL = threading.local()
 _ORIGINAL_FLOW_CONTINUATION = _runtime.flow_continuation_command
 _ORIGINAL_PENDING_FLOW_ACTIONS = _runtime.pending_flow_actions
 _ORIGINAL_POST_COMMAND = _runtime.post_command
@@ -174,6 +175,60 @@ def _current_run() -> _ChoiceRun | None:
     return run if isinstance(run, _ChoiceRun) else None
 
 
+def begin_resolved_dynamic_choice_run() -> None:
+    _RESOLVED_LOCAL.variants = {}
+
+
+def end_resolved_dynamic_choice_run() -> None:
+    _RESOLVED_LOCAL.variants = {}
+
+
+def _resolved_registry() -> dict[
+    tuple[str, str, tuple[str, ...]],
+    dict[str, dict[str, Any]],
+]:
+    value = getattr(_RESOLVED_LOCAL, "variants", None)
+    if not isinstance(value, dict):
+        value = {}
+        _RESOLVED_LOCAL.variants = value
+    return value
+
+
+def register_resolved_dynamic_choice(
+    *,
+    scope: str,
+    command: str,
+    prefix: tuple[str, ...] | list[str],
+    label: str,
+    options: dict[str, Any],
+    source: str,
+) -> None:
+    clean_scope = str(scope or "")
+    clean_command = str(command or "")
+    clean_prefix = tuple(str(item) for item in prefix if str(item))
+    clean_label = str(label or "")
+    if not clean_scope or not clean_command or not clean_label:
+        raise ValueError("BGaming resolved dynamic choice requires scope/command/label.")
+    key = (clean_scope, clean_command, clean_prefix)
+    _resolved_registry().setdefault(key, {})[clean_label] = {
+        "options": dict(options),
+        "source": str(source or "dynamic-index-boundary-proof"),
+    }
+
+
+def _resolved_dynamic_choices(
+    scope: str,
+    command: str,
+    prefix: tuple[str, ...],
+) -> dict[str, dict[str, Any]]:
+    rows = _resolved_registry().get((scope, command, tuple(prefix)), {})
+    return {
+        str(label): dict(item)
+        for label, item in rows.items()
+        if str(label) and isinstance(item, dict)
+    }
+
+
 def _prompt_context(data: dict[str, Any], command: str) -> tuple[str, str, tuple[str, ...]] | None:
     flow = data.get("flow") if isinstance(data, dict) else None
     if not isinstance(flow, dict):
@@ -238,6 +293,12 @@ def _dynamic_prompt_for(data: dict[str, Any], command: str) -> FlowChoicePrompt 
         and str(item.get("label") or "") not in already_used
         and isinstance(item.get("options"), dict)
     }
+    for label, item in _resolved_dynamic_choices(scope, command, prefix).items():
+        if label in already_used:
+            continue
+        options = item.get("options")
+        if isinstance(options, dict):
+            payloads[label] = dict(options)
     if not payloads and not unresolved_variants:
         return None
 
@@ -670,9 +731,12 @@ def install_flow_choice_adapter() -> None:
 
 __all__ = [
     "begin_flow_choice_run",
+    "begin_resolved_dynamic_choice_run",
     "end_flow_choice_run",
+    "end_resolved_dynamic_choice_run",
     "flow_choice_probe_result",
     "flow_choice_options",
     "flow_choice_scope",
     "install_flow_choice_adapter",
+    "register_resolved_dynamic_choice",
 ]
