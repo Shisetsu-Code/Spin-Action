@@ -576,10 +576,31 @@ def dynamic_action_variants(data: dict[str, Any], action: str) -> list[dict[str,
     ]
 
 
-def dynamic_action_unresolved_variants(action: str) -> list[dict[str, Any]]:
-    """Return client-proven dynamic variants whose full payload domain is unresolved."""
-    spec = _dynamic_specs().get(str(action or ""))
-    rows = spec.get("unresolved_variants") if isinstance(spec, dict) else None
+def dynamic_action_unresolved_variants(
+    data: dict[str, Any],
+    action: str,
+) -> list[dict[str, Any]]:
+    """Return unresolved client variants only in their observed runtime state."""
+    if not isinstance(data, dict):
+        return []
+    flow = data.get("flow")
+    if not isinstance(flow, dict):
+        return []
+    command = str(action or "")
+    actions = flow.get("available_actions")
+    advertised = {str(item) for item in actions} if isinstance(actions, list) else set()
+    if command not in advertised:
+        return []
+
+    spec = _dynamic_specs().get(command)
+    if not isinstance(spec, dict):
+        return []
+    state = str(flow.get("state") or "")
+    states = spec.get("states")
+    if isinstance(states, set) and states and state not in states:
+        return []
+
+    rows = spec.get("unresolved_variants")
     if not isinstance(rows, list):
         return []
     return [dict(item) for item in rows if isinstance(item, dict)]
