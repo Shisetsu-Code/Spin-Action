@@ -83,3 +83,49 @@ def test_raw_dynamic_index_probe_scopes_fresh_run_to_target_purchase() -> None:
     )
     run.assert_called_once()
     end.assert_called_once()
+
+
+def test_raw_choice_replay_scopes_execution_to_forced_mode() -> None:
+    with tempfile.TemporaryDirectory() as temp:
+        provider = bgaming_exhaustive.BGamingProvider(Path(temp) / "data")
+        game = Game(
+            provider="bgaming",
+            slug="synthetic",
+            name="Synthetic",
+            url="https://example.invalid/game",
+        )
+        result = GameTestResult(
+            provider="bgaming",
+            slug=game.slug,
+            game_name=game.name,
+            game_url=game.url,
+            requested_spins=1,
+            successful_spins=1,
+            failed_spins=0,
+            status="OK",
+        )
+
+        with (
+            patch.object(bgaming_exhaustive, "begin_flow_choice_run"),
+            patch.object(bgaming_exhaustive, "end_flow_choice_run", return_value=[]),
+            patch.object(bgaming_exhaustive._execution, "set_execution_mode_filter") as set_filter,
+            patch.object(bgaming_exhaustive._execution, "clear_execution_mode_filter") as clear_filter,
+            patch.object(
+                bgaming_exhaustive._BGamingProvider,
+                "test_game",
+                return_value=result,
+            ),
+        ):
+            provider._raw_test(
+                game,
+                spins=1,
+                timeout_s=5.0,
+                stop_event=threading.Event(),
+                progress=lambda _message: None,
+                forced_scope="PURCHASE_A",
+                forced_command="pick_cards",
+                forced_path=("auto",),
+            )
+
+    set_filter.assert_called_once_with("PURCHASE_A")
+    clear_filter.assert_called_once()
