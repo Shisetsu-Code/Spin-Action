@@ -361,3 +361,64 @@ def test_descendant_domain_plus_root_zero_rejection_marks_root_variant_not_appli
         and row.get("prefix") == []
         for row in proofs
     )
+
+
+def test_dynamic_domain_resolution_repeats_when_replay_discovers_nested_picker() -> None:
+    from tester_spin.providers import bgaming_exhaustive
+
+    variant = {
+        "literal_options": {"mode": "any"},
+        "unresolved_fields": ["index"],
+        "source": "client",
+    }
+    graph = {
+        ("PURCHASE_A", "pick_cards", ("select",)): {
+            "scope": "PURCHASE_A",
+            "command": "pick_cards",
+            "prefix": ("select",),
+            "available": ("auto",),
+            "covered": set(),
+            "sample_counts": {},
+            "unresolved_option_variants": [dict(variant)],
+        }
+    }
+    replay_calls = 0
+
+    def probe(point: dict, _variant: dict, index: int) -> dict:
+        boundary = 2 if tuple(point["prefix"]) == ("select",) else 1
+        return {
+            "index": index,
+            "outcome": ACCEPTED if index < boundary else SEMANTIC_REJECTION,
+        }
+
+    def replay() -> None:
+        nonlocal replay_calls
+        replay_calls += 1
+        nested_key = ("PURCHASE_A", "pick_cards", ("select", "index0"))
+        if nested_key not in graph:
+            graph[nested_key] = {
+                "scope": "PURCHASE_A",
+                "command": "pick_cards",
+                "prefix": ("select", "index0"),
+                "available": ("auto",),
+                "covered": set(),
+                "sample_counts": {},
+                "unresolved_option_variants": [dict(variant)],
+            }
+
+    changed, proofs, passes = bgaming_exhaustive._resolve_dynamic_index_domains_until_stable(
+        graph,
+        probe_value=probe,
+        replay_new_options=replay,
+        max_index=8,
+        max_passes=4,
+    )
+
+    assert changed is True
+    assert replay_calls == 2
+    assert passes == 3
+    assert len([row for row in proofs if row["state"] == PROVEN]) == 2
+    assert all(
+        not point.get("unresolved_option_variants")
+        for point in graph.values()
+    )
