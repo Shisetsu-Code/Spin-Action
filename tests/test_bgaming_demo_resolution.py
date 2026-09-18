@@ -49,6 +49,37 @@ class BGamingDemoResolutionTests(unittest.TestCase):
             is_demo_url("https://example.com/hyperhive?launch_token=abc")
         )
 
+    def test_expected_identifier_probes_canonical_provider_launch(self) -> None:
+        public = "https://bgaming.com/games/alice-wonderluck"
+        canonical = (
+            "https://demo.bgaming-network.com/play/"
+            "AliceWonderLuck/FUN?server=demo"
+        )
+        alice_html = """
+        <script>window.__OPTIONS__ = {
+          "identifier":"AliceWonderLuck",
+          "api":"https://demo.bgaming-network.com/api/AliceWonderLuck/1/session",
+          "csrfTokenHeaderName":"X-CSRF-Token",
+          "csrfTokenHeaderValue":"secret"
+        };</script>
+        """
+        session = _Session(
+            responses={
+                canonical: _Response(canonical, alice_html),
+                public: _Response(public, "<html></html>"),
+            }
+        )
+
+        resolved = resolve_fresh_demo_url(
+            session,
+            public,
+            timeout_s=2,
+            expected_identifier="AliceWonderLuck",
+        )
+
+        self.assertEqual(resolved, canonical)
+        self.assertEqual(session.calls[0], (canonical, True))
+
     def test_expected_identifier_skips_unrelated_demo_candidate(self) -> None:
         public = "https://bgaming.com/games/alice-wonderluck"
         wrong = "https://demo.bgaming-network.com/play/Wrong/1/session"
