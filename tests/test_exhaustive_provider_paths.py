@@ -363,5 +363,58 @@ class ExhaustiveProviderPathTests(unittest.TestCase):
         )
 
 
+    def test_bgaming_discovery_scheduler_attempts_each_open_branch_once(self) -> None:
+        graph = {
+            ("PURCHASE_A", "pick_cards", ()): {
+                "scope": "PURCHASE_A",
+                "command": "pick_cards",
+                "prefix": (),
+                "available": ('mode="select_pick_cards"', 'mode="auto"'),
+                "sample_counts": {
+                    'mode="select_pick_cards"': 0,
+                    'mode="auto"': 0,
+                },
+            }
+        }
+        attempted = set()
+
+        first = bgaming_exhaustive._next_discovery_choice(graph, attempted)
+        self.assertEqual(
+            first,
+            ("PURCHASE_A", "pick_cards", ('mode="select_pick_cards"',)),
+        )
+        attempted.add(first)
+
+        second = bgaming_exhaustive._next_discovery_choice(graph, attempted)
+        self.assertEqual(
+            second,
+            ("PURCHASE_A", "pick_cards", ('mode="auto"',)),
+        )
+        attempted.add(second)
+
+        self.assertIsNone(
+            bgaming_exhaustive._next_discovery_choice(graph, attempted)
+        )
+
+    def test_bgaming_discovery_scheduler_skips_already_terminal_branch(self) -> None:
+        graph = {
+            ("PURCHASE_A", "pick_cards", ()): {
+                "scope": "PURCHASE_A",
+                "command": "pick_cards",
+                "prefix": (),
+                "available": ('mode="select_pick_cards"', 'mode="auto"'),
+                "sample_counts": {
+                    'mode="select_pick_cards"': 0,
+                    'mode="auto"': 1,
+                },
+            }
+        }
+
+        self.assertEqual(
+            bgaming_exhaustive._next_discovery_choice(graph, set()),
+            ("PURCHASE_A", "pick_cards", ('mode="select_pick_cards"',)),
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
