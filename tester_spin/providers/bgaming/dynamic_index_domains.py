@@ -217,6 +217,45 @@ def prove_contiguous_index_domain(
     }
 
 
+def retry_until_target(
+    run_once: Callable[[], dict[str, Any]],
+    *,
+    max_attempts: int = 6,
+) -> dict[str, Any]:
+    try:
+        limit = max(1, int(max_attempts))
+    except (TypeError, ValueError):
+        limit = 6
+
+    last: dict[str, Any] = {
+        "target_reached": False,
+        "outcome": PROTOCOL_ERROR,
+    }
+    for attempt in range(1, limit + 1):
+        try:
+            raw = run_once()
+        except BaseException as exc:
+            raw = {
+                "target_reached": False,
+                "outcome": PROTOCOL_ERROR,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+        current = dict(raw) if isinstance(raw, dict) else {}
+        current["target_attempts"] = attempt
+        last = current
+        if current.get("target_reached") is True:
+            return current
+
+    last["target_reached"] = False
+    last["target_attempts"] = limit
+    last["outcome"] = PROTOCOL_ERROR
+    last.setdefault(
+        "error",
+        f"dynamic choice target was not reached in {limit} fresh sessions",
+    )
+    return last
+
+
 def probe_contiguous_index_domain(
     probe_index: Callable[[int], dict[str, Any]],
     *,
@@ -289,5 +328,6 @@ __all__ = [
     "TRANSPORT_ERROR",
     "UNRESOLVED",
     "probe_contiguous_index_domain",
+    "retry_until_target",
     "prove_contiguous_index_domain",
 ]
