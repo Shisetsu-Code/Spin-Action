@@ -186,6 +186,8 @@ class ExhaustiveProviderPathTests(unittest.TestCase):
         self.assertEqual(mode["scope"], "PURCHASE_FUTURE_FEATURE_LEVEL_0")
         self.assertEqual(mode["parent"], "PURCHASE_FUTURE_FEATURE_LEVEL_0")
         self.assertTrue(mode["coverage_required"])
+        self.assertEqual(mode["prefix"], ["mode=select"])
+        self.assertEqual(mode["path_prefix"], ["mode=select"])
         self.assertEqual(mode["required_options"], ["mode=select", "mode=auto"])
         self.assertEqual(mode["covered_options"], ["mode=select"])
 
