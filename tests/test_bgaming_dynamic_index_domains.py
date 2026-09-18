@@ -299,3 +299,64 @@ def test_target_retry_stays_unresolved_when_picker_never_appears() -> None:
     assert observed["target_reached"] is False
     assert observed["outcome"] == PROTOCOL_ERROR
     assert observed["target_attempts"] == 4
+
+
+def test_descendant_domain_plus_root_zero_rejection_marks_root_variant_not_applicable() -> None:
+    from tester_spin.providers import bgaming_exhaustive
+
+    variant = {
+        "literal_options": {"mode": "any"},
+        "unresolved_fields": ["index"],
+        "source": "client-callsite:requestCardsPick",
+    }
+    root = {
+        "scope": "PURCHASE_A",
+        "command": "pick_cards",
+        "prefix": (),
+        "available": ('mode="select_pick_cards"', 'mode="auto"'),
+        "covered": set(),
+        "sample_counts": {},
+        "unresolved_option_variants": [dict(variant)],
+    }
+    child = {
+        "scope": "PURCHASE_A",
+        "command": "pick_cards",
+        "prefix": ('mode="select_pick_cards"',),
+        "available": ('mode="auto"',),
+        "covered": set(),
+        "sample_counts": {},
+        "unresolved_option_variants": [dict(variant)],
+    }
+    graph = {
+        ("PURCHASE_A", "pick_cards", ()): root,
+        ("PURCHASE_A", "pick_cards", ('mode="select_pick_cards"',)): child,
+    }
+
+    def probe(point: dict, _variant: dict, index: int) -> dict:
+        prefix = tuple(point.get("prefix") or ())
+        if not prefix:
+            return {"index": index, "outcome": SEMANTIC_REJECTION}
+        return {
+            "index": index,
+            "outcome": ACCEPTED if index < 2 else SEMANTIC_REJECTION,
+        }
+
+    changed, proofs = bgaming_exhaustive._resolve_dynamic_index_domains(
+        graph,
+        probe_value=probe,
+        max_index=8,
+        boundary_confirmations=2,
+    )
+
+    assert changed is True
+    assert child["unresolved_option_variants"] == []
+    assert root["unresolved_option_variants"] == []
+    assert root["dynamic_index_not_applicable"][0]["reason"] == (
+        "provider rejected index=0 at this prefix twice while the same "
+        "client variant had a proven finite domain at a descendant prefix"
+    )
+    assert any(
+        row.get("not_applicable_at_prefix") is True
+        and row.get("prefix") == []
+        for row in proofs
+    )
