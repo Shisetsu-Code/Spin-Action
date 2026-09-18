@@ -328,6 +328,7 @@ def _choice_mode_from_point(
                 separators=(",", ":"),
             )
         ),
+        "prefix": list(prefix),
         "path_prefix": list(prefix),
         "required_options": required,
         "covered_options": covered,
