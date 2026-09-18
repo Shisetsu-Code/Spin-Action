@@ -88,3 +88,82 @@ def test_probe_stops_at_first_rejection_and_repeats_only_boundary() -> None:
     assert proof["state"] == PROVEN
     assert proof["required_indices"] == [0, 1, 2]
     assert calls == [0, 1, 2, 3, 3]
+
+
+def test_proven_domain_materializes_replayable_index_options() -> None:
+    from tester_spin.providers.bgaming.dynamic_index_domains import (
+        apply_index_domain_proof,
+        dynamic_index_option_label,
+    )
+
+    point = {
+        "scope": "PURCHASE_FREESPIN_BUY_LEVEL_0",
+        "command": "pick_cards",
+        "prefix": ('mode="select_pick_cards"',),
+        "available": ('mode="auto"',),
+        "covered": {"mode=\"auto\""},
+        "sample_counts": {'mode="auto"': 1},
+        "unresolved_option_variants": [
+            {
+                "literal_options": {"mode": "any"},
+                "unresolved_fields": ["index"],
+                "source": "client-callsite:requestCardsPick",
+            }
+        ],
+    }
+    variant = point["unresolved_option_variants"][0]
+    proof = {
+        "state": PROVEN,
+        "required_indices": [0, 1, 2],
+        "covered_indices": [0, 1, 2],
+        "boundary_index": 3,
+        "boundary_confirmations": 2,
+        "probes": [],
+    }
+
+    changed = apply_index_domain_proof(point, variant, proof)
+
+    assert changed is True
+    assert point["unresolved_option_variants"] == []
+    labels = [
+        dynamic_index_option_label({"mode": "any"}, "index", index)
+        for index in range(3)
+    ]
+    assert all(label in point["available"] for label in labels)
+    assert all(label not in point["covered"] for label in labels)
+    assert point["dynamic_option_payloads"][labels[1]] == {
+        "mode": "any",
+        "index": 1,
+    }
+    assert point["dynamic_index_proofs"][0]["boundary_index"] == 3
+
+
+def test_unresolved_domain_does_not_materialize_options() -> None:
+    from tester_spin.providers.bgaming.dynamic_index_domains import apply_index_domain_proof
+
+    variant = {
+        "literal_options": {"mode": "any"},
+        "unresolved_fields": ["index"],
+        "source": "client-callsite:requestCardsPick",
+    }
+    point = {
+        "available": ('mode="auto"',),
+        "covered": set(),
+        "sample_counts": {},
+        "unresolved_option_variants": [variant],
+    }
+    proof = {
+        "state": UNRESOLVED,
+        "required_indices": [],
+        "covered_indices": [0, 1],
+        "boundary_index": None,
+        "boundary_confirmations": 0,
+        "probes": [],
+    }
+
+    changed = apply_index_domain_proof(point, variant, proof)
+
+    assert changed is False
+    assert point["unresolved_option_variants"] == [variant]
+    assert point.get("dynamic_option_payloads", {}) == {}
+    assert point["dynamic_index_proofs"][0]["state"] == UNRESOLVED
