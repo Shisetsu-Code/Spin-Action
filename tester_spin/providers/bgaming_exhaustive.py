@@ -14,6 +14,11 @@ from tester_spin.models import Game, GameTestResult
 from tester_spin.providers.base import Progress
 from tester_spin.providers.bgaming import BGamingProvider as _BGamingProvider
 from tester_spin.providers.bgaming import execution as _execution
+from tester_spin.providers.bgaming.dynamic_index_domains import (
+    PROVEN as DYNAMIC_INDEX_PROVEN,
+    apply_index_domain_proof,
+    probe_contiguous_index_domain,
+)
 from tester_spin.providers.bgaming.flow_choices import (
     begin_flow_choice_run,
     end_flow_choice_run,
@@ -374,6 +379,83 @@ def _choice_mode_from_point(
         "unresolved_option_variants": unresolved_variants,
         "source": str(point.get("source") or "runtime"),
     }
+
+
+def _resolve_dynamic_index_domains(
+    graph: dict[tuple[str, str, tuple[str, ...]], dict[str, Any]],
+    *,
+    probe_value,
+    register_option=None,
+    max_index: int = 32,
+    boundary_confirmations: int = 2,
+) -> tuple[bool, list[dict[str, Any]]]:
+    """Resolve client-proven single-index variants without guessing a domain."""
+    changed = False
+    proofs: list[dict[str, Any]] = []
+
+    ordered = sorted(
+        graph.values(),
+        key=lambda item: (
+            -len(tuple(item.get("prefix") or ())),
+            str(item.get("scope") or ""),
+            str(item.get("command") or ""),
+            tuple(str(value) for value in item.get("prefix") or ()),
+        ),
+    )
+    for point in ordered:
+        variants = [
+            dict(item)
+            for item in point.get("unresolved_option_variants") or []
+            if isinstance(item, dict)
+        ]
+        for variant in variants:
+            fields = [
+                str(value)
+                for value in variant.get("unresolved_fields") or []
+                if str(value)
+            ]
+            if fields != ["index"]:
+                continue
+
+            proof = probe_contiguous_index_domain(
+                lambda index, p=point, v=variant: probe_value(p, v, index),
+                max_index=max_index,
+                boundary_confirmations=boundary_confirmations,
+            )
+            record = {
+                **dict(proof),
+                "scope": str(point.get("scope") or ""),
+                "command": str(point.get("command") or ""),
+                "prefix": [
+                    str(value)
+                    for value in point.get("prefix") or ()
+                ],
+                "variant": dict(variant),
+            }
+            proofs.append(record)
+            before_payloads = set(
+                str(label)
+                for label in (point.get("dynamic_option_payloads") or {})
+            )
+            applied = apply_index_domain_proof(point, variant, proof)
+            if not applied:
+                continue
+            changed = True
+
+            if callable(register_option):
+                payloads = point.get("dynamic_option_payloads")
+                if isinstance(payloads, dict):
+                    for label, payload in payloads.items():
+                        if str(label) in before_payloads or not isinstance(payload, dict):
+                            continue
+                        register_option(
+                            point,
+                            str(label),
+                            dict(payload),
+                            "dynamic-index-boundary-proof",
+                        )
+
+    return changed, proofs
 
 
 def _next_missing_choice(
