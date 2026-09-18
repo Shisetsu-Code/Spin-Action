@@ -275,6 +275,71 @@ def _merge_choice_trace(
             point["sample_counts"][selected] = point["sample_counts"].get(selected, 0) + 1
 
 
+def _choice_mode_from_point(
+    point: dict[str, Any],
+    *,
+    repetitions: int = 1,
+) -> dict[str, Any]:
+    scope = str(point.get("scope") or "SPIN")
+    command = str(point.get("command") or "")
+    prefix = tuple(str(value) for value in point.get("prefix") or ())
+    required = [str(value) for value in point.get("available") or [] if str(value)]
+    try:
+        samples = max(1, int(repetitions))
+    except (TypeError, ValueError):
+        samples = 1
+    counts = point.get("sample_counts")
+    if not isinstance(counts, dict):
+        counts = {}
+
+    def count(value: str) -> int:
+        try:
+            return max(0, int(counts.get(value, 0) or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    covered = [value for value in required if count(value) >= samples]
+    mode_id = "BGAMING_FLOW_CHOICE_" + _safe_label(
+        scope
+        + "__"
+        + command
+        + "__"
+        + "__".join(prefix or ("ROOT",))
+    ).upper()
+    return {
+        "id": mode_id,
+        "kind": "CHOICE_CONTINUATION",
+        "scope": scope,
+        "parent": scope,
+        "observed": True,
+        "executable": True,
+        "wire_command": command,
+        "option_field": str(point.get("option_field") or ""),
+        "coverage_required": True,
+        "branch_signature": (
+            "BGAMING:flow-choice:"
+            + scope
+            + ":"
+            + command
+            + ":"
+            + json.dumps(
+                list(prefix),
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+        ),
+        "path_prefix": list(prefix),
+        "required_options": required,
+        "covered_options": covered,
+        "required_samples": samples,
+        "sample_counts": {
+            value: count(value)
+            for value in required
+        },
+        "source": str(point.get("source") or "runtime"),
+    }
+
+
 def _next_missing_choice(
     graph: dict[tuple[str, str, tuple[str, ...], tuple[str, ...]], dict[str, Any]],
     attempted: set[tuple[str, str, tuple[str, ...]]],
@@ -464,45 +529,14 @@ class BGamingProvider(_BGamingProvider):
             scope = str(point["scope"])
             command = str(point["command"])
             prefix = tuple(str(value) for value in point["prefix"])
-            required = [str(value) for value in point["available"]]
-            covered = [value for value in required if point["sample_counts"].get(value, 0) >= max(1, int(spins))]
             prefix_text = "ROOT" if not prefix else " → ".join(prefix)
-            mode_id = "BGAMING_FLOW_CHOICE_" + _safe_label(
-                scope
-                + "__"
-                + command
-                + "__"
-                + "__".join(prefix or ("ROOT",))
-            ).upper()
-            result.discovered_modes.append(
-                {
-                    "id": mode_id,
-                    "kind": "CHOICE_CONTINUATION",
-                    "observed": True,
-                    "executable": True,
-                    "wire_command": command,
-                    "option_field": str(point.get("option_field") or ""),
-                    "coverage_required": True,
-                    "branch_signature": (
-                        "BGAMING:flow-choice:"
-                        + scope
-                        + ":"
-                        + command
-                        + ":"
-                        + json.dumps(
-                            list(prefix),
-                            ensure_ascii=False,
-                            separators=(",", ":"),
-                        )
-                    ),
-                    "path_prefix": list(prefix),
-                    "required_options": required,
-                    "covered_options": covered,
-                    "required_samples": max(1, int(spins)),
-                    "sample_counts": dict(point["sample_counts"]),
-                    "source": str(point.get("source") or "runtime"),
-                }
+            mode = _choice_mode_from_point(
+                point,
+                repetitions=max(1, int(spins)),
             )
+            required = list(mode["required_options"])
+            covered = list(mode["covered_options"])
+            result.discovered_modes.append(mode)
             for value in required:
                 if value not in covered:
                     missing_labels.append(
