@@ -145,11 +145,16 @@ class BGamingExecutionMixin:
 
         game_json = self.game_dir(game) / "game.json"
         public_url = ""
+        expected_identifier = str(game.symbol or "").strip()
         if game_json.is_file():
             try:
                 persisted_game = json.loads(game_json.read_text(encoding="utf-8"))
                 if isinstance(persisted_game, dict):
                     public_url = str(persisted_game.get("public_url") or "").strip()
+                    if not expected_identifier:
+                        expected_identifier = str(
+                            persisted_game.get("identifier") or ""
+                        ).strip()
             except Exception:
                 public_url = ""
 
@@ -161,6 +166,7 @@ class BGamingExecutionMixin:
                     session,
                     execution_url,
                     timeout_s=timeout_s,
+                    expected_identifier=expected_identifier,
                 )
             except Exception as exc:
                 fresh_demo_url = ""
@@ -236,6 +242,7 @@ class BGamingExecutionMixin:
                     session,
                     execution_url,
                     timeout_s=timeout_s,
+                    expected_identifier=expected_identifier,
                 )
             except requests.HTTPError as launch_exc:
                 status_code = (
@@ -257,6 +264,7 @@ class BGamingExecutionMixin:
                     session,
                     public_url,
                     timeout_s=timeout_s,
+                    expected_identifier=expected_identifier,
                 )
                 if not fresh_demo_url or fresh_demo_url == execution_url:
                     session.close()
@@ -285,6 +293,15 @@ class BGamingExecutionMixin:
                     session,
                     execution_url,
                     timeout_s=timeout_s,
+                    expected_identifier=expected_identifier,
+                )
+            if (
+                expected_identifier
+                and runtime.identifier.casefold() != expected_identifier.casefold()
+            ):
+                raise ValueError(
+                    "BGaming: demo resuelto no corresponde al juego solicitado: "
+                    f"expected={expected_identifier!r}, got={runtime.identifier!r}."
                 )
             game.symbol = runtime.identifier
 
@@ -856,6 +873,7 @@ class BGamingExecutionMixin:
                     new_session,
                     execution_url,
                     timeout_s=timeout_s,
+                    expected_identifier=expected_identifier,
                 )
                 if active_profile is not None:
                     new_runtime.request_extra_data.update(
@@ -865,6 +883,7 @@ class BGamingExecutionMixin:
                     new_runtime,
                     "init",
                     timeout_s=timeout_s,
+                    expected_identifier=expected_identifier,
                 )
                 new_classification = classify_runtime(new_runtime, new_init)
                 if new_classification.family != API_V2:
