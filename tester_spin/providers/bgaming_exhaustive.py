@@ -553,6 +553,40 @@ def _resolve_dynamic_index_domains(
     return changed, proofs
 
 
+def _resolve_dynamic_index_domains_until_stable(
+    graph: dict[tuple[str, str, tuple[str, ...]], dict[str, Any]],
+    *,
+    probe_value,
+    replay_new_options,
+    register_option=None,
+    max_index: int = 32,
+    boundary_confirmations: int = 2,
+    max_passes: int = 8,
+) -> tuple[bool, list[dict[str, Any]], int]:
+    changed_any = False
+    proofs: list[dict[str, Any]] = []
+    try:
+        guard = max(1, int(max_passes))
+    except (TypeError, ValueError):
+        guard = 8
+
+    passes = 0
+    for passes in range(1, guard + 1):
+        changed, rows = _resolve_dynamic_index_domains(
+            graph,
+            probe_value=probe_value,
+            register_option=register_option,
+            max_index=max_index,
+            boundary_confirmations=boundary_confirmations,
+        )
+        proofs.extend(rows)
+        if not changed:
+            break
+        changed_any = True
+        replay_new_options()
+    return changed_any, proofs, passes
+
+
 def _next_missing_choice(
     graph: dict[tuple[str, str, tuple[str, ...]], dict[str, Any]],
     attempted: set[tuple[str, str, tuple[str, ...]]],
