@@ -271,5 +271,48 @@ class ExhaustiveProviderPathTests(unittest.TestCase):
             pragmatic_exhaustive._FORCE_LOCAL.state = state_before
 
 
+    def test_bgaming_unresolved_dynamic_choice_variant_keeps_mode_open(self) -> None:
+        graph = {}
+        bgaming_exhaustive._merge_choice_trace(
+            graph,
+            [
+                {
+                    "scope": "PURCHASE_FREESPIN_BUY_LEVEL_0",
+                    "command": "pick_cards",
+                    "option_field": "<options>",
+                    "source": "server-guided-client",
+                    "prefix": [],
+                    "available": [
+                        'mode="select_pick_cards"',
+                        'mode="auto"',
+                    ],
+                    "selected": 'mode="auto"',
+                    "path_after": ['mode="auto"'],
+                    "unresolved_option_variants": [
+                        {
+                            "literal_options": {"mode": "any"},
+                            "unresolved_fields": ["index"],
+                            "source": "client-callsite:requestCardsPick",
+                        }
+                    ],
+                }
+            ],
+            complete=True,
+        )
+        self.assertEqual(len(graph), 1)
+        point = next(iter(graph.values()))
+        mode = bgaming_exhaustive._choice_mode_from_point(point, repetitions=1)
+
+        self.assertIn("DOMAIN_UNRESOLVED", mode["required_options"])
+        self.assertEqual(
+            mode["unresolved_option_variants"][0]["literal_options"],
+            {"mode": "any"},
+        )
+        self.assertEqual(
+            mode["unresolved_option_variants"][0]["unresolved_fields"],
+            ["index"],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
