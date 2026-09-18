@@ -110,16 +110,39 @@ def observed_index_prompts(
 ) -> dict[tuple[str, str, tuple[str, ...]], set[int]]:
     """Return indexed prompt points keyed by parent/action/path prefix.
 
-    Select prompts are always path-sensitive. Consecutive pick requests share the
-    same picker domain, but a later pick after another action starts a new domain
-    at the current indexed path. Prefix tokens include the action name so mixed
-    pick/select paths cannot collide.
+    Runtime attempts are primary. Persisted attempt directories are also valid
+    evidence and keep the audit deterministic when results are reloaded without
+    materialized SpinAttempt objects.
     """
     found: dict[tuple[str, str, tuple[str, ...]], set[int]] = {}
+    sources: list[tuple[str, Path]] = []
+    seen_roots: set[str] = set()
+
     for attempt in result.attempts:
         root = Path(str(attempt.artifact_dir or ""))
         if not root.is_dir():
             continue
+        marker = str(root.resolve())
+        if marker in seen_roots:
+            continue
+        seen_roots.add(marker)
+        sources.append((str(attempt.mode_id or "UNKNOWN"), root))
+
+    run_root = Path(str(result.run_dir or ""))
+    if run_root.is_dir():
+        for root in sorted(run_root.glob("*/attempt-*")):
+            if not root.is_dir():
+                continue
+            try:
+                marker = str(root.resolve())
+            except OSError:
+                marker = str(root)
+            if marker in seen_roots:
+                continue
+            seen_roots.add(marker)
+            sources.append((root.parent.name or "UNKNOWN", root))
+
+    for parent_mode, root in sources:
         path_tokens: list[str] = []
         last_indexed_action = ""
         active_pick_prefix: tuple[str, ...] | None = None
@@ -144,7 +167,7 @@ def observed_index_prompts(
                 active_pick_prefix = None
                 prompt_prefix = tuple(path_tokens)
 
-            key = (str(attempt.mode_id or "UNKNOWN"), action, prompt_prefix)
+            key = (parent_mode, action, prompt_prefix)
             found.setdefault(key, set()).add(index)
             path_tokens.append(_path_token(action, index))
             last_indexed_action = action
@@ -936,6 +959,28 @@ def expand_rubyplay_index_domains(
             **proof,
         }
         summaries.append(summary)
+        probe_outcomes = {
+            str(row.get("outcome") or "").upper()
+            for row in proof.get("probes", [])
+            if isinstance(row, dict)
+        }
+        transport_only_failure = (
+            "TRANSPORT_ERROR" in probe_outcomes
+            and not ({"TERMINAL", "SEMANTIC_REJECTION"} & probe_outcomes)
+        )
+        if transport_only_failure:
+            mode_id = choice_domain_mode_id(parent_mode, action, prefix)
+            result.discovered_modes = [
+                mode
+                for mode in result.discovered_modes
+                if not (
+                    isinstance(mode, dict)
+                    and str(mode.get("id") or "") == mode_id
+                    and str(mode.get("kind") or "").upper() == "INDEXED_CHOICE"
+                )
+            ]
+            continue
+
         _upsert_prompt_mode(
             result,
             parent_mode=parent_mode,
