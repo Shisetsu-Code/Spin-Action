@@ -14,13 +14,18 @@ _TRANSPORT_ERROR = "TRANSPORT_ERROR"
 _PROTOCOL_ERROR = "PROTOCOL_ERROR"
 _INDEX_ARGUMENT_NOUN = r"(?:index|choice|option|selection)"
 _INDEX_ARGUMENT_ERROR_PATTERNS = (
-    re.compile(rf"\\b(?:invalid|unknown|unsupported|bad|illegal)\\s+{_INDEX_ARGUMENT_NOUN}\b", re.I),
     re.compile(
-        rf"\\b{_INDEX_ARGUMENT_NOUN}\\b.{{0,40}}\\b(?:invalid|unknown|unsupported|bad|illegal|out\\s+of\\s+range)\b",
+        rf"\b(?:invalid|unknown|unsupported|bad|illegal)\s+{_INDEX_ARGUMENT_NOUN}\b",
         re.I,
     ),
-    re.compile(rf"\\bno\\s+such\\s+{_INDEX_ARGUMENT_NOUN}\b", re.I),
+    re.compile(
+        rf"\b{_INDEX_ARGUMENT_NOUN}\b.{{0,40}}\b"
+        rf"(?:invalid|unknown|unsupported|bad|illegal|out\s+of\s+range)\b",
+        re.I,
+    ),
+    re.compile(rf"\bno\s+such\s+{_INDEX_ARGUMENT_NOUN}\b", re.I),
 )
+
 
 
 def _index(row: dict[str, Any]) -> int | None:
