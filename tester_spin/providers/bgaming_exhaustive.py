@@ -267,8 +267,30 @@ def _merge_choice_trace(
                 "available": available,
                 "covered": set(),
                 "sample_counts": {},
+                "unresolved_option_variants": [],
             },
         )
+        unresolved_store = point.setdefault("unresolved_option_variants", [])
+        for raw_variant in item.get("unresolved_option_variants") or []:
+            if not isinstance(raw_variant, dict):
+                continue
+            normalized = {
+                "literal_options": dict(raw_variant.get("literal_options") or {}),
+                "unresolved_fields": [
+                    str(field)
+                    for field in raw_variant.get("unresolved_fields") or []
+                    if str(field)
+                ],
+                "source": str(raw_variant.get("source") or ""),
+            }
+            marker = json.dumps(normalized, ensure_ascii=False, sort_keys=True)
+            existing = {
+                json.dumps(value, ensure_ascii=False, sort_keys=True)
+                for value in unresolved_store
+                if isinstance(value, dict)
+            }
+            if marker not in existing:
+                unresolved_store.append(normalized)
         selected = str(item.get("selected") or "")
         if complete and selected in available:
             point["covered"].add(selected)
@@ -284,6 +306,13 @@ def _choice_mode_from_point(
     command = str(point.get("command") or "")
     prefix = tuple(str(value) for value in point.get("prefix") or ())
     required = [str(value) for value in point.get("available") or [] if str(value)]
+    unresolved_variants = [
+        dict(item)
+        for item in point.get("unresolved_option_variants") or []
+        if isinstance(item, dict)
+    ]
+    if unresolved_variants:
+        required.append("DOMAIN_UNRESOLVED")
     try:
         samples = max(1, int(repetitions))
     except (TypeError, ValueError):
@@ -337,6 +366,7 @@ def _choice_mode_from_point(
             value: count(value)
             for value in required
         },
+        "unresolved_option_variants": unresolved_variants,
         "source": str(point.get("source") or "runtime"),
     }
 
@@ -579,6 +609,11 @@ class BGamingProvider(_BGamingProvider):
                             value
                             for value in point["available"]
                             if value in point["covered"]
+                        ],
+                        "unresolved_option_variants": [
+                            dict(item)
+                            for item in point.get("unresolved_option_variants") or []
+                            if isinstance(item, dict)
                         ],
                         "source": str(point.get("source") or "runtime"),
                     }
