@@ -160,6 +160,55 @@ class BGamingFarmContractTests(unittest.TestCase):
             self.assertEqual(by_id["FREESPIN"]["evidence"], "DEMOSTRADO")
             self.assertEqual(validate_bgaming_farm_contract(contract), [])
 
+    def test_complete_flow_choice_is_demonstrated_and_preserves_parent_prefix(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            _write_game_json(root, profile=_profile())
+            result = _result()
+            result.discovered_modes.append(
+                {
+                    "id": "BGAMING_FLOW_CHOICE_PURCHASE_FREESPIN_BUY__PICK__ROOT",
+                    "kind": "CHOICE_CONTINUATION",
+                    "scope": "PURCHASE_FREESPIN_BUY",
+                    "parent": "PURCHASE_FREESPIN_BUY",
+                    "prefix": ["mode=select"],
+                    "path_prefix": ["mode=select"],
+                    "wire_command": "pick_cards",
+                    "option_field": "mode",
+                    "observed": True,
+                    "executable": True,
+                    "coverage_required": True,
+                    "branch_signature": (
+                        "BGAMING:flow-choice:PURCHASE_FREESPIN_BUY:"
+                        "pick_cards:[\"mode=select\"]"
+                    ),
+                    "required_options": ["mode=select", "mode=auto"],
+                    "covered_options": ["mode=select", "mode=auto"],
+                    "required_samples": 1,
+                    "sample_counts": {"mode=select": 1, "mode=auto": 1},
+                    "source": "client-proven",
+                }
+            )
+
+            contract = build_bgaming_farm_contract(_game(), result, root)
+
+        self.assertTrue(contract["ready"], contract["unresolved"])
+        by_id = {mode["id"]: mode for mode in contract["modes"]}
+        choice = by_id[
+            "BGAMING_FLOW_CHOICE_PURCHASE_FREESPIN_BUY__PICK__ROOT"
+        ]
+        self.assertEqual(choice["evidence"], "DEMOSTRADO")
+        self.assertEqual(choice["options"]["parent"], "PURCHASE_FREESPIN_BUY")
+        self.assertEqual(choice["options"]["prefix"], ["mode=select"])
+        self.assertEqual(
+            choice["options"]["required_options"],
+            ["mode=select", "mode=auto"],
+        )
+        self.assertEqual(
+            choice["options"]["covered_options"],
+            ["mode=select", "mode=auto"],
+        )
+
     def test_non_demonstrated_required_mode_blocks_promotion(self) -> None:
         for evidence in ("NO_VALIDADO", "CANDIDATO_WIRE", "SOLO_ANUNCIADO"):
             with self.subTest(evidence=evidence), tempfile.TemporaryDirectory() as temp:
