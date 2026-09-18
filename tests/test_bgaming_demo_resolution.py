@@ -17,12 +17,17 @@ class _Response:
 
 
 class _Session:
-    def __init__(self, response: _Response) -> None:
+    def __init__(self, response: _Response | None = None, responses: dict[str, _Response] | None = None) -> None:
         self.response = response
+        self.responses = dict(responses or {})
         self.calls: list[tuple[str, bool]] = []
 
     def get(self, url: str, *, timeout: float, allow_redirects: bool = False):
         self.calls.append((url, allow_redirects))
+        if url in self.responses:
+            return self.responses[url]
+        if self.response is None:
+            raise AssertionError(f"unexpected GET: {url}")
         return self.response
 
 
@@ -43,6 +48,69 @@ class BGamingDemoResolutionTests(unittest.TestCase):
         self.assertFalse(
             is_demo_url("https://example.com/hyperhive?launch_token=abc")
         )
+
+    def test_expected_identifier_skips_unrelated_demo_candidate(self) -> None:
+        public = "https://bgaming.com/games/alice-wonderluck"
+        wrong = "https://demo.bgaming-network.com/play/Wrong/1/session"
+        alice = "https://demo.bgaming-network.com/play/AliceWonderLuck/1/session"
+        page = _Response(
+            public,
+            f'<a href="{wrong}">wrong</a><a href="{alice}">alice</a>',
+        )
+        wrong_html = """
+        <script>window.__OPTIONS__ = {
+          "identifier":"WrongGame",
+          "api":"https://demo.bgaming-network.com/api/WrongGame/1/session",
+          "csrfTokenHeaderName":"X-CSRF-Token",
+          "csrfTokenHeaderValue":"secret"
+        };</script>
+        """
+        alice_html = """
+        <script>window.__OPTIONS__ = {
+          "identifier":"AliceWonderLuck",
+          "api":"https://demo.bgaming-network.com/api/AliceWonderLuck/1/session",
+          "csrfTokenHeaderName":"X-CSRF-Token",
+          "csrfTokenHeaderValue":"secret"
+        };</script>
+        """
+        session = _Session(
+            responses={
+                public: page,
+                wrong: _Response(wrong, wrong_html),
+                alice: _Response(alice, alice_html),
+            }
+        )
+
+        resolved = resolve_fresh_demo_url(
+            session,
+            public,
+            timeout_s=2,
+            expected_identifier="AliceWonderLuck",
+        )
+
+        self.assertEqual(resolved, alice)
+
+    def test_direct_demo_identifier_mismatch_is_rejected(self) -> None:
+        demo = "https://demo.bgaming-network.com/play/Wrong/1/session"
+        html = """
+        <script>window.__OPTIONS__ = {
+          "identifier":"WrongGame",
+          "api":"https://demo.bgaming-network.com/api/WrongGame/1/session",
+          "csrfTokenHeaderName":"X-CSRF-Token",
+          "csrfTokenHeaderValue":"secret"
+        };</script>
+        """
+        session = _Session(_Response(demo, html))
+
+        resolved = resolve_fresh_demo_url(
+            session,
+            demo,
+            timeout_s=2,
+            expected_identifier="AliceWonderLuck",
+        )
+
+        self.assertEqual(resolved, "")
+        self.assertEqual(session.calls, [(demo, True)])
 
     def test_public_page_redirect_to_hyperhive_is_returned_when_bootstrap_is_valid(self) -> None:
         final_url = (
