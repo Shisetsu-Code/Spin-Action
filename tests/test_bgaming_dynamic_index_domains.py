@@ -167,3 +167,86 @@ def test_unresolved_domain_does_not_materialize_options() -> None:
     assert point["unresolved_option_variants"] == [variant]
     assert point.get("dynamic_option_payloads", {}) == {}
     assert point["dynamic_index_proofs"][0]["state"] == UNRESOLVED
+
+
+def test_exhaustive_resolver_probes_and_registers_proven_domain() -> None:
+    from tester_spin.providers import bgaming_exhaustive
+
+    point = {
+        "scope": "PURCHASE_FREESPIN_BUY_LEVEL_0",
+        "command": "pick_cards",
+        "prefix": ('mode="select_pick_cards"',),
+        "available": ('mode="auto"',),
+        "covered": {'mode="auto"'},
+        "sample_counts": {'mode="auto"': 1},
+        "unresolved_option_variants": [
+            {
+                "literal_options": {"mode": "any"},
+                "unresolved_fields": ["index"],
+                "source": "client-callsite:requestCardsPick",
+            }
+        ],
+    }
+    graph = {
+        ("PURCHASE_FREESPIN_BUY_LEVEL_0", "pick_cards", ('mode="select_pick_cards"',)): point
+    }
+    calls: list[int] = []
+    registered: list[tuple[str, dict]] = []
+
+    def probe(_point: dict, _variant: dict, index: int) -> dict:
+        calls.append(index)
+        return {
+            "index": index,
+            "outcome": ACCEPTED if index < 3 else SEMANTIC_REJECTION,
+        }
+
+    changed, proofs = bgaming_exhaustive._resolve_dynamic_index_domains(
+        graph,
+        probe_value=probe,
+        register_option=lambda _point, label, payload, _source: registered.append(
+            (label, payload)
+        ),
+        max_index=8,
+        boundary_confirmations=2,
+    )
+
+    assert changed is True
+    assert calls == [0, 1, 2, 3, 3]
+    assert len(proofs) == 1
+    assert proofs[0]["state"] == PROVEN
+    assert point["unresolved_option_variants"] == []
+    assert len(registered) == 3
+    assert registered[2][1] == {"mode": "any", "index": 2}
+
+
+def test_exhaustive_resolver_ignores_non_index_dynamic_variants() -> None:
+    from tester_spin.providers import bgaming_exhaustive
+
+    point = {
+        "scope": "PURCHASE_A",
+        "command": "choose",
+        "prefix": (),
+        "available": ("auto",),
+        "covered": set(),
+        "sample_counts": {},
+        "unresolved_option_variants": [
+            {
+                "literal_options": {"mode": "manual"},
+                "unresolved_fields": ["row", "column"],
+                "source": "client",
+            }
+        ],
+    }
+    graph = {("PURCHASE_A", "choose", ()): point}
+
+    changed, proofs = bgaming_exhaustive._resolve_dynamic_index_domains(
+        graph,
+        probe_value=lambda *_args: (_ for _ in ()).throw(
+            AssertionError("non-index variant must not be probed")
+        ),
+        max_index=8,
+    )
+
+    assert changed is False
+    assert proofs == []
+    assert point["unresolved_option_variants"]
