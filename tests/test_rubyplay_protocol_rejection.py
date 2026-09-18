@@ -22,6 +22,33 @@ class RubyPlayProtocolRejectionTests(unittest.TestCase):
         self.assertEqual(outcome["provider_status"], "error")
         self.assertEqual(outcome["provider_error"], "invalid index")
 
+    def test_nested_provider_index_error_is_semantic_rejection(self) -> None:
+        outcome = classify_probe_failure(
+            ValueError("RubyPlay select: status='error'."),
+            last_payload={
+                "status": "error",
+                "topic": "gameserver/select",
+                "errors": [
+                    {"code": "INVALID_ARGUMENT", "message": "invalid index"},
+                ],
+            },
+            action="select",
+        )
+        self.assertEqual(outcome["outcome"], "SEMANTIC_REJECTION")
+        self.assertIn("invalid index", outcome["provider_error"])
+
+    def test_nested_unrelated_error_cannot_define_index_boundary(self) -> None:
+        outcome = classify_probe_failure(
+            ValueError("RubyPlay select: status='error'."),
+            last_payload={
+                "status": "error",
+                "topic": "gameserver/select",
+                "errors": [{"message": "session expired"}],
+            },
+            action="select",
+        )
+        self.assertEqual(outcome["outcome"], "PROTOCOL_ERROR")
+
     def test_unrelated_provider_error_cannot_define_index_boundary(self) -> None:
         outcome = classify_probe_failure(
             ValueError("RubyPlay select: status='error'."),
