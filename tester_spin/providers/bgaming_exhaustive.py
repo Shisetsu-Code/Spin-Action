@@ -383,6 +383,16 @@ def _choice_mode_from_point(
             for value in required
         },
         "unresolved_option_variants": unresolved_variants,
+        "dynamic_index_proofs": [
+            dict(item)
+            for item in point.get("dynamic_index_proofs") or []
+            if isinstance(item, dict)
+        ],
+        "dynamic_index_not_applicable": [
+            dict(item)
+            for item in point.get("dynamic_index_not_applicable") or []
+            if isinstance(item, dict)
+        ],
         "source": str(point.get("source") or "runtime"),
     }
 
@@ -1010,6 +1020,23 @@ class BGamingProvider(_BGamingProvider):
                             for item in point.get("unresolved_option_variants") or []
                             if isinstance(item, dict)
                         ],
+                        "dynamic_index_proofs": [
+                            dict(item)
+                            for item in point.get("dynamic_index_proofs") or []
+                            if isinstance(item, dict)
+                        ],
+                        "dynamic_index_not_applicable": [
+                            dict(item)
+                            for item in point.get("dynamic_index_not_applicable") or []
+                            if isinstance(item, dict)
+                        ],
+                        "dynamic_option_payloads": {
+                            str(label): dict(payload)
+                            for label, payload in (
+                                point.get("dynamic_option_payloads") or {}
+                            ).items()
+                            if str(label) and isinstance(payload, dict)
+                        },
                         "source": str(point.get("source") or "runtime"),
                     }
                     for point in graph.values()
