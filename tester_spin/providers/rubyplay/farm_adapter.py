@@ -11,6 +11,7 @@ from tester_spin.providers.result_farm_contract import (
     build_result_farm_contract,
     validate_result_farm_contract,
 )
+from tester_spin.providers.rubyplay.choice_domains import rubyplay_choice_domain_is_proven
 from tester_spin.providers.rubyplay.choice_exhaustive import RubyPlayProvider as _RubyPlayProvider
 from tester_spin.providers.rubyplay.feature_sessions import build_rubyplay_feature_sessions
 from tester_spin.providers.rubyplay.purchase_coverage import build_rubyplay_purchase_coverage
@@ -61,6 +62,70 @@ _SPEC = ProviderFarmSpec(
         "known_continuation_actions": ["freespin", "respin", "minispin", "select", "pick"],
     },
 )
+
+
+def _gate_rubyplay_choice_domains(
+    contract: dict,
+    result: GameTestResult,
+) -> dict:
+    unproven: set[str] = set()
+    for mode in result.discovered_modes:
+        if not isinstance(mode, dict):
+            continue
+        if str(mode.get("kind") or "").upper() != "INDEXED_CHOICE":
+            continue
+        if rubyplay_choice_domain_is_proven(mode):
+            continue
+        mode_id = str(mode.get("id") or "").strip()
+        if mode_id:
+            unproven.add(mode_id)
+
+    if not unproven:
+        return contract
+
+    unresolved = contract.get("unresolved")
+    if not isinstance(unresolved, list):
+        unresolved = []
+        contract["unresolved"] = unresolved
+    for mode_id in sorted(unproven):
+        reason = f"RUBYPLAY_CHOICE_DOMAIN_UNPROVEN:{mode_id}"
+        if reason not in unresolved:
+            unresolved.append(reason)
+
+    modes = contract.get("modes")
+    if isinstance(modes, list):
+        for mode in modes:
+            if not isinstance(mode, dict):
+                continue
+            if str(mode.get("id") or "") not in unproven:
+                continue
+            mode["evidence"] = "NO_VALIDADO"
+            mode["required"] = True
+
+    contract["ready"] = False
+    return contract
+
+
+def _gate_rubyplay_execution_choices(contract: dict) -> dict:
+    unresolved = contract.get("unresolved")
+    blocked: set[str] = set()
+    if isinstance(unresolved, list):
+        prefix = "RUBYPLAY_CHOICE_DOMAIN_UNPROVEN:"
+        blocked = {
+            str(value)[len(prefix):]
+            for value in unresolved
+            if str(value).startswith(prefix)
+        }
+    structure = contract.get("execution_structure")
+    choices = structure.get("choices") if isinstance(structure, dict) else None
+    if isinstance(choices, list):
+        for choice in choices:
+            if (
+                isinstance(choice, dict)
+                and str(choice.get("mode_id") or "") in blocked
+            ):
+                choice["coverage_complete"] = False
+    return contract
 
 
 class _RateLimitedRubyPlaySession:
@@ -181,10 +246,12 @@ class RubyPlayProvider(_RubyPlayProvider):
 
     def build_farm_contract(self, game: Game, result: GameTestResult) -> dict:
         contract = build_result_farm_contract(game, result, self.game_dir(game), _SPEC)
+        contract = _gate_rubyplay_choice_domains(contract, result)
         protocol = contract.get("protocol")
         stable = protocol.get("stable_metadata") if isinstance(protocol, dict) else {}
         domains = select_domains(stable, ("bet_profile", "client_profile"))
-        return attach_execution_structure(contract, provider_domains=domains)
+        contract = attach_execution_structure(contract, provider_domains=domains)
+        return _gate_rubyplay_execution_choices(contract)
 
     def validate_farm_contract(self, contract: dict) -> list[str]:
         return validate_result_farm_contract(contract, _SPEC)
