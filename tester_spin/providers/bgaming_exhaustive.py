@@ -22,7 +22,9 @@ from tester_spin.providers.bgaming.dynamic_index_domains import (
 from tester_spin.providers.bgaming.flow_choices import (
     begin_flow_choice_run,
     end_flow_choice_run,
+    flow_choice_probe_result,
     install_flow_choice_adapter,
+    register_resolved_dynamic_choice,
 )
 
 
@@ -520,6 +522,56 @@ class BGamingProvider(_BGamingProvider):
         finally:
             trace = end_flow_choice_run()
         return result, trace
+
+    def _raw_dynamic_index_probe(
+        self,
+        game: Game,
+        *,
+        scope: str,
+        command: str,
+        prefix: tuple[str, ...],
+        variant: dict[str, Any],
+        index: int,
+        timeout_s: float,
+        stop_event: threading.Event,
+        progress: Progress,
+    ) -> tuple[GameTestResult, list[dict[str, Any]], dict[str, Any]]:
+        from tester_spin.providers.bgaming.structural_map import reset_capture
+
+        reset_capture()
+        literal_options = dict(variant.get("literal_options") or {})
+        dynamic_probe = {
+            "scope": str(scope),
+            "command": str(command),
+            "prefix": [str(value) for value in prefix],
+            "literal_options": literal_options,
+            "field": "index",
+            "value": int(index),
+        }
+        _execution.set_execution_mode_filter(str(scope))
+        begin_flow_choice_run(
+            forced_scope=str(scope),
+            forced_command=str(command),
+            forced_path=tuple(str(value) for value in prefix),
+            dynamic_probe=dynamic_probe,
+        )
+        probe: dict[str, Any] = {}
+        try:
+            result = _BGamingProvider.test_game(
+                self,
+                game,
+                spins=1,
+                timeout_s=timeout_s,
+                stop_event=stop_event,
+                progress=progress,
+            )
+            probe = flow_choice_probe_result()
+        finally:
+            if not probe:
+                probe = flow_choice_probe_result()
+            trace = end_flow_choice_run()
+            _execution.clear_execution_mode_filter()
+        return result, trace, probe
 
     def _run_with_flow_choice_coverage(
         self,
