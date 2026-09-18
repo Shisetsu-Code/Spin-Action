@@ -198,6 +198,81 @@ class AllProviderFarmContractTests(unittest.TestCase):
                         contract["unresolved"],
                     )
 
+    def test_rubyplay_farm_contract_rejects_finite_choice_without_domain_authority(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            provider = RubyPlayProvider(root)
+            game = self._game("rubyplay")
+            result = self._result("rubyplay")
+            result.discovered_modes.append(
+                {
+                    "id": "SPIN__SELECT_INDEX_DOMAIN",
+                    "kind": "INDEXED_CHOICE",
+                    "parent": "SPIN",
+                    "prefix": [],
+                    "wire_command": "select",
+                    "observed": True,
+                    "executable": True,
+                    "coverage_required": True,
+                    "required_options": ["0", "1"],
+                    "covered_options": ["0", "1"],
+                    "required_samples": 1,
+                    "sample_counts": {"0": 1, "1": 1},
+                }
+            )
+
+            contract = provider.build_farm_contract(game, result)
+
+        self.assertFalse(contract["ready"])
+        self.assertIn(
+            "RUBYPLAY_CHOICE_DOMAIN_UNPROVEN:SPIN__SELECT_INDEX_DOMAIN",
+            contract["unresolved"],
+        )
+        choice = next(
+            item
+            for item in contract["execution_structure"]["choices"]
+            if item["mode_id"] == "SPIN__SELECT_INDEX_DOMAIN"
+        )
+        self.assertFalse(choice["coverage_complete"])
+
+    def test_rubyplay_farm_contract_accepts_authoritative_rejection_window_domain(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            provider = RubyPlayProvider(root)
+            game = self._game("rubyplay")
+            result = self._result("rubyplay")
+            result.discovered_modes.append(
+                {
+                    "id": "SPIN__SELECT_INDEX_DOMAIN",
+                    "kind": "INDEXED_CHOICE",
+                    "parent": "SPIN",
+                    "prefix": [],
+                    "wire_command": "select",
+                    "observed": True,
+                    "executable": True,
+                    "coverage_required": True,
+                    "domain_authority": "isolated-live-server-rejection-window",
+                    "boundary_index": 2,
+                    "boundary_confirmations": 2,
+                    "rejection_span": 2,
+                    "required_options": ["0", "1"],
+                    "covered_options": ["0", "1"],
+                    "required_samples": 1,
+                    "sample_counts": {"0": 1, "1": 1},
+                    "observed_indices": [0, 1],
+                }
+            )
+
+            contract = provider.build_farm_contract(game, result)
+
+        self.assertTrue(contract["ready"], contract["unresolved"])
+        choice = next(
+            item
+            for item in contract["execution_structure"]["choices"]
+            if item["mode_id"] == "SPIN__SELECT_INDEX_DOMAIN"
+        )
+        self.assertTrue(choice["coverage_complete"])
+
     def test_every_active_provider_promotes_ready_contract_through_exporter(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
