@@ -4,12 +4,20 @@ import threading
 from dataclasses import dataclass, field
 from typing import Any
 
+import requests
+
 from tester_spin.providers.bgaming import execution as _execution
 from tester_spin.providers.bgaming import runtime as _runtime
 from tester_spin.providers.bgaming.contracts import (
     choice_costs,
     choice_values,
     command_contract,
+)
+from tester_spin.providers.bgaming.dynamic_index_domains import (
+    ACCEPTED,
+    PROTOCOL_ERROR,
+    SEMANTIC_REJECTION,
+    TRANSPORT_ERROR,
 )
 from tester_spin.providers.bgaming.server_guided import (
     dynamic_action_option_fields,
@@ -85,6 +93,8 @@ class _ChoiceRun:
     pending: FlowChoicePrompt | None = None
     candidates: list[FlowChoicePrompt] = field(default_factory=list)
     validation_debits: dict[str, list[float]] = field(default_factory=dict)
+    dynamic_probe: dict[str, Any] = field(default_factory=dict)
+    probe_result: dict[str, Any] = field(default_factory=dict)
 
 
 def _clean(value: Any) -> str:
@@ -136,12 +146,19 @@ def begin_flow_choice_run(
     forced_scope: str = "",
     forced_command: str = "",
     forced_path: tuple[str, ...] | list[str] = (),
+    dynamic_probe: dict[str, Any] | None = None,
 ) -> None:
     _LOCAL.run = _ChoiceRun(
         forced_scope=str(forced_scope or ""),
         forced_command=str(forced_command or ""),
         forced_path=tuple(str(item) for item in forced_path if str(item)),
+        dynamic_probe=dict(dynamic_probe) if isinstance(dynamic_probe, dict) else {},
     )
+
+
+def flow_choice_probe_result() -> dict[str, Any]:
+    run = _current_run()
+    return dict(run.probe_result) if run is not None else {}
 
 
 def end_flow_choice_run() -> list[dict[str, Any]]:
@@ -200,8 +217,9 @@ def _static_prompt_for(
 
 def _dynamic_prompt_for(data: dict[str, Any], command: str) -> FlowChoicePrompt | None:
     variants = dynamic_action_variants(data, command)
+    unresolved_variants = dynamic_action_unresolved_variants(command)
     context = _prompt_context(data, command)
-    if not variants or context is None:
+    if context is None or (not variants and not unresolved_variants):
         return None
     scope, round_id, prefix = context
 
@@ -220,7 +238,7 @@ def _dynamic_prompt_for(data: dict[str, Any], command: str) -> FlowChoicePrompt 
         and str(item.get("label") or "") not in already_used
         and isinstance(item.get("options"), dict)
     }
-    if not payloads:
+    if not payloads and not unresolved_variants:
         return None
 
     fields = dynamic_action_option_fields(command)
@@ -234,7 +252,7 @@ def _dynamic_prompt_for(data: dict[str, Any], command: str) -> FlowChoicePrompt 
         prefix=prefix,
         available=tuple(payloads),
         option_payloads=payloads,
-        unresolved_option_variants=dynamic_action_unresolved_variants(command),
+        unresolved_option_variants=unresolved_variants,
     )
 
 
@@ -300,6 +318,57 @@ def _prompts_for(data: dict[str, Any]) -> list[FlowChoicePrompt]:
     return cached
 
 
+def _matching_dynamic_probe(
+    run: _ChoiceRun,
+    prompt: FlowChoicePrompt,
+) -> dict[str, Any] | None:
+    probe = run.dynamic_probe
+    if not isinstance(probe, dict) or not probe or run.probe_result:
+        return None
+    if str(probe.get("scope") or "") != prompt.scope:
+        return None
+    if str(probe.get("command") or "") != prompt.command:
+        return None
+    prefix = tuple(str(value) for value in probe.get("prefix") or [])
+    if prefix != prompt.prefix:
+        return None
+    field = str(probe.get("field") or "")
+    raw_value = probe.get("value")
+    if not field or isinstance(raw_value, bool):
+        return None
+    try:
+        value = int(raw_value)
+    except (TypeError, ValueError):
+        return None
+    if value < 0:
+        return None
+    literal_options = probe.get("literal_options")
+    literal_options = dict(literal_options) if isinstance(literal_options, dict) else {}
+
+    for variant in prompt.unresolved_option_variants:
+        if not isinstance(variant, dict):
+            continue
+        unresolved_fields = [
+            str(item)
+            for item in variant.get("unresolved_fields") or []
+            if str(item)
+        ]
+        if unresolved_fields != [field]:
+            continue
+        if dict(variant.get("literal_options") or {}) != literal_options:
+            continue
+        return {
+            "scope": prompt.scope,
+            "command": prompt.command,
+            "prefix": list(prompt.prefix),
+            "literal_options": literal_options,
+            "field": field,
+            "value": value,
+            "source": str(variant.get("source") or prompt.source),
+        }
+    return None
+
+
 def _forced_choice_needed(run: _ChoiceRun, prompt: FlowChoicePrompt) -> bool:
     if run.forced_scope != prompt.scope:
         return False
@@ -318,7 +387,14 @@ def _flow_continuation_with_choices(data: dict[str, Any]) -> str:
     run = _current_run()
     prompts = _prompts_for(data)
 
+    if run is not None and run.probe_result:
+        return ""
+
     if run is not None:
+        for prompt in prompts:
+            if _matching_dynamic_probe(run, prompt) is not None:
+                run.pending = prompt
+                return prompt.command
         for prompt in prompts:
             if _forced_choice_needed(run, prompt):
                 run.pending = prompt
@@ -327,10 +403,13 @@ def _flow_continuation_with_choices(data: dict[str, Any]) -> str:
     if command:
         return command
 
-    if run is None or not prompts:
+    if run is None:
         return ""
-    run.pending = prompts[0]
-    return prompts[0].command
+    executable = [prompt for prompt in prompts if prompt.available]
+    if not executable:
+        return ""
+    run.pending = executable[0]
+    return executable[0].command
 
 
 def _same_prompt(left: FlowChoicePrompt | None, right: FlowChoicePrompt) -> bool:
@@ -360,7 +439,11 @@ def _pending_flow_actions_with_choices(data: dict[str, Any]) -> list[str]:
     if not prompts:
         return pending
 
-    handled_commands = {prompt.command for prompt in prompts}
+    handled_commands = {
+        prompt.command
+        for prompt in prompts
+        if prompt.available or _matching_dynamic_probe(run, prompt) is not None
+    }
     pending = [item for item in pending if str(item) not in handled_commands]
 
     for prompt in prompts:
@@ -404,6 +487,95 @@ def _post_command_with_choices(
             options=options,
             extra_data=extra_data,
         )
+
+    dynamic_probe = _matching_dynamic_probe(run, prompt)
+    if dynamic_probe is not None:
+        payload_options = dict(options) if isinstance(options, dict) else {}
+        payload_options = _merge_payload_options(
+            payload_options,
+            dynamic_probe["literal_options"],
+            command=command,
+        )
+        field = str(dynamic_probe["field"])
+        value = int(dynamic_probe["value"])
+        if field in payload_options and payload_options[field] != value:
+            raise ValueError(
+                f"BGaming {command}: options.{field}={payload_options[field]!r} "
+                f"contradice probe dinámico {value!r}."
+            )
+        payload_options[field] = value
+        base_result = {
+            **dynamic_probe,
+            "target_reached": True,
+            "request_options": dict(payload_options),
+        }
+        try:
+            result = _ORIGINAL_POST_COMMAND(
+                runtime,
+                command,
+                timeout_s=timeout_s,
+                options=payload_options,
+                extra_data=extra_data,
+            )
+        except requests.HTTPError as exc:
+            status = (
+                int(exc.response.status_code)
+                if exc.response is not None
+                else 0
+            )
+            if status == 422:
+                outcome = SEMANTIC_REJECTION
+            elif status in {408, 425, 429} or status >= 500:
+                outcome = TRANSPORT_ERROR
+            else:
+                outcome = PROTOCOL_ERROR
+            run.probe_result = {
+                **base_result,
+                "outcome": outcome,
+                "http_status": status,
+                "error": f"{type(exc).__name__}: {exc}",
+                "error_evidence": _runtime.http_error_evidence(exc.response),
+            }
+            run.pending = None
+            raise
+        except requests.RequestException as exc:
+            run.probe_result = {
+                **base_result,
+                "outcome": TRANSPORT_ERROR,
+                "http_status": 0,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+            run.pending = None
+            raise
+        except Exception as exc:
+            run.probe_result = {
+                **base_result,
+                "outcome": PROTOCOL_ERROR,
+                "http_status": 0,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+            run.pending = None
+            raise
+
+        data = result[2] if len(result) > 2 and isinstance(result[2], dict) else {}
+        provider_errors = _runtime.provider_error_envelope(data)
+        run.probe_result = {
+            **base_result,
+            "outcome": (
+                SEMANTIC_REJECTION
+                if provider_errors is not None
+                else ACCEPTED
+            ),
+            "http_status": int(getattr(result[0], "status_code", 200) or 200),
+            "provider_errors": provider_errors,
+            "response_state": (
+                str((data.get("flow") or {}).get("state") or "")
+                if isinstance(data.get("flow"), dict)
+                else ""
+            ),
+        }
+        run.pending = None
+        return result
 
     if not prompt.available:
         raise ValueError(
@@ -499,6 +671,7 @@ def install_flow_choice_adapter() -> None:
 __all__ = [
     "begin_flow_choice_run",
     "end_flow_choice_run",
+    "flow_choice_probe_result",
     "flow_choice_options",
     "flow_choice_scope",
     "install_flow_choice_adapter",
