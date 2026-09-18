@@ -234,6 +234,10 @@ class AllProviderFarmContractTests(unittest.TestCase):
             if item["mode_id"] == "SPIN__SELECT_INDEX_DOMAIN"
         )
         self.assertFalse(choice["coverage_complete"])
+        self.assertIn(
+            "RUBYPLAY_CHOICE_DOMAIN_UNPROVEN:SPIN__SELECT_INDEX_DOMAIN",
+            provider.validate_farm_contract(contract),
+        )
 
     def test_rubyplay_farm_contract_accepts_authoritative_rejection_window_domain(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -272,6 +276,7 @@ class AllProviderFarmContractTests(unittest.TestCase):
             if item["mode_id"] == "SPIN__SELECT_INDEX_DOMAIN"
         )
         self.assertTrue(choice["coverage_complete"])
+        self.assertEqual(provider.validate_farm_contract(contract), [])
 
     def test_every_active_provider_promotes_ready_contract_through_exporter(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
