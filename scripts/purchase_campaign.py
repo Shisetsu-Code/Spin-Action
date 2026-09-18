@@ -305,7 +305,7 @@ def run_selected_games(
     queue = list(games)
     in_flight: dict[Future, tuple[int, Game]] = {}
     next_index = 0
-    last_start = 0.0
+    starts_issued = 0
     breaker_open = False
     breaker_reason = ""
     warmup_target = (
@@ -382,12 +382,10 @@ def run_selected_games(
                 and (warmup_complete or warmup_started < warmup_target)
                 and not stop_event.is_set()
             ):
-                if last_start and delay_s > 0:
-                    remaining = delay_s - (time.monotonic() - last_start)
-                    if remaining > 0:
-                        progress(f"[{provider.key}] cooldown entre aperturas: {remaining:g}s")
-                        if stop_event.wait(remaining):
-                            break
+                if starts_issued > 0 and delay_s > 0:
+                    progress(f"[{provider.key}] cooldown entre aperturas: {delay_s:g}s")
+                    if stop_event.wait(delay_s):
+                        break
 
                 game = queue[next_index]
                 ordinal = next_index
@@ -407,7 +405,7 @@ def run_selected_games(
                     progress=progress,
                 )
                 in_flight[future] = (ordinal, game)
-                last_start = time.monotonic()
+                starts_issued += 1
 
             if not in_flight:
                 break
