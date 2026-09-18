@@ -8,7 +8,7 @@ from typing import Any
 from tester_spin.models import Game, GameTestResult
 from tester_spin.providers.base import Progress
 from tester_spin.providers.rubyplay.adapter import RubyPlayProvider as _ExecutionProvider
-from tester_spin.providers.rubyplay.choice_domains import rubyplay_choice_domain_is_proven
+from tester_spin.providers.rubyplay.choice_domains import rubyplay_choice_domain_is_authoritative
 from tester_spin.providers.rubyplay.choice_probe import (
     choice_domain_mode_id,
     choice_domain_signature,
@@ -19,7 +19,7 @@ from tester_spin.providers.rubyplay.exhaustive import RubyPlayProvider as _Catal
 
 
 def _domain_complete(mode: dict[str, Any]) -> bool:
-    return rubyplay_choice_domain_is_proven(mode)
+    return rubyplay_choice_domain_is_authoritative(mode)
 
 
 def _prefix_matches(mode: dict[str, Any], prefix: tuple[str, ...]) -> bool:
