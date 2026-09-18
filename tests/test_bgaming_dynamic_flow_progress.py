@@ -118,3 +118,30 @@ def test_forced_replay_can_choose_auto_at_root(monkeypatch) -> None:
     finally:
         flow_choices.end_flow_choice_run()
         end_dynamic_contract_run()
+
+
+def test_unresolved_dynamic_variant_survives_into_choice_prompt(monkeypatch) -> None:
+    data = _response()
+    evidence = analyze_server_response_against_bundle(data, _bundle())
+
+    begin_dynamic_contract_run()
+    remember_dynamic_evidence(evidence)
+    flow_choices.begin_flow_choice_run()
+    try:
+        prompts = flow_choices._candidate_prompts(data)
+        pick_prompt = next(prompt for prompt in prompts if prompt.command == "pick_cards")
+        payload = pick_prompt.to_dict()
+        assert payload["available"] == [
+            'mode="select_pick_cards"',
+            'mode="auto"',
+        ]
+        assert payload["unresolved_option_variants"] == [
+            {
+                "literal_options": {"mode": "any"},
+                "unresolved_fields": ["index"],
+                "source": "client-callsite:requestCardsPick",
+            }
+        ]
+    finally:
+        flow_choices.end_flow_choice_run()
+        end_dynamic_contract_run()
