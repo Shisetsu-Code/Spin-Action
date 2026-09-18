@@ -486,19 +486,25 @@ def remember_dynamic_evidence(evidence: dict[str, Any]) -> None:
         return
     specs = _dynamic_specs()
     for raw in actions:
-        if not isinstance(raw, dict) or not raw.get("replay_eligible"):
+        if not isinstance(raw, dict):
             continue
         action = str(raw.get("action") or "")
         if not action or action in {"init", "spin"}:
             continue
         variants = raw.get("option_variants")
-        if not isinstance(variants, list) or not variants:
+        variants = variants if isinstance(variants, list) else []
+        unresolved_variants = raw.get("unresolved_option_variants")
+        unresolved_variants = (
+            unresolved_variants if isinstance(unresolved_variants, list) else []
+        )
+        if not variants and not unresolved_variants:
             continue
         spec = specs.setdefault(
             action,
             {
                 "states": set(),
                 "variants": {},
+                "unresolved_variants": [],
                 "source": source,
                 "option_fields": [],
             },
@@ -518,6 +524,27 @@ def remember_dynamic_evidence(evidence: dict[str, Any]) -> None:
             options = variant.get("options")
             if label and isinstance(options, dict):
                 spec["variants"][label] = dict(options)
+        unresolved_store = spec.setdefault("unresolved_variants", [])
+        for variant in unresolved_variants:
+            if not isinstance(variant, dict):
+                continue
+            normalized = {
+                "literal_options": dict(variant.get("literal_options") or {}),
+                "unresolved_fields": [
+                    str(field)
+                    for field in variant.get("unresolved_fields") or []
+                    if str(field)
+                ],
+                "source": str(variant.get("source") or ""),
+            }
+            marker = json.dumps(normalized, ensure_ascii=False, sort_keys=True)
+            existing = {
+                json.dumps(item, ensure_ascii=False, sort_keys=True)
+                for item in unresolved_store
+                if isinstance(item, dict)
+            }
+            if marker not in existing:
+                unresolved_store.append(normalized)
 
 
 def dynamic_action_variants(data: dict[str, Any], action: str) -> list[dict[str, Any]]:
@@ -547,6 +574,15 @@ def dynamic_action_variants(data: dict[str, Any], action: str) -> list[dict[str,
         for label, options in variants.items()
         if str(label) and isinstance(options, dict)
     ]
+
+
+def dynamic_action_unresolved_variants(action: str) -> list[dict[str, Any]]:
+    """Return client-proven dynamic variants whose full payload domain is unresolved."""
+    spec = _dynamic_specs().get(str(action or ""))
+    rows = spec.get("unresolved_variants") if isinstance(spec, dict) else None
+    if not isinstance(rows, list):
+        return []
+    return [dict(item) for item in rows if isinstance(item, dict)]
 
 
 def dynamic_action_source(action: str) -> str:
@@ -616,6 +652,7 @@ __all__ = [
     "discover_server_guided_client_evidence",
     "dynamic_action_option_fields",
     "dynamic_action_source",
+    "dynamic_action_unresolved_variants",
     "dynamic_action_variants",
     "end_dynamic_contract_run",
     "remember_dynamic_evidence",
