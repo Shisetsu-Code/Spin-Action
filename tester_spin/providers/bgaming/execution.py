@@ -883,7 +883,6 @@ class BGamingExecutionMixin:
                     new_runtime,
                     "init",
                     timeout_s=timeout_s,
-                    expected_identifier=expected_identifier,
                 )
                 new_classification = classify_runtime(new_runtime, new_init)
                 if new_classification.family != API_V2:
