@@ -388,6 +388,57 @@ def _choice_mode_from_point(
     }
 
 
+def _dynamic_variant_identity(variant: dict[str, Any]) -> str:
+    return json.dumps(
+        {
+            "literal_options": dict(variant.get("literal_options") or {}),
+            "unresolved_fields": [
+                str(value)
+                for value in variant.get("unresolved_fields") or []
+                if str(value)
+            ],
+            "source": str(variant.get("source") or ""),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _confirmed_zero_semantic_rejection(
+    proof: dict[str, Any],
+    *,
+    confirmations: int,
+) -> bool:
+    probes = [
+        row
+        for row in proof.get("probes") or []
+        if isinstance(row, dict)
+    ]
+    if len(probes) < max(2, int(confirmations)):
+        return False
+    return all(
+        int(row.get("index", -1)) == 0
+        and str(row.get("outcome") or "").upper() == "SEMANTIC_REJECTION"
+        for row in probes
+    )
+
+
+def _remove_unresolved_variant(
+    point: dict[str, Any],
+    variant: dict[str, Any],
+) -> None:
+    identity = _dynamic_variant_identity(variant)
+    point["unresolved_option_variants"] = [
+        item
+        for item in point.get("unresolved_option_variants") or []
+        if not (
+            isinstance(item, dict)
+            and _dynamic_variant_identity(item) == identity
+        )
+    ]
+
+
 def _resolve_dynamic_index_domains(
     graph: dict[tuple[str, str, tuple[str, ...]], dict[str, Any]],
     *,
@@ -399,6 +450,10 @@ def _resolve_dynamic_index_domains(
     """Resolve client-proven single-index variants without guessing a domain."""
     changed = False
     proofs: list[dict[str, Any]] = []
+    proven_contexts: dict[
+        tuple[str, str, str],
+        list[tuple[str, ...]],
+    ] = {}
 
     ordered = sorted(
         graph.values(),
@@ -410,6 +465,9 @@ def _resolve_dynamic_index_domains(
         ),
     )
     for point in ordered:
+        scope = str(point.get("scope") or "")
+        command = str(point.get("command") or "")
+        prefix = tuple(str(value) for value in point.get("prefix") or ())
         variants = [
             dict(item)
             for item in point.get("unresolved_option_variants") or []
@@ -424,6 +482,8 @@ def _resolve_dynamic_index_domains(
             if fields != ["index"]:
                 continue
 
+            identity = _dynamic_variant_identity(variant)
+            context_key = (scope, command, identity)
             proof = probe_contiguous_index_domain(
                 lambda index, p=point, v=variant: probe_value(p, v, index),
                 max_index=max_index,
@@ -431,36 +491,65 @@ def _resolve_dynamic_index_domains(
             )
             record = {
                 **dict(proof),
-                "scope": str(point.get("scope") or ""),
-                "command": str(point.get("command") or ""),
-                "prefix": [
-                    str(value)
-                    for value in point.get("prefix") or ()
-                ],
+                "scope": scope,
+                "command": command,
+                "prefix": list(prefix),
                 "variant": dict(variant),
             }
-            proofs.append(record)
+
             before_payloads = set(
                 str(label)
                 for label in (point.get("dynamic_option_payloads") or {})
             )
             applied = apply_index_domain_proof(point, variant, proof)
-            if not applied:
+            if applied:
+                changed = True
+                proven_contexts.setdefault(context_key, []).append(prefix)
+                if callable(register_option):
+                    payloads = point.get("dynamic_option_payloads")
+                    if isinstance(payloads, dict):
+                        for label, payload in payloads.items():
+                            if str(label) in before_payloads or not isinstance(payload, dict):
+                                continue
+                            register_option(
+                                point,
+                                str(label),
+                                dict(payload),
+                                "dynamic-index-boundary-proof",
+                            )
+                proofs.append(record)
                 continue
-            changed = True
 
-            if callable(register_option):
-                payloads = point.get("dynamic_option_payloads")
-                if isinstance(payloads, dict):
-                    for label, payload in payloads.items():
-                        if str(label) in before_payloads or not isinstance(payload, dict):
-                            continue
-                        register_option(
-                            point,
-                            str(label),
-                            dict(payload),
-                            "dynamic-index-boundary-proof",
-                        )
+            descendant_proven = any(
+                len(proven_prefix) > len(prefix)
+                and tuple(proven_prefix[: len(prefix)]) == prefix
+                for proven_prefix in proven_contexts.get(context_key, [])
+            )
+            if (
+                descendant_proven
+                and _confirmed_zero_semantic_rejection(
+                    proof,
+                    confirmations=boundary_confirmations,
+                )
+            ):
+                reason = (
+                    "provider rejected index=0 at this prefix twice while the same "
+                    "client variant had a proven finite domain at a descendant prefix"
+                )
+                _remove_unresolved_variant(point, variant)
+                point.setdefault("dynamic_index_not_applicable", []).append(
+                    {
+                        "variant": dict(variant),
+                        "prefix": list(prefix),
+                        "reason": reason,
+                        "proof": dict(proof),
+                    }
+                )
+                record["not_applicable_at_prefix"] = True
+                record["reason"] = reason
+                changed = True
+
+            proofs.append(record)
 
     return changed, proofs
 
