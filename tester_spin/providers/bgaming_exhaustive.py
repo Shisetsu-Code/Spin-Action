@@ -15,6 +15,7 @@ from tester_spin.providers.base import Progress
 from tester_spin.providers.bgaming import BGamingProvider as _BGamingProvider
 from tester_spin.providers.bgaming import execution as _execution
 from tester_spin.providers.bgaming.dynamic_index_domains import (
+    PROTOCOL_ERROR as DYNAMIC_INDEX_PROTOCOL_ERROR,
     PROVEN as DYNAMIC_INDEX_PROVEN,
     apply_index_domain_proof,
     probe_contiguous_index_domain,
@@ -32,6 +33,7 @@ from tester_spin.providers.bgaming.flow_choices import (
 
 MAX_OPTION_COMBINATIONS = 128
 MAX_FLOW_CHOICE_RUNS = 64
+MAX_DYNAMIC_INDEX_PROBE_RUNS = 192
 
 # The base executor owns profile discovery. Exhaustive replays only need a
 # temporary, thread-local selector override; no per-game constants are stored.
@@ -614,72 +616,187 @@ class BGamingProvider(_BGamingProvider):
         attempted: set[tuple[str, str, tuple[str, ...]]] = set()
         executed = 0
 
-        while not stop_event.is_set():
-            target = _next_missing_choice(graph, attempted, max(1, int(spins)))
-            if target is None:
-                break
-            scope, command, forced_path = target
-            attempted.add(target)
-            if executed >= MAX_FLOW_CHOICE_RUNS:
-                branch_errors.append(
-                    f"elecciones de flujo exceden guard de {MAX_FLOW_CHOICE_RUNS} replays"
-                )
-                break
-            executed += 1
-            path_label = " → ".join(forced_path)
-            progress(
-                f"[{game.name}] BGaming {command}: reproduciendo "
-                f"{scope} → {path_label}."
-            )
+        dynamic_probe_runs = 0
 
+        def replay_missing_choices() -> bool:
+            nonlocal added_requested, added_successes, executed
+            made_progress = False
+            while not stop_event.is_set():
+                target = _next_missing_choice(
+                    graph,
+                    attempted,
+                    max(1, int(spins)),
+                )
+                if target is None:
+                    break
+                scope, command, forced_path = target
+                attempted.add(target)
+                if executed >= MAX_FLOW_CHOICE_RUNS:
+                    branch_errors.append(
+                        f"elecciones de flujo exceden guard de {MAX_FLOW_CHOICE_RUNS} replays"
+                    )
+                    break
+                executed += 1
+                made_progress = True
+                path_label = " → ".join(forced_path)
+                progress(
+                    f"[{game.name}] BGaming {command}: reproduciendo "
+                    f"{scope} → {path_label}."
+                )
+
+                try:
+                    sub, trace = self._raw_test(
+                        game,
+                        spins=max(1, int(spins)),
+                        timeout_s=timeout_s,
+                        stop_event=stop_event,
+                        progress=progress,
+                        forced_scope=scope,
+                        forced_command=command,
+                        forced_path=forced_path,
+                    )
+                except Exception as exc:
+                    branch_errors.append(
+                        f"{scope}/{command}/{path_label}: {type(exc).__name__}: {exc}"
+                    )
+                    continue
+
+                target_dir = (
+                    master_root
+                    / "flow-choice-runs"
+                    / _safe_label(scope)
+                    / _safe_label(command)
+                    / _safe_label("__".join(forced_path))
+                )
+                if Path(str(sub.run_dir or "")).is_dir():
+                    _move_run(sub, target_dir)
+
+                added_requested += sub.requested_spins
+                added_successes += sub.successful_spins
+                suffix = _safe_label(
+                    scope + "__" + command + "__" + "__".join(forced_path)
+                ).upper()
+                for attempt in sub.attempts:
+                    attempt.mode_id = f"{attempt.mode_id}__FLOW_{suffix}"
+                    attempt.mode_kind = f"{attempt.mode_kind}_CHOICE_VARIANT"
+                    result.attempts.append(attempt)
+                _merge_modes(result, sub)
+
+                sub_complete = _complete(sub)
+                _merge_choice_trace(graph, trace, complete=sub_complete)
+                if not _trace_confirms(trace, scope, command, forced_path):
+                    branch_errors.append(
+                        f"{scope}/{command}/{path_label}: la ronda fresca no volvió a alcanzar esa rama"
+                    )
+                elif not sub_complete:
+                    branch_errors.append(
+                        f"{scope}/{command}/{path_label}: {sub.status} {sub.error}".strip()
+                    )
+            return made_progress
+
+        replay_missing_choices()
+
+        def probe_dynamic_index(
+            point: dict[str, Any],
+            variant: dict[str, Any],
+            index: int,
+        ) -> dict[str, Any]:
+            nonlocal dynamic_probe_runs
+            dynamic_probe_runs += 1
+            scope = str(point.get("scope") or "")
+            command = str(point.get("command") or "")
+            prefix = tuple(str(value) for value in point.get("prefix") or ())
+            if dynamic_probe_runs > MAX_DYNAMIC_INDEX_PROBE_RUNS:
+                return {
+                    "index": index,
+                    "outcome": DYNAMIC_INDEX_PROTOCOL_ERROR,
+                    "error": (
+                        "BGaming dynamic index probe guard exceeded "
+                        f"({MAX_DYNAMIC_INDEX_PROBE_RUNS})"
+                    ),
+                }
+
+            path_label = "__".join(prefix) or "ROOT"
+            progress(
+                f"[{game.name}] BGaming {command}: probando índice {index} "
+                f"en {scope} / {path_label}."
+            )
             try:
-                sub, trace = self._raw_test(
+                sub, _trace, probe = self._raw_dynamic_index_probe(
                     game,
-                    spins=max(1, int(spins)),
+                    scope=scope,
+                    command=command,
+                    prefix=prefix,
+                    variant=variant,
+                    index=index,
                     timeout_s=timeout_s,
                     stop_event=stop_event,
                     progress=progress,
-                    forced_scope=scope,
-                    forced_command=command,
-                    forced_path=forced_path,
                 )
             except Exception as exc:
-                branch_errors.append(
-                    f"{scope}/{command}/{path_label}: {type(exc).__name__}: {exc}"
-                )
-                continue
+                return {
+                    "index": index,
+                    "outcome": DYNAMIC_INDEX_PROTOCOL_ERROR,
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
 
             target_dir = (
                 master_root
-                / "flow-choice-runs"
+                / "dynamic-index-probes"
                 / _safe_label(scope)
                 / _safe_label(command)
-                / _safe_label("__".join(forced_path))
+                / _safe_label(path_label)
+                / f"index-{int(index):03d}-sample-{dynamic_probe_runs:03d}"
             )
             if Path(str(sub.run_dir or "")).is_dir():
                 _move_run(sub, target_dir)
+            if not isinstance(probe, dict) or not probe.get("target_reached"):
+                return {
+                    "index": index,
+                    "outcome": DYNAMIC_INDEX_PROTOCOL_ERROR,
+                    "error": "fresh replay did not reach requested dynamic picker",
+                }
+            observed = dict(probe)
+            observed["index"] = int(index)
+            _write_json(target_dir / "probe.json", observed)
+            return observed
 
-            added_requested += sub.requested_spins
-            added_successes += sub.successful_spins
-            suffix = _safe_label(
-                scope + "__" + command + "__" + "__".join(forced_path)
-            ).upper()
-            for attempt in sub.attempts:
-                attempt.mode_id = f"{attempt.mode_id}__FLOW_{suffix}"
-                attempt.mode_kind = f"{attempt.mode_kind}_CHOICE_VARIANT"
-                result.attempts.append(attempt)
-            _merge_modes(result, sub)
+        def register_dynamic_option(
+            point: dict[str, Any],
+            label: str,
+            payload: dict[str, Any],
+            source: str,
+        ) -> None:
+            register_resolved_dynamic_choice(
+                scope=str(point.get("scope") or ""),
+                command=str(point.get("command") or ""),
+                prefix=tuple(
+                    str(value)
+                    for value in point.get("prefix") or ()
+                ),
+                label=label,
+                options=payload,
+                source=source,
+            )
 
-            sub_complete = _complete(sub)
-            _merge_choice_trace(graph, trace, complete=sub_complete)
-            if not _trace_confirms(trace, scope, command, forced_path):
-                branch_errors.append(
-                    f"{scope}/{command}/{path_label}: la ronda fresca no volvió a alcanzar esa rama"
-                )
-            elif not sub_complete:
-                branch_errors.append(
-                    f"{scope}/{command}/{path_label}: {sub.status} {sub.error}".strip()
-                )
+        dynamic_changed, dynamic_proofs = _resolve_dynamic_index_domains(
+            graph,
+            probe_value=probe_dynamic_index,
+            register_option=register_dynamic_option,
+            max_index=32,
+            boundary_confirmations=2,
+        )
+        if dynamic_proofs:
+            _write_json(
+                master_root / "dynamic-index-domain-proofs.json",
+                {
+                    "schema": "tester-spin/bgaming-dynamic-index-domains/v1",
+                    "proofs": dynamic_proofs,
+                    "probe_runs": dynamic_probe_runs,
+                },
+            )
+        if dynamic_changed and not stop_event.is_set():
+            replay_missing_choices()
 
         result.requested_spins += added_requested
         result.successful_spins += added_successes
