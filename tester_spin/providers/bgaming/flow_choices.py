@@ -272,7 +272,7 @@ def _static_prompt_for(
 
 def _dynamic_prompt_for(data: dict[str, Any], command: str) -> FlowChoicePrompt | None:
     variants = dynamic_action_variants(data, command)
-    unresolved_variants = dynamic_action_unresolved_variants(command)
+    unresolved_variants = dynamic_action_unresolved_variants(data, command)
     context = _prompt_context(data, command)
     if context is None or (not variants and not unresolved_variants):
         return None
