@@ -854,6 +854,7 @@ def expand_rubyplay_index_domains(
     )
     queued = set(queue)
     processed: set[tuple[str, str, tuple[str, ...]]] = set()
+    discovered_during_probe: set[tuple[str, str, tuple[str, ...]]] = set()
 
     for parent_mode, action, prefix in queue:
         _upsert_prompt_mode(
@@ -968,7 +969,7 @@ def expand_rubyplay_index_domains(
             "TRANSPORT_ERROR" in probe_outcomes
             and not ({"TERMINAL", "SEMANTIC_REJECTION"} & probe_outcomes)
         )
-        if transport_only_failure:
+        if transport_only_failure and key not in discovered_during_probe:
             mode_id = choice_domain_mode_id(parent_mode, action, prefix)
             result.discovered_modes = [
                 mode
@@ -1017,6 +1018,7 @@ def expand_rubyplay_index_domains(
                     continue
                 child_action, child_prefix, selected = parsed
                 child_key = (parent_mode, child_action, child_prefix)
+                discovered_during_probe.add(child_key)
                 child_values = graph.setdefault(child_key, set())
                 before = len(child_values)
                 child_values.add(selected)
