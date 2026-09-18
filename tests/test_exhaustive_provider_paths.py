@@ -314,5 +314,54 @@ class ExhaustiveProviderPathTests(unittest.TestCase):
         )
 
 
+    def test_bgaming_choice_point_identity_does_not_change_when_domain_grows(self) -> None:
+        graph = {}
+        bgaming_exhaustive._merge_choice_trace(
+            graph,
+            [
+                {
+                    "scope": "PURCHASE_A",
+                    "command": "pick_cards",
+                    "prefix": ['mode="select_pick_cards"'],
+                    "available": ['mode="auto"'],
+                    "selected": 'mode="auto"',
+                    "path_after": ['mode="select_pick_cards"', 'mode="auto"'],
+                }
+            ],
+            complete=True,
+        )
+        bgaming_exhaustive._merge_choice_trace(
+            graph,
+            [
+                {
+                    "scope": "PURCHASE_A",
+                    "command": "pick_cards",
+                    "prefix": ['mode="select_pick_cards"'],
+                    "available": [
+                        'mode="auto"',
+                        'index=0|mode="any"',
+                    ],
+                    "selected": 'index=0|mode="any"',
+                    "path_after": [
+                        'mode="select_pick_cards"',
+                        'index=0|mode="any"',
+                    ],
+                }
+            ],
+            complete=True,
+        )
+
+        self.assertEqual(len(graph), 1)
+        point = next(iter(graph.values()))
+        self.assertEqual(
+            list(point["available"]),
+            ['mode="auto"', 'index=0|mode="any"'],
+        )
+        self.assertEqual(
+            point["covered"],
+            {'mode="auto"', 'index=0|mode="any"'},
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
