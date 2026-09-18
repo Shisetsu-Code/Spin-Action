@@ -599,6 +599,8 @@ class BGamingProvider(_BGamingProvider):
     ) -> tuple[GameTestResult, list[dict[str, Any]]]:
         from tester_spin.providers.bgaming.structural_map import reset_capture
         reset_capture()
+        if forced_scope:
+            _execution.set_execution_mode_filter(str(forced_scope))
         begin_flow_choice_run(
             forced_scope=forced_scope,
             forced_command=forced_command,
@@ -615,6 +617,8 @@ class BGamingProvider(_BGamingProvider):
             )
         finally:
             trace = end_flow_choice_run()
+            if forced_scope:
+                _execution.clear_execution_mode_filter()
         return result, trace
 
     def _raw_dynamic_index_probe(
