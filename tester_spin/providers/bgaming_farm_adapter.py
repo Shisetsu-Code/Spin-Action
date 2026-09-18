@@ -9,7 +9,11 @@ from tester_spin.providers.bgaming.farm_contract import (
 )
 from tester_spin.providers.bgaming.feature_sessions import build_bgaming_feature_sessions
 from tester_spin.providers.bgaming_paths_v2 import BGamingProvider as _BGamingProvider
-from tester_spin.providers.farm_structure import attach_execution_structure, select_domains
+from tester_spin.providers.farm_structure import (
+    apply_feature_session_gate,
+    attach_execution_structure,
+    select_domains,
+)
 
 
 class BGamingProvider(_BGamingProvider):
@@ -27,6 +31,7 @@ class BGamingProvider(_BGamingProvider):
         result: GameTestResult,
     ) -> dict:
         contract = build_bgaming_farm_contract(game, result, self.game_dir(game))
+        contract = apply_feature_session_gate(contract, result)
         protocol = contract.get("protocol")
         profile = protocol.get("profile") if isinstance(protocol, dict) else {}
         domains = select_domains(
