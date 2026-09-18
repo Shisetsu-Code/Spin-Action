@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from tester_spin.providers.bgaming.dynamic_index_domains import (
     ACCEPTED,
+    PROTOCOL_ERROR,
     PROVEN,
     SEMANTIC_REJECTION,
     TRANSPORT_ERROR,
