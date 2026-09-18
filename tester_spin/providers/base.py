@@ -13,6 +13,9 @@ GameCallback = Callable[[Game], None]
 
 
 class ProviderAdapter(ABC):
+    def __init__(self, data_root: Path | None = None) -> None:
+        self.data_root = Path(data_root) if data_root is not None else Path(".")
+
     key: str
     display_name: str
     catalog_url: str
@@ -170,6 +173,8 @@ class ProviderAdapter(ABC):
                 result.status = "PARCIAL"
                 result.error = (result.error + " " + message).strip()
             progress(message)
+        if self is None:
+            return result
         return self._finalize_feature_and_path_coverage(result, progress=progress)
 
     def finalize_purchase_result(
