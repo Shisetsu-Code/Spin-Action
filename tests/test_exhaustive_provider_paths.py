@@ -416,5 +416,49 @@ class ExhaustiveProviderPathTests(unittest.TestCase):
         )
 
 
+    def test_bgaming_choice_graph_preserves_server_sequence_contract(self) -> None:
+        graph = {}
+        label = 'mode="any"|index=<server-sequence>'
+        bgaming_exhaustive._merge_choice_trace(
+            graph,
+            [
+                {
+                    "scope": "PURCHASE_A",
+                    "command": "pick_cards",
+                    "prefix": ['mode="select_pick_cards"'],
+                    "available": [label],
+                    "selected": label,
+                    "path_after": ['mode="select_pick_cards"', label],
+                    "sequence_specs": {
+                        label: {
+                            "field": "index",
+                            "literal_options": {"mode": "any"},
+                            "authority": "features.cards_data.issued+list",
+                            "issued": 3,
+                            "selected_indices": [],
+                        }
+                    },
+                    "sequence_completed": True,
+                    "sequence_picks": [0, 1, 2],
+                }
+            ],
+            complete=True,
+        )
+
+        point = next(iter(graph.values()))
+        self.assertEqual(
+            point["server_sequence_contracts"][label]["authority"],
+            "features.cards_data.issued+list",
+        )
+        self.assertEqual(point["server_sequence_picks"][label], [0, 1, 2])
+
+        mode = bgaming_exhaustive._choice_mode_from_point(point, repetitions=1)
+        self.assertEqual(
+            mode["server_sequence_contracts"][label]["field"],
+            "index",
+        )
+        self.assertEqual(mode["server_sequence_picks"][label], [0, 1, 2])
+
+
 if __name__ == "__main__":
     unittest.main()
