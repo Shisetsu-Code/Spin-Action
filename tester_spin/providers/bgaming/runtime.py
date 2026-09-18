@@ -168,23 +168,50 @@ def resolve_fresh_demo_url(
     public_or_demo_url: str,
     *,
     timeout_s: float,
+    expected_identifier: str = "",
 ) -> str:
-    """Resolve and validate a current demo launch URL in memory."""
+    """Resolve and validate a current demo launch URL in memory.
+
+    When the caller knows the provider identifier, candidates are accepted only
+    if the bootstrap payload exposes that exact identifier. This prevents a
+    public product page containing unrelated demo links from silently launching
+    a different BGaming title.
+    """
     source = str(public_or_demo_url or "").strip()
-    if is_demo_url(source):
-        return source
+    expected = str(expected_identifier or "").strip().casefold()
     if not source:
         return ""
+
+    def validated_demo(url: str) -> str:
+        try:
+            probe = session.get(url, timeout=timeout_s, allow_redirects=True)
+            probe.raise_for_status()
+            if not is_demo_url(probe.url):
+                return ""
+            options = extract_options(probe.text)
+        except Exception:
+            return ""
+        identifier = str(options.get("identifier") or "").strip()
+        if expected and identifier.casefold() != expected:
+            return ""
+        return probe.url
+
+    if is_demo_url(source):
+        if not expected:
+            return source
+        return validated_demo(source)
 
     response = session.get(source, timeout=timeout_s, allow_redirects=True)
     response.raise_for_status()
     if is_demo_url(response.url):
         try:
-            extract_options(response.text)
+            options = extract_options(response.text)
         except ValueError:
             pass
         else:
-            return response.url
+            identifier = str(options.get("identifier") or "").strip()
+            if not expected or identifier.casefold() == expected:
+                return response.url
 
     soup = BeautifulSoup(response.text or "", "html.parser")
     candidates: list[str] = []
@@ -208,25 +235,22 @@ def resolve_fresh_demo_url(
             candidates.append(candidate)
 
     candidates = list(dict.fromkeys(candidates))
-    candidates.sort(
-        key=lambda value: (
-            0 if urlparse(value).path.startswith("/play/") else 1,
-            -len(urlparse(value).path),
-        )
-    )
 
-    # Never trust presence in page source alone. A stale/truncated candidate
-    # must not be returned as a demo merely because it looks like one.
+    def candidate_rank(value: str) -> tuple[int, int, int]:
+        parsed = urlparse(value)
+        text = value.casefold()
+        identity_match = 0 if expected and expected in text else 1
+        play_rank = 0 if parsed.path.startswith("/play/") else 1
+        return identity_match, play_rank, -len(parsed.path)
+
+    candidates.sort(key=candidate_rank)
+
+    # Presence in page source is only a candidate. The runtime bootstrap must be
+    # valid, and when expected_identifier is known it must identify the same game.
     for candidate in candidates:
-        try:
-            probe = session.get(candidate, timeout=timeout_s, allow_redirects=True)
-            probe.raise_for_status()
-            if not is_demo_url(probe.url):
-                continue
-            extract_options(probe.text)
-        except Exception:
-            continue
-        return probe.url
+        resolved = validated_demo(candidate)
+        if resolved:
+            return resolved
 
     return ""
 
