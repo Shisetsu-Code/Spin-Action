@@ -219,6 +219,10 @@ def test_exhaustive_resolver_probes_and_registers_proven_domain() -> None:
     assert len(registered) == 3
     assert registered[2][1] == {"mode": "any", "index": 2}
 
+    mode = bgaming_exhaustive._choice_mode_from_point(point, repetitions=1)
+    assert mode["dynamic_index_proofs"][0]["boundary_index"] == 3
+    assert mode["dynamic_index_proofs"][0]["state"] == PROVEN
+
 
 def test_exhaustive_resolver_ignores_non_index_dynamic_variants() -> None:
     from tester_spin.providers import bgaming_exhaustive
