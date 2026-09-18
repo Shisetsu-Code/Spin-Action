@@ -46,8 +46,11 @@ class FlowChoicePrompt:
     available: tuple[str, ...]
     option_costs: dict[str, float] = field(default_factory=dict)
     option_payloads: dict[str, dict[str, Any]] = field(default_factory=dict)
+    sequence_specs: dict[str, dict[str, Any]] = field(default_factory=dict)
     unresolved_option_variants: list[dict[str, Any]] = field(default_factory=list)
     selected: str = ""
+    sequence_completed: bool = False
+    sequence_picks: list[int] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -71,6 +74,12 @@ class FlowChoicePrompt:
                 label: dict(options)
                 for label, options in self.option_payloads.items()
             }
+        if self.sequence_specs:
+            payload["sequence_specs"] = {
+                label: dict(spec)
+                for label, spec in self.sequence_specs.items()
+                if str(label) and isinstance(spec, dict)
+            }
         if self.unresolved_option_variants:
             payload["unresolved_option_variants"] = [
                 dict(item)
@@ -81,6 +90,9 @@ class FlowChoicePrompt:
             payload["expected_debit"] = self.option_costs[self.selected]
         if self.selected and self.selected in self.option_payloads:
             payload["selected_options"] = dict(self.option_payloads[self.selected])
+        if self.selected and self.selected in self.sequence_specs:
+            payload["sequence_completed"] = bool(self.sequence_completed)
+            payload["sequence_picks"] = list(self.sequence_picks)
         return payload
 
 
@@ -96,6 +108,7 @@ class _ChoiceRun:
     validation_debits: dict[str, list[float]] = field(default_factory=dict)
     dynamic_probe: dict[str, Any] = field(default_factory=dict)
     probe_result: dict[str, Any] = field(default_factory=dict)
+    active_sequence: dict[str, Any] = field(default_factory=dict)
 
 
 def _clean(value: Any) -> str:
@@ -270,6 +283,126 @@ def _static_prompt_for(
     )
 
 
+def _server_sequence_progress(
+    data: dict[str, Any],
+    command: str,
+) -> dict[str, Any] | None:
+    if not isinstance(data, dict):
+        return None
+    flow = data.get("flow")
+    if not isinstance(flow, dict):
+        return None
+    if _clean(flow.get("state")).casefold() != str(command or "").casefold():
+        return None
+    actions = flow.get("available_actions")
+    advertised = {
+        _clean(item).casefold()
+        for item in actions
+    } if isinstance(actions, list) else set()
+    if str(command or "").casefold() not in advertised:
+        return None
+
+    features = data.get("features")
+    cards = features.get("cards_data") if isinstance(features, dict) else None
+    if not isinstance(cards, dict):
+        return None
+    raw_issued = cards.get("issued")
+    if isinstance(raw_issued, bool):
+        return None
+    try:
+        issued = int(raw_issued)
+    except (TypeError, ValueError):
+        return None
+    if issued <= 0:
+        return None
+
+    raw_list = cards.get("list")
+    if not isinstance(raw_list, list):
+        return None
+    selected: list[int] = []
+    for item in raw_list:
+        if not isinstance(item, dict):
+            return None
+        raw_index = item.get("index")
+        if isinstance(raw_index, bool):
+            return None
+        try:
+            index = int(raw_index)
+        except (TypeError, ValueError):
+            return None
+        if index < 0:
+            return None
+        if index not in selected:
+            selected.append(index)
+    if len(selected) > issued:
+        return None
+
+    return {
+        "issued": issued,
+        "selected_indices": selected,
+        "authority": "features.cards_data.issued+list",
+    }
+
+
+def _sequence_label(literal_options: dict[str, Any], field: str) -> str:
+    parts = [
+        f"{key}={__import__('json').dumps(literal_options[key], ensure_ascii=False, sort_keys=True)}"
+        for key in sorted(literal_options)
+    ]
+    parts.append(f"{field}=<server-sequence>")
+    return "|".join(parts)
+
+
+def _setup_variant_exists(
+    variants: list[dict[str, Any]],
+    command: str,
+) -> bool:
+    expected_mode = f"select_{str(command or '').strip().lower()}"
+    for item in variants:
+        if not isinstance(item, dict):
+            continue
+        options = item.get("options")
+        if not isinstance(options, dict):
+            continue
+        if str(options.get("mode") or "").strip().lower() == expected_mode:
+            return True
+    return False
+
+
+def _sequence_specs_from_unresolved(
+    data: dict[str, Any],
+    command: str,
+    unresolved_variants: list[dict[str, Any]],
+) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
+    progress = _server_sequence_progress(data, command)
+    if progress is None:
+        return {}, list(unresolved_variants)
+
+    specs: dict[str, dict[str, Any]] = {}
+    remaining: list[dict[str, Any]] = []
+    for variant in unresolved_variants:
+        if not isinstance(variant, dict):
+            continue
+        fields = [
+            str(item)
+            for item in variant.get("unresolved_fields") or []
+            if str(item)
+        ]
+        literal = dict(variant.get("literal_options") or {})
+        if fields != ["index"]:
+            remaining.append(dict(variant))
+            continue
+        label = _sequence_label(literal, "index")
+        specs[label] = {
+            "field": "index",
+            "literal_options": literal,
+            "authority": str(progress["authority"]),
+            "issued": int(progress["issued"]),
+            "selected_indices": list(progress["selected_indices"]),
+        }
+    return specs, remaining
+
+
 def _dynamic_prompt_for(data: dict[str, Any], command: str) -> FlowChoicePrompt | None:
     variants = dynamic_action_variants(data, command)
     unresolved_variants = dynamic_action_unresolved_variants(data, command)
@@ -278,12 +411,36 @@ def _dynamic_prompt_for(data: dict[str, Any], command: str) -> FlowChoicePrompt 
         return None
     scope, round_id, prefix = context
 
+    flow = data.get("flow") if isinstance(data, dict) else None
+    state = _clean(flow.get("state")) if isinstance(flow, dict) else ""
+    # A forwarded manual index call is a client action inside the picker, not a
+    # separate root choice. When the provider advertises a client-proven setup
+    # action such as mode=select_pick_cards, defer that unresolved call until
+    # the server actually enters the picker state.
+    if state.casefold() != str(command or "").casefold() and _setup_variant_exists(
+        variants,
+        command,
+    ):
+        unresolved_variants = [
+            dict(item)
+            for item in unresolved_variants
+            if [
+                str(field)
+                for field in item.get("unresolved_fields") or []
+                if str(field)
+            ] != ["index"]
+        ]
+
+    sequence_specs, unresolved_variants = _sequence_specs_from_unresolved(
+        data,
+        command,
+        unresolved_variants,
+    )
+
     # Dynamically learned literal payloads come from distinct client call sites.
     # Re-sending the same literal payload from the same round without any new
-    # client/runtime evidence can stall forever (for example repeatedly entering
-    # a selection state). Treat each proven literal variant as single-use per
-    # command/round path. If all variants were already used, the command becomes
-    # pending/unresolved instead of being dispatched again.
+    # client/runtime evidence can stall forever. Treat each literal variant as
+    # single-use per command/round path.
     already_used = set(prefix)
     payloads = {
         str(item.get("label") or ""): dict(item.get("options") or {})
@@ -299,7 +456,14 @@ def _dynamic_prompt_for(data: dict[str, Any], command: str) -> FlowChoicePrompt 
         options = item.get("options")
         if isinstance(options, dict):
             payloads[label] = dict(options)
-    if not payloads and not unresolved_variants:
+
+    sequence_specs = {
+        label: spec
+        for label, spec in sequence_specs.items()
+        if label not in already_used
+    }
+    available = tuple([*payloads.keys(), *sequence_specs.keys()])
+    if not available and not unresolved_variants:
         return None
 
     fields = dynamic_action_option_fields(command)
@@ -311,8 +475,9 @@ def _dynamic_prompt_for(data: dict[str, Any], command: str) -> FlowChoicePrompt 
         option_field=option_field,
         source=dynamic_action_source(command),
         prefix=prefix,
-        available=tuple(payloads),
+        available=available,
         option_payloads=payloads,
+        sequence_specs=sequence_specs,
         unresolved_option_variants=unresolved_variants,
     )
 
@@ -446,10 +611,19 @@ def _forced_choice_needed(run: _ChoiceRun, prompt: FlowChoicePrompt) -> bool:
 def _flow_continuation_with_choices(data: dict[str, Any]) -> str:
     command = _ORIGINAL_FLOW_CONTINUATION(data)
     run = _current_run()
-    prompts = _prompts_for(data)
 
     if run is not None and run.probe_result:
         return ""
+
+    if run is not None and run.active_sequence:
+        sequence_command = str(run.active_sequence.get("command") or "")
+        progress = _server_sequence_progress(data, sequence_command)
+        if progress is not None and len(progress["selected_indices"]) < progress["issued"]:
+            run.active_sequence["progress"] = progress
+            return sequence_command
+        run.active_sequence = {}
+
+    prompts = _prompts_for(data)
 
     if run is not None:
         for prompt in prompts:
@@ -482,6 +656,7 @@ def _same_prompt(left: FlowChoicePrompt | None, right: FlowChoicePrompt) -> bool
         and left.prefix == right.prefix
         and left.available == right.available
         and left.option_payloads == right.option_payloads
+        and left.sequence_specs == right.sequence_specs
     )
 
 
@@ -494,6 +669,13 @@ def _pending_flow_actions_with_choices(data: dict[str, Any]) -> list[str]:
     run = _current_run()
     if run is None:
         return pending
+
+    if run.active_sequence:
+        sequence_command = str(run.active_sequence.get("command") or "")
+        progress = _server_sequence_progress(data, sequence_command)
+        if progress is not None and len(progress["selected_indices"]) < progress["issued"]:
+            return [item for item in pending if str(item) != sequence_command]
+        run.active_sequence = {}
 
     prompts = _candidate_prompts(data)
     run.candidates = prompts
@@ -530,6 +712,104 @@ def _merge_payload_options(
     return merged
 
 
+def _next_sequence_index(progress: dict[str, Any]) -> int:
+    used = {
+        int(value)
+        for value in progress.get("selected_indices") or []
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0
+    }
+    candidate = 0
+    while candidate in used:
+        candidate += 1
+    return candidate
+
+
+def _update_sequence_after_response(
+    run: _ChoiceRun,
+    prompt: FlowChoicePrompt,
+    command: str,
+    data: dict[str, Any],
+) -> None:
+    progress = _server_sequence_progress(data, command)
+    if progress is None:
+        prompt.sequence_completed = True
+        run.active_sequence = {}
+        return
+    prompt.sequence_picks = list(progress["selected_indices"])
+    if len(progress["selected_indices"]) >= int(progress["issued"]):
+        prompt.sequence_completed = True
+        run.active_sequence = {}
+        return
+    run.active_sequence["progress"] = progress
+
+
+def _dispatch_sequence(
+    run: _ChoiceRun,
+    prompt: FlowChoicePrompt,
+    selected: str,
+    runtime,
+    command: str,
+    *,
+    timeout_s: float,
+    options: dict[str, Any] | None,
+    extra_data: dict[str, Any] | None,
+):
+    spec = prompt.sequence_specs.get(selected)
+    if not isinstance(spec, dict):
+        raise ValueError(f"BGaming {command}: secuencia {selected!r} sin contrato.")
+
+    progress = run.active_sequence.get("progress")
+    if not isinstance(progress, dict):
+        progress = {
+            "issued": int(spec.get("issued") or 0),
+            "selected_indices": list(spec.get("selected_indices") or []),
+            "authority": str(spec.get("authority") or ""),
+        }
+    issued = int(progress.get("issued") or 0)
+    if issued <= 0:
+        raise ValueError(f"BGaming {command}: secuencia sin issued positivo.")
+
+    payload_options = dict(options) if isinstance(options, dict) else {}
+    literal = dict(spec.get("literal_options") or {})
+    payload_options = _merge_payload_options(
+        payload_options,
+        literal,
+        command=command,
+    )
+    field = str(spec.get("field") or "index")
+    payload_options[field] = _next_sequence_index(progress)
+
+    result = _ORIGINAL_POST_COMMAND(
+        runtime,
+        command,
+        timeout_s=timeout_s,
+        options=payload_options,
+        extra_data=extra_data,
+    )
+    data = result[2] if len(result) > 2 and isinstance(result[2], dict) else {}
+
+    if not run.active_sequence:
+        prompt.selected = selected
+        prompt.sequence_picks = list(progress.get("selected_indices") or [])
+        run.prompts.append(prompt)
+        run.round_paths[(prompt.scope, prompt.round_id, prompt.command)] = [
+            *prompt.prefix,
+            selected,
+        ]
+        run.active_sequence = {
+            "scope": prompt.scope,
+            "round_id": prompt.round_id,
+            "command": command,
+            "label": selected,
+            "prompt": prompt,
+            "progress": progress,
+        }
+
+    _update_sequence_after_response(run, prompt, command, data)
+    run.pending = None
+    return result
+
+
 def _post_command_with_choices(
     runtime,
     command: str,
@@ -539,6 +819,26 @@ def _post_command_with_choices(
     extra_data: dict[str, Any] | None = None,
 ):
     run = _current_run()
+    if run is not None and run.active_sequence:
+        active_command = str(run.active_sequence.get("command") or "")
+        active_prompt = run.active_sequence.get("prompt")
+        active_label = str(run.active_sequence.get("label") or "")
+        if (
+            active_command == command
+            and isinstance(active_prompt, FlowChoicePrompt)
+            and active_label
+        ):
+            return _dispatch_sequence(
+                run,
+                active_prompt,
+                active_label,
+                runtime,
+                command,
+                timeout_s=timeout_s,
+                options=options,
+                extra_data=extra_data,
+            )
+
     prompt = run.pending if run is not None else None
     if prompt is None or prompt.command != command:
         return _ORIGINAL_POST_COMMAND(
@@ -657,6 +957,18 @@ def _post_command_with_choices(
                 f"{list(prompt.available)!r} para {prompt.scope}."
             )
         selected = forced
+
+    if selected in prompt.sequence_specs:
+        return _dispatch_sequence(
+            run,
+            prompt,
+            selected,
+            runtime,
+            command,
+            timeout_s=timeout_s,
+            options=options,
+            extra_data=extra_data,
+        )
 
     payload_options = dict(options) if isinstance(options, dict) else {}
     if prompt.option_payloads:
