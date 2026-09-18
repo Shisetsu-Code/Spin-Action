@@ -250,3 +250,52 @@ def test_exhaustive_resolver_ignores_non_index_dynamic_variants() -> None:
     assert changed is False
     assert proofs == []
     assert point["unresolved_option_variants"]
+
+
+def test_target_retry_ignores_fresh_sessions_that_never_reach_picker() -> None:
+    from tester_spin.providers.bgaming.dynamic_index_domains import retry_until_target
+
+    calls = 0
+
+    def run_once() -> dict:
+        nonlocal calls
+        calls += 1
+        if calls < 3:
+            return {
+                "target_reached": False,
+                "outcome": PROTOCOL_ERROR,
+                "reason": "gamble branch closed before picker",
+            }
+        return {
+            "target_reached": True,
+            "outcome": ACCEPTED,
+            "value": 4,
+        }
+
+    observed = retry_until_target(run_once, max_attempts=6)
+
+    assert calls == 3
+    assert observed["target_reached"] is True
+    assert observed["outcome"] == ACCEPTED
+    assert observed["target_attempts"] == 3
+
+
+def test_target_retry_stays_unresolved_when_picker_never_appears() -> None:
+    from tester_spin.providers.bgaming.dynamic_index_domains import retry_until_target
+
+    calls = 0
+
+    def run_once() -> dict:
+        nonlocal calls
+        calls += 1
+        return {
+            "target_reached": False,
+            "outcome": PROTOCOL_ERROR,
+        }
+
+    observed = retry_until_target(run_once, max_attempts=4)
+
+    assert calls == 4
+    assert observed["target_reached"] is False
+    assert observed["outcome"] == PROTOCOL_ERROR
+    assert observed["target_attempts"] == 4
