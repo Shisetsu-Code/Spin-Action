@@ -238,7 +238,7 @@ def _trace_confirms(
 
 
 def _merge_choice_trace(
-    graph: dict[tuple[str, str, tuple[str, ...], tuple[str, ...]], dict[str, Any]],
+    graph: dict[tuple[str, str, tuple[str, ...]], dict[str, Any]],
     trace: list[dict[str, Any]],
     *,
     complete: bool,
@@ -255,7 +255,7 @@ def _merge_choice_trace(
         if not command or not available:
             continue
 
-        key = (scope, command, prefix, available)
+        key = (scope, command, prefix)
         point = graph.setdefault(
             key,
             {
@@ -270,6 +270,11 @@ def _merge_choice_trace(
                 "unresolved_option_variants": [],
             },
         )
+        merged_available = list(point.get("available") or ())
+        for value in available:
+            if value not in merged_available:
+                merged_available.append(value)
+        point["available"] = tuple(merged_available)
         unresolved_store = point.setdefault("unresolved_option_variants", [])
         for raw_variant in item.get("unresolved_option_variants") or []:
             if not isinstance(raw_variant, dict):
@@ -372,7 +377,7 @@ def _choice_mode_from_point(
 
 
 def _next_missing_choice(
-    graph: dict[tuple[str, str, tuple[str, ...], tuple[str, ...]], dict[str, Any]],
+    graph: dict[tuple[str, str, tuple[str, ...]], dict[str, Any]],
     attempted: set[tuple[str, str, tuple[str, ...]]],
     repetitions: int = 1,
 ) -> tuple[str, str, tuple[str, ...]] | None:
@@ -456,7 +461,7 @@ class BGamingProvider(_BGamingProvider):
             return result
 
         graph: dict[
-            tuple[str, str, tuple[str, ...], tuple[str, ...]],
+            tuple[str, str, tuple[str, ...]],
             dict[str, Any],
         ] = {}
         _merge_choice_trace(graph, base_trace, complete=_complete(result))
