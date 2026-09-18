@@ -912,12 +912,16 @@ class BGamingProvider(_BGamingProvider):
                 source=source,
             )
 
-        dynamic_changed, dynamic_proofs = _resolve_dynamic_index_domains(
-            graph,
-            probe_value=probe_dynamic_index,
-            register_option=register_dynamic_option,
-            max_index=32,
-            boundary_confirmations=2,
+        dynamic_changed, dynamic_proofs, dynamic_passes = (
+            _resolve_dynamic_index_domains_until_stable(
+                graph,
+                probe_value=probe_dynamic_index,
+                replay_new_options=replay_missing_choices,
+                register_option=register_dynamic_option,
+                max_index=32,
+                boundary_confirmations=2,
+                max_passes=8,
+            )
         )
         if dynamic_proofs:
             _write_json(
@@ -926,10 +930,10 @@ class BGamingProvider(_BGamingProvider):
                     "schema": "tester-spin/bgaming-dynamic-index-domains/v1",
                     "proofs": dynamic_proofs,
                     "probe_runs": dynamic_probe_runs,
+                    "resolution_passes": dynamic_passes,
+                    "changed": dynamic_changed,
                 },
             )
-        if dynamic_changed and not stop_event.is_set():
-            replay_missing_choices()
 
         result.requested_spins += added_requested
         result.successful_spins += added_successes
