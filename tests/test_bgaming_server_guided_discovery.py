@@ -6,6 +6,7 @@ from tester_spin.providers.bgaming import flow_choices
 from tester_spin.providers.bgaming.server_guided import (
     analyze_server_response_against_bundle,
     begin_dynamic_contract_run,
+    dynamic_action_unresolved_variants,
     dynamic_action_variants,
     end_dynamic_contract_run,
     remember_dynamic_evidence,
@@ -278,4 +279,20 @@ def test_flow_choices_execute_parameterless_then_literal_forwarded_variant(monke
         assert sent[-1] == ("pick_cards", {"mode": "select_pick_cards"})
     finally:
         flow_choices.end_flow_choice_run()
+        end_dynamic_contract_run()
+
+
+def test_unresolved_dynamic_variants_are_scoped_to_observed_flow_state() -> None:
+    data = _alice_shaped_response()
+    evidence = analyze_server_response_against_bundle(data, _alice_shaped_bundle())
+
+    begin_dynamic_contract_run()
+    try:
+        remember_dynamic_evidence(evidence)
+        assert dynamic_action_unresolved_variants(data, "pick_cards")
+
+        other = _alice_shaped_response()
+        other["flow"]["state"] = "freespins"
+        assert dynamic_action_unresolved_variants(other, "pick_cards") == []
+    finally:
         end_dynamic_contract_run()
