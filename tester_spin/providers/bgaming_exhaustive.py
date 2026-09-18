@@ -16,7 +16,6 @@ from tester_spin.providers.bgaming import BGamingProvider as _BGamingProvider
 from tester_spin.providers.bgaming import execution as _execution
 from tester_spin.providers.bgaming.dynamic_index_domains import (
     PROTOCOL_ERROR as DYNAMIC_INDEX_PROTOCOL_ERROR,
-    PROVEN as DYNAMIC_INDEX_PROVEN,
     apply_index_domain_proof,
     probe_contiguous_index_domain,
     retry_until_target,
@@ -33,7 +32,7 @@ from tester_spin.providers.bgaming.flow_choices import (
 
 
 MAX_OPTION_COMBINATIONS = 128
-MAX_FLOW_CHOICE_RUNS = 64
+MAX_FLOW_CHOICE_RUNS = 192
 MAX_DYNAMIC_INDEX_PROBE_RUNS = 192
 
 # The base executor owns profile discovery. Exhaustive replays only need a
@@ -707,6 +706,7 @@ class BGamingProvider(_BGamingProvider):
         added_requested = 0
         added_successes = 0
         branch_errors: list[str] = []
+        branch_diagnostics: list[str] = []
         attempted: set[tuple[str, str, tuple[str, ...]]] = set()
         executed = 0
 
@@ -750,7 +750,7 @@ class BGamingProvider(_BGamingProvider):
                         forced_path=forced_path,
                     )
                 except Exception as exc:
-                    branch_errors.append(
+                    branch_diagnostics.append(
                         f"{scope}/{command}/{path_label}: {type(exc).__name__}: {exc}"
                     )
                     continue
@@ -779,11 +779,11 @@ class BGamingProvider(_BGamingProvider):
                 sub_complete = _complete(sub)
                 _merge_choice_trace(graph, trace, complete=sub_complete)
                 if not _trace_confirms(trace, scope, command, forced_path):
-                    branch_errors.append(
+                    branch_diagnostics.append(
                         f"{scope}/{command}/{path_label}: la ronda fresca no volvió a alcanzar esa rama"
                     )
                 elif not sub_complete:
-                    branch_errors.append(
+                    branch_diagnostics.append(
                         f"{scope}/{command}/{path_label}: {sub.status} {sub.error}".strip()
                     )
             return made_progress
@@ -978,6 +978,8 @@ class BGamingProvider(_BGamingProvider):
                 ],
                 "complete": not missing_labels and not branch_errors and not stop_event.is_set(),
                 "replays": executed,
+                "replay_diagnostics": branch_diagnostics[-100:],
+                "dynamic_index_probe_runs": dynamic_probe_runs,
             },
         )
         _write_json(master_root / "result.json", result.to_dict())
