@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import threading
 from abc import ABC, abstractmethod
 from collections.abc import Callable
@@ -174,6 +175,16 @@ class ProviderAdapter(ABC):
                 result.error = (result.error + " " + message).strip()
             progress(message)
         if self is None:
+            if result.run_dir:
+                try:
+                    target = Path(result.run_dir) / "result.json"
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_text(
+                        json.dumps(result.to_dict(), ensure_ascii=False, indent=2),
+                        encoding="utf-8",
+                    )
+                except OSError:
+                    pass
             return result
         return self._finalize_feature_and_path_coverage(result, progress=progress)
 
