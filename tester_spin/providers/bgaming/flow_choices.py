@@ -14,6 +14,7 @@ from tester_spin.providers.bgaming.contracts import (
 from tester_spin.providers.bgaming.server_guided import (
     dynamic_action_option_fields,
     dynamic_action_source,
+    dynamic_action_unresolved_variants,
     dynamic_action_variants,
 )
 
@@ -36,6 +37,7 @@ class FlowChoicePrompt:
     available: tuple[str, ...]
     option_costs: dict[str, float] = field(default_factory=dict)
     option_payloads: dict[str, dict[str, Any]] = field(default_factory=dict)
+    unresolved_option_variants: list[dict[str, Any]] = field(default_factory=list)
     selected: str = ""
 
     def to_dict(self) -> dict[str, Any]:
@@ -60,6 +62,12 @@ class FlowChoicePrompt:
                 label: dict(options)
                 for label, options in self.option_payloads.items()
             }
+        if self.unresolved_option_variants:
+            payload["unresolved_option_variants"] = [
+                dict(item)
+                for item in self.unresolved_option_variants
+                if isinstance(item, dict)
+            ]
         if self.selected and self.selected in self.option_costs:
             payload["expected_debit"] = self.option_costs[self.selected]
         if self.selected and self.selected in self.option_payloads:
@@ -226,6 +234,7 @@ def _dynamic_prompt_for(data: dict[str, Any], command: str) -> FlowChoicePrompt 
         prefix=prefix,
         available=tuple(payloads),
         option_payloads=payloads,
+        unresolved_option_variants=dynamic_action_unresolved_variants(command),
     )
 
 
