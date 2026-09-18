@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
+import json
 from typing import Any
 
 
@@ -33,6 +34,109 @@ def _covered_indices(rows: list[dict[str, Any]]) -> list[int]:
         if index not in values:
             values.append(index)
     return sorted(values)
+
+
+def dynamic_index_option_label(
+    literal_options: dict[str, Any],
+    field: str,
+    index: int,
+) -> str:
+    payload = dict(literal_options)
+    payload[str(field)] = int(index)
+    return "|".join(
+        f"{key}={json.dumps(payload[key], ensure_ascii=False, sort_keys=True)}"
+        for key in sorted(payload)
+    )
+
+
+def apply_index_domain_proof(
+    point: dict[str, Any],
+    variant: dict[str, Any],
+    proof: dict[str, Any],
+) -> bool:
+    proofs = point.setdefault("dynamic_index_proofs", [])
+    proofs.append(
+        {
+            **dict(proof),
+            "variant": {
+                "literal_options": dict(variant.get("literal_options") or {}),
+                "unresolved_fields": [
+                    str(item)
+                    for item in variant.get("unresolved_fields") or []
+                    if str(item)
+                ],
+                "source": str(variant.get("source") or ""),
+            },
+        }
+    )
+    if str(proof.get("state") or "") != PROVEN:
+        return False
+
+    unresolved_fields = [
+        str(item)
+        for item in variant.get("unresolved_fields") or []
+        if str(item)
+    ]
+    if len(unresolved_fields) != 1:
+        return False
+    field = unresolved_fields[0]
+    literal_options = dict(variant.get("literal_options") or {})
+    raw_indices = proof.get("required_indices")
+    if not isinstance(raw_indices, list) or not raw_indices:
+        return False
+
+    indices: list[int] = []
+    for raw in raw_indices:
+        if isinstance(raw, bool):
+            return False
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            return False
+        if value < 0 or value in indices:
+            return False
+        indices.append(value)
+    if indices != list(range(len(indices))):
+        return False
+
+    available = [
+        str(value)
+        for value in point.get("available") or ()
+        if str(value)
+    ]
+    payloads = point.setdefault("dynamic_option_payloads", {})
+    counts = point.setdefault("sample_counts", {})
+    covered = point.setdefault("covered", set())
+    if not isinstance(covered, set):
+        covered = set(str(value) for value in covered or [])
+        point["covered"] = covered
+
+    for index in indices:
+        label = dynamic_index_option_label(literal_options, field, index)
+        payload = dict(literal_options)
+        payload[field] = index
+        if label not in available:
+            available.append(label)
+        payloads[label] = payload
+        counts.setdefault(label, 0)
+
+    original = point.get("unresolved_option_variants") or []
+    point["unresolved_option_variants"] = [
+        item
+        for item in original
+        if not (
+            isinstance(item, dict)
+            and dict(item.get("literal_options") or {}) == literal_options
+            and [
+                str(value)
+                for value in item.get("unresolved_fields") or []
+                if str(value)
+            ] == unresolved_fields
+            and str(item.get("source") or "") == str(variant.get("source") or "")
+        )
+    ]
+    point["available"] = tuple(available)
+    return True
 
 
 def prove_contiguous_index_domain(
@@ -177,6 +281,8 @@ def probe_contiguous_index_domain(
 
 __all__ = [
     "ACCEPTED",
+    "apply_index_domain_proof",
+    "dynamic_index_option_label",
     "PROTOCOL_ERROR",
     "PROVEN",
     "SEMANTIC_REJECTION",
