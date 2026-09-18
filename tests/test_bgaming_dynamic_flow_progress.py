@@ -120,7 +120,42 @@ def test_forced_replay_can_choose_auto_at_root(monkeypatch) -> None:
         end_dynamic_contract_run()
 
 
-def test_unresolved_dynamic_variant_survives_into_choice_prompt(monkeypatch) -> None:
+def _picker_response(
+    picks: list[int] | None = None,
+    *,
+    issued: int = 3,
+    state: str = "pick_cards",
+) -> dict[str, Any]:
+    selected = list(picks or [])
+    return {
+        "flow": {
+            "round_id": 77,
+            "state": state,
+            "command": "pick_cards",
+            "available_actions": (
+                ["init", "pick_cards"]
+                if state == "pick_cards"
+                else ["init", "freespin"]
+            ),
+            "purchased_feature": {"name": "future_feature", "level": "0"},
+        },
+        "features": {
+            "freespins_issued": 8,
+            "freespins_left": 8,
+            "cards_data": {
+                "issued": issued,
+                "list": [{"index": index} for index in selected],
+                "new": (
+                    [{"index": selected[-1]}]
+                    if selected
+                    else []
+                ),
+            },
+        },
+    }
+
+
+def test_unresolved_manual_index_is_deferred_before_picker_state() -> None:
     data = _response()
     evidence = analyze_server_response_against_bundle(data, _bundle())
 
@@ -128,13 +163,67 @@ def test_unresolved_dynamic_variant_survives_into_choice_prompt(monkeypatch) -> 
     remember_dynamic_evidence(evidence)
     flow_choices.begin_flow_choice_run()
     try:
-        prompts = flow_choices._candidate_prompts(data)
-        pick_prompt = next(prompt for prompt in prompts if prompt.command == "pick_cards")
-        payload = pick_prompt.to_dict()
+        prompt = next(
+            prompt
+            for prompt in flow_choices._candidate_prompts(data)
+            if prompt.command == "pick_cards"
+        )
+        payload = prompt.to_dict()
         assert payload["available"] == [
             'mode="select_pick_cards"',
             'mode="auto"',
         ]
+        assert payload.get("unresolved_option_variants", []) == []
+        assert payload.get("sequence_specs", {}) == {}
+    finally:
+        flow_choices.end_flow_choice_run()
+        end_dynamic_contract_run()
+
+
+def test_picker_state_promotes_manual_index_to_server_issued_sequence() -> None:
+    data = _picker_response()
+    evidence = analyze_server_response_against_bundle(data, _bundle())
+
+    begin_dynamic_contract_run()
+    remember_dynamic_evidence(evidence)
+    flow_choices.begin_flow_choice_run()
+    try:
+        prompt = next(
+            prompt
+            for prompt in flow_choices._candidate_prompts(data)
+            if prompt.command == "pick_cards"
+        )
+        payload = prompt.to_dict()
+        label = 'mode="any"|index=<server-sequence>'
+        assert label in payload["available"]
+        assert payload.get("unresolved_option_variants", []) == []
+        assert payload["sequence_specs"][label] == {
+            "field": "index",
+            "literal_options": {"mode": "any"},
+            "authority": "features.cards_data.issued+list",
+            "issued": 3,
+            "selected_indices": [],
+        }
+    finally:
+        flow_choices.end_flow_choice_run()
+        end_dynamic_contract_run()
+
+
+def test_picker_without_server_progress_contract_remains_unresolved() -> None:
+    data = _picker_response()
+    data["features"].pop("cards_data")
+    evidence = analyze_server_response_against_bundle(data, _bundle())
+
+    begin_dynamic_contract_run()
+    remember_dynamic_evidence(evidence)
+    flow_choices.begin_flow_choice_run()
+    try:
+        prompt = next(
+            prompt
+            for prompt in flow_choices._candidate_prompts(data)
+            if prompt.command == "pick_cards"
+        )
+        payload = prompt.to_dict()
         assert payload["unresolved_option_variants"] == [
             {
                 "literal_options": {"mode": "any"},
@@ -142,6 +231,7 @@ def test_unresolved_dynamic_variant_survives_into_choice_prompt(monkeypatch) -> 
                 "source": "client-callsite:requestCardsPick",
             }
         ]
+        assert payload.get("sequence_specs", {}) == {}
     finally:
         flow_choices.end_flow_choice_run()
         end_dynamic_contract_run()
@@ -335,4 +425,81 @@ def test_resolved_dynamic_index_option_is_not_visible_at_root_prefix() -> None:
     finally:
         flow_choices.end_flow_choice_run()
         flow_choices.end_resolved_dynamic_choice_run()
+        end_dynamic_contract_run()
+
+
+def test_server_issued_manual_sequence_sends_distinct_indices_until_picker_exits(monkeypatch) -> None:
+    root = _response()
+    picker0 = _picker_response([])
+    picker1 = _picker_response([0])
+    picker2 = _picker_response([0, 1])
+    done = _picker_response([0, 1, 2], state="freespins")
+    evidence = analyze_server_response_against_bundle(root, _bundle())
+    sent: list[tuple[str, dict[str, Any]]] = []
+
+    monkeypatch.setattr(flow_choices, "_ORIGINAL_FLOW_CONTINUATION", lambda _data: "")
+
+    def fake_post(runtime, command: str, *, timeout_s: float, options=None, extra_data=None):
+        payload = dict(options or {})
+        sent.append((command, payload))
+        if payload == {"mode": "select_pick_cards"}:
+            data = picker0
+        elif payload == {"mode": "any", "index": 0}:
+            data = picker1
+        elif payload == {"mode": "any", "index": 1}:
+            data = picker2
+        elif payload == {"mode": "any", "index": 2}:
+            data = done
+        else:
+            raise AssertionError(f"unexpected payload: {payload!r}")
+        return object(), {"command": command, "options": payload}, data
+
+    monkeypatch.setattr(flow_choices, "_ORIGINAL_POST_COMMAND", fake_post)
+
+    begin_dynamic_contract_run()
+    remember_dynamic_evidence(evidence)
+    # Register the same client evidence in the picker state so its unresolved
+    # forwarded index call is authoritative there as well.
+    remember_dynamic_evidence(
+        analyze_server_response_against_bundle(picker0, _bundle())
+    )
+    flow_choices.begin_flow_choice_run(
+        forced_scope="PURCHASE_FUTURE_FEATURE_LEVEL_0",
+        forced_command="pick_cards",
+        forced_path=(
+            'mode="select_pick_cards"',
+            'mode="any"|index=<server-sequence>',
+        ),
+    )
+    try:
+        data = root
+        for _ in range(4):
+            command = flow_choices._flow_continuation_with_choices(data)
+            assert command == "pick_cards"
+            _response_obj, _request, data = flow_choices._post_command_with_choices(
+                object(),
+                command,
+                timeout_s=3.0,
+            )
+
+        assert sent == [
+            ("pick_cards", {"mode": "select_pick_cards"}),
+            ("pick_cards", {"mode": "any", "index": 0}),
+            ("pick_cards", {"mode": "any", "index": 1}),
+            ("pick_cards", {"mode": "any", "index": 2}),
+        ]
+        assert flow_choices._flow_continuation_with_choices(data) == ""
+
+        trace = flow_choices.end_flow_choice_run()
+        sequence_rows = [
+            row
+            for row in trace
+            if row.get("selected") == 'mode="any"|index=<server-sequence>'
+        ]
+        assert len(sequence_rows) == 1
+        assert sequence_rows[0]["sequence_completed"] is True
+        assert sequence_rows[0]["sequence_picks"] == [0, 1, 2]
+    finally:
+        if flow_choices._current_run() is not None:
+            flow_choices.end_flow_choice_run()
         end_dynamic_contract_run()
