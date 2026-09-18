@@ -294,6 +294,7 @@ class BGamingProvider(_BGamingProvider):
                         session,
                         source_url,
                         timeout_s=timeout_s,
+                        expected_identifier=str(game.symbol or "").strip(),
                     )
                     if capture_url:
                         append_har_debug(
