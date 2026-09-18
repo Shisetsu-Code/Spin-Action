@@ -12,7 +12,7 @@ from tester_spin.feature_sessions import (
     make_feature_session,
 )
 from tester_spin.models import GameTestResult, SpinAttempt
-from tester_spin.providers.rubyplay.choice_domains import rubyplay_choice_domain_is_proven
+from tester_spin.providers.rubyplay.choice_domains import rubyplay_choice_domain_is_authoritative
 
 _ROUND_ACTIONS = {"freespin", "respin", "minispin"}
 _CHOICE_ACTIONS = {"select", "pick"}
@@ -135,7 +135,7 @@ def _choice_from_row(
         prefix=prefix,
     )
     evidence = _relative_evidence(result, Path(row["request_path"]))
-    if contract is None or not rubyplay_choice_domain_is_proven(contract):
+    if contract is None or not rubyplay_choice_domain_is_authoritative(contract):
         return make_feature_choice(
             command=command,
             prefix=prefix,
