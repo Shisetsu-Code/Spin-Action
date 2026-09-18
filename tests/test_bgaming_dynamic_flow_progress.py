@@ -259,3 +259,80 @@ def test_dynamic_index_probe_classifies_http_422_as_semantic_rejection(monkeypat
     finally:
         flow_choices.end_flow_choice_run()
         end_dynamic_contract_run()
+
+
+def test_proven_dynamic_index_option_replays_only_at_exact_prefix(monkeypatch) -> None:
+    data = _response()
+    evidence = analyze_server_response_against_bundle(data, _bundle())
+    sent: list[tuple[str, dict[str, Any]]] = []
+    label = 'index=7|mode="any"'
+
+    monkeypatch.setattr(flow_choices, "_ORIGINAL_FLOW_CONTINUATION", lambda _data: "")
+
+    def fake_post(runtime, command: str, *, timeout_s: float, options=None, extra_data=None):
+        payload = dict(options or {})
+        sent.append((command, payload))
+        return object(), {"command": command, "options": payload}, data
+
+    monkeypatch.setattr(flow_choices, "_ORIGINAL_POST_COMMAND", fake_post)
+
+    begin_dynamic_contract_run()
+    remember_dynamic_evidence(evidence)
+    flow_choices.begin_resolved_dynamic_choice_run()
+    flow_choices.register_resolved_dynamic_choice(
+        scope="PURCHASE_FUTURE_FEATURE_LEVEL_0",
+        command="pick_cards",
+        prefix=('mode="select_pick_cards"',),
+        label=label,
+        options={"mode": "any", "index": 7},
+        source="dynamic-index-boundary-proof",
+    )
+    flow_choices.begin_flow_choice_run(
+        forced_scope="PURCHASE_FUTURE_FEATURE_LEVEL_0",
+        forced_command="pick_cards",
+        forced_path=('mode="select_pick_cards"', label),
+    )
+    try:
+        command = flow_choices._flow_continuation_with_choices(data)
+        assert command == "pick_cards"
+        flow_choices._post_command_with_choices(object(), command, timeout_s=3.0)
+        assert sent[-1] == ("pick_cards", {"mode": "select_pick_cards"})
+
+        command = flow_choices._flow_continuation_with_choices(data)
+        assert command == "pick_cards"
+        flow_choices._post_command_with_choices(object(), command, timeout_s=3.0)
+        assert sent[-1] == ("pick_cards", {"mode": "any", "index": 7})
+    finally:
+        flow_choices.end_flow_choice_run()
+        flow_choices.end_resolved_dynamic_choice_run()
+        end_dynamic_contract_run()
+
+
+def test_resolved_dynamic_index_option_is_not_visible_at_root_prefix() -> None:
+    data = _response()
+    evidence = analyze_server_response_against_bundle(data, _bundle())
+    label = 'index=7|mode="any"'
+
+    begin_dynamic_contract_run()
+    remember_dynamic_evidence(evidence)
+    flow_choices.begin_resolved_dynamic_choice_run()
+    flow_choices.register_resolved_dynamic_choice(
+        scope="PURCHASE_FUTURE_FEATURE_LEVEL_0",
+        command="pick_cards",
+        prefix=('mode="select_pick_cards"',),
+        label=label,
+        options={"mode": "any", "index": 7},
+        source="dynamic-index-boundary-proof",
+    )
+    flow_choices.begin_flow_choice_run()
+    try:
+        root = next(
+            prompt
+            for prompt in flow_choices._candidate_prompts(data)
+            if prompt.command == "pick_cards"
+        )
+        assert label not in root.available
+    finally:
+        flow_choices.end_flow_choice_run()
+        flow_choices.end_resolved_dynamic_choice_run()
+        end_dynamic_contract_run()
