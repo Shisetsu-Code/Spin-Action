@@ -21,7 +21,9 @@ from tester_spin.providers.bgaming.dynamic_index_domains import (
 )
 from tester_spin.providers.bgaming.flow_choices import (
     begin_flow_choice_run,
+    begin_resolved_dynamic_choice_run,
     end_flow_choice_run,
+    end_resolved_dynamic_choice_run,
     flow_choice_probe_result,
     install_flow_choice_adapter,
     register_resolved_dynamic_choice,
@@ -765,7 +767,7 @@ class BGamingProvider(_BGamingProvider):
         _write_json(master_root / "result.json", result.to_dict())
         return result
 
-    def test_game(
+    def _test_game_exhaustive(
         self,
         game: Game,
         *,
@@ -909,6 +911,27 @@ class BGamingProvider(_BGamingProvider):
 
         _write_json(master_root / "result.json", result.to_dict())
         return result
+
+    def test_game(
+        self,
+        game: Game,
+        *,
+        spins: int,
+        timeout_s: float,
+        stop_event: threading.Event,
+        progress: Progress,
+    ) -> GameTestResult:
+        begin_resolved_dynamic_choice_run()
+        try:
+            return self._test_game_exhaustive(
+                game,
+                spins=spins,
+                timeout_s=timeout_s,
+                stop_event=stop_event,
+                progress=progress,
+            )
+        finally:
+            end_resolved_dynamic_choice_run()
 
 
 # Preserve the public provider boundary used by registry/wiring tests.
