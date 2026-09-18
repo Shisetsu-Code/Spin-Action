@@ -259,6 +259,7 @@ def bootstrap_game(
     demo_url: str,
     *,
     timeout_s: float,
+    expected_identifier: str = "",
 ) -> BGamingRuntime:
     response = session.get(demo_url, timeout=timeout_s, allow_redirects=True)
     response.raise_for_status()
@@ -271,6 +272,12 @@ def bootstrap_game(
 
     if not api_url or not identifier:
         raise ValueError("BGaming: bootstrap incompleto; faltan api/identifier.")
+    expected = str(expected_identifier or "").strip()
+    if expected and identifier.casefold() != expected.casefold():
+        raise ValueError(
+            "BGaming: bootstrap identifier mismatch: "
+            f"expected={expected!r}, got={identifier!r}."
+        )
     if not csrf_name or not csrf_value:
         raise ValueError("BGaming: bootstrap incompleto; faltan datos CSRF.")
 
