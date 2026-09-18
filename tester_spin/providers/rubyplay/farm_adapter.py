@@ -254,7 +254,23 @@ class RubyPlayProvider(_RubyPlayProvider):
         return _gate_rubyplay_execution_choices(contract)
 
     def validate_farm_contract(self, contract: dict) -> list[str]:
-        return validate_result_farm_contract(contract, _SPEC)
+        errors = list(validate_result_farm_contract(contract, _SPEC))
+        modes = contract.get("modes")
+        if isinstance(modes, list):
+            for mode in modes:
+                if not isinstance(mode, dict):
+                    continue
+                if str(mode.get("kind") or "").upper() != "INDEXED_CHOICE":
+                    continue
+                options = mode.get("options")
+                candidate = {"kind": "INDEXED_CHOICE"}
+                if isinstance(options, dict):
+                    candidate.update(options)
+                if rubyplay_choice_domain_is_proven(candidate):
+                    continue
+                mode_id = str(mode.get("id") or "UNKNOWN")
+                errors.append(f"RUBYPLAY_CHOICE_DOMAIN_UNPROVEN:{mode_id}")
+        return list(dict.fromkeys(errors))
 
 
 RubyPlayProvider.__module__ = "tester_spin.providers.rubyplay.exhaustive"
