@@ -6,7 +6,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from typing import Any
-from urllib.parse import parse_qs, urljoin, urlparse
+from urllib.parse import parse_qs, quote, urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -178,7 +178,8 @@ def resolve_fresh_demo_url(
     a different BGaming title.
     """
     source = str(public_or_demo_url or "").strip()
-    expected = str(expected_identifier or "").strip().casefold()
+    expected_raw = str(expected_identifier or "").strip()
+    expected = expected_raw.casefold()
     if not source:
         return ""
 
@@ -200,6 +201,16 @@ def resolve_fresh_demo_url(
         if not expected:
             return source
         return validated_demo(source)
+
+    if expected_raw:
+        canonical = (
+            "https://demo.bgaming-network.com/play/"
+            + quote(expected_raw, safe="")
+            + "/FUN?server=demo"
+        )
+        resolved = validated_demo(canonical)
+        if resolved:
+            return resolved
 
     response = session.get(source, timeout=timeout_s, allow_redirects=True)
     response.raise_for_status()
