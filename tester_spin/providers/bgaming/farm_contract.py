@@ -71,6 +71,54 @@ def _load_profile(metadata: dict[str, Any]) -> BGamingProfile | None:
     return BGamingProfile.from_dict(metadata.get("provider_protocol"))
 
 
+_COVERAGE_OPTION_KEYS = (
+    "scope",
+    "parent",
+    "prefix",
+    "path_prefix",
+    "option_field",
+    "required_options",
+    "covered_options",
+    "required_samples",
+    "sample_counts",
+    "branch_signature",
+    "source",
+)
+
+
+def _coverage_complete(mode: dict[str, Any]) -> bool:
+    if mode.get("coverage_required") is not True:
+        return False
+    required_raw = mode.get("required_options")
+    covered_raw = mode.get("covered_options")
+    if not isinstance(required_raw, list) or not required_raw:
+        return False
+    if not isinstance(covered_raw, list):
+        return False
+    required = [str(value) for value in required_raw if str(value)]
+    covered = {str(value) for value in covered_raw if str(value)}
+    if not required or "DOMAIN_UNRESOLVED" in required:
+        return False
+    if any(value not in covered for value in required):
+        return False
+    try:
+        samples = max(1, int(mode.get("required_samples", 1)))
+    except (TypeError, ValueError):
+        return False
+    counts = mode.get("sample_counts")
+    if samples > 1 and not isinstance(counts, dict):
+        return False
+    if isinstance(counts, dict):
+        for value in required:
+            try:
+                count = max(0, int(counts.get(value, 0) or 0))
+            except (TypeError, ValueError):
+                return False
+            if count < samples:
+                return False
+    return True
+
+
 def _mode_evidence(mode: dict[str, Any], *, result_status: str) -> str:
     kind = str(mode.get("kind") or "").upper()
     evidence_level = str(mode.get("evidence_level") or "")
@@ -81,6 +129,9 @@ def _mode_evidence(mode: dict[str, Any], *, result_status: str) -> str:
         and execution_state == "PROVEN_TERMINAL"
         and bool(mode.get("validated"))
     ):
+        return "DEMOSTRADO"
+
+    if _coverage_complete(mode):
         return "DEMOSTRADO"
 
     # Continuations are executed inside a root-mode attempt, so they do not get
@@ -173,6 +224,17 @@ def _mode_options(
         level = mode.get("purchased_feature_level")
         if level is not None:
             options["purchased_feature_level"] = level
+
+    for key in _COVERAGE_OPTION_KEYS:
+        if key not in mode:
+            continue
+        value = mode.get(key)
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            options[key] = value
+        elif isinstance(value, list):
+            options[key] = list(value)
+        elif isinstance(value, dict):
+            options[key] = dict(value)
 
     return options
 
