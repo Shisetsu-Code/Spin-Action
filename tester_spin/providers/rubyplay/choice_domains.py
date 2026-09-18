@@ -14,12 +14,12 @@ _TRANSPORT_ERROR = "TRANSPORT_ERROR"
 _PROTOCOL_ERROR = "PROTOCOL_ERROR"
 _INDEX_ARGUMENT_NOUN = r"(?:index|choice|option|selection)"
 _INDEX_ARGUMENT_ERROR_PATTERNS = (
-    re.compile(rf"\\b(?:invalid|unknown|unsupported|bad|illegal)\\s+{_INDEX_ARGUMENT_NOUN}\\b", re.I),
+    re.compile(rf"\\b(?:invalid|unknown|unsupported|bad|illegal)\\s+{_INDEX_ARGUMENT_NOUN}\b", re.I),
     re.compile(
-        rf"\\b{_INDEX_ARGUMENT_NOUN}\\b.{{0,40}}\\b(?:invalid|unknown|unsupported|bad|illegal|out\\s+of\\s+range)\\b",
+        rf"\\b{_INDEX_ARGUMENT_NOUN}\\b.{{0,40}}\\b(?:invalid|unknown|unsupported|bad|illegal|out\\s+of\\s+range)\b",
         re.I,
     ),
-    re.compile(rf"\\bno\\s+such\\s+{_INDEX_ARGUMENT_NOUN}\\b", re.I),
+    re.compile(rf"\\bno\\s+such\\s+{_INDEX_ARGUMENT_NOUN}\b", re.I),
 )
 
 
@@ -47,16 +47,29 @@ def _covered(rows: list[dict[str, Any]]) -> list[str]:
 
 def _provider_error_text(payload: dict[str, Any]) -> str:
     values: list[str] = []
-    for key in ("error", "message", "reason", "detail", "description"):
-        value = payload.get(key)
+
+    def collect(value: Any) -> None:
         if isinstance(value, (str, int, float)) and not isinstance(value, bool):
             text = str(value).strip()
-            if text:
+            if text and text not in values:
                 values.append(text)
+            return
+        if isinstance(value, dict):
+            for key in ("error", "message", "reason", "detail", "description", "code"):
+                if key in value:
+                    collect(value.get(key))
+            return
+        if isinstance(value, list):
+            for item in value:
+                collect(item)
+
+    for key in ("error", "message", "reason", "detail", "description", "errors"):
+        if key in payload:
+            collect(payload.get(key))
     return " | ".join(values)
 
 
-def rubyplay_choice_domain_is_proven(mode: dict[str, Any]) -> bool:
+def rubyplay_choice_domain_is_authoritative(mode: dict[str, Any]) -> bool:
     if not isinstance(mode, dict):
         return False
     if str(mode.get("kind") or "").upper() != "INDEXED_CHOICE":
@@ -100,11 +113,9 @@ def rubyplay_choice_domain_is_proven(mode: dict[str, Any]) -> bool:
             value = int(raw)
         except (TypeError, ValueError):
             return False
-        if value < 0:
+        if value < 0 or value not in required:
             return False
         covered.add(value)
-    if covered != set(required):
-        return False
 
     observed_raw = mode.get("observed_indices")
     if isinstance(observed_raw, list):
@@ -118,6 +129,14 @@ def rubyplay_choice_domain_is_proven(mode: dict[str, Any]) -> bool:
             if value < 0 or value >= boundary:
                 return False
     return True
+
+
+def rubyplay_choice_domain_is_proven(mode: dict[str, Any]) -> bool:
+    if not rubyplay_choice_domain_is_authoritative(mode):
+        return False
+    required = {str(value) for value in mode.get("required_options") or []}
+    covered = {str(value) for value in mode.get("covered_options") or []}
+    return covered == required
 
 
 def classify_probe_failure(
