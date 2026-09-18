@@ -724,6 +724,28 @@ def _next_sequence_index(progress: dict[str, Any]) -> int:
     return candidate
 
 
+def _response_selected_indices(data: dict[str, Any]) -> list[int]:
+    features = data.get("features") if isinstance(data, dict) else None
+    cards = features.get("cards_data") if isinstance(features, dict) else None
+    raw_list = cards.get("list") if isinstance(cards, dict) else None
+    if not isinstance(raw_list, list):
+        return []
+    selected: list[int] = []
+    for item in raw_list:
+        if not isinstance(item, dict):
+            continue
+        raw_index = item.get("index")
+        if isinstance(raw_index, bool):
+            continue
+        try:
+            value = int(raw_index)
+        except (TypeError, ValueError):
+            continue
+        if value >= 0 and value not in selected:
+            selected.append(value)
+    return selected
+
+
 def _update_sequence_after_response(
     run: _ChoiceRun,
     prompt: FlowChoicePrompt,
@@ -732,6 +754,9 @@ def _update_sequence_after_response(
 ) -> None:
     progress = _server_sequence_progress(data, command)
     if progress is None:
+        observed = _response_selected_indices(data)
+        if observed:
+            prompt.sequence_picks = observed
         prompt.sequence_completed = True
         run.active_sequence = {}
         return
