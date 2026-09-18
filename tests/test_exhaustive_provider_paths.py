@@ -170,6 +170,25 @@ class ExhaustiveProviderPathTests(unittest.TestCase):
             {"mode": "20", "variant": "normal"},
         )
 
+    def test_bgaming_flow_choice_mode_materializes_purchase_scope(self) -> None:
+        mode = bgaming_exhaustive._choice_mode_from_point(
+            {
+                "scope": "PURCHASE_FUTURE_FEATURE_LEVEL_0",
+                "command": "pick_cards",
+                "option_field": "mode",
+                "source": "client-proven",
+                "prefix": ("mode=select",),
+                "available": ("mode=select", "mode=auto"),
+                "sample_counts": {"mode=select": 1, "mode=auto": 0},
+            },
+            repetitions=1,
+        )
+        self.assertEqual(mode["scope"], "PURCHASE_FUTURE_FEATURE_LEVEL_0")
+        self.assertEqual(mode["parent"], "PURCHASE_FUTURE_FEATURE_LEVEL_0")
+        self.assertTrue(mode["coverage_required"])
+        self.assertEqual(mode["required_options"], ["mode=select", "mode=auto"])
+        self.assertEqual(mode["covered_options"], ["mode=select"])
+
     def test_bgaming_profile_override_accepts_only_discovered_domain(self) -> None:
         profile = SimpleNamespace(
             spin_option_choices={"mode": ["20", "40"]},
