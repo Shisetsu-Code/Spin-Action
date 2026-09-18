@@ -19,6 +19,7 @@ from tester_spin.providers.bgaming.dynamic_index_domains import (
     PROVEN as DYNAMIC_INDEX_PROVEN,
     apply_index_domain_proof,
     probe_contiguous_index_domain,
+    retry_until_target,
 )
 from tester_spin.providers.bgaming.flow_choices import (
     begin_flow_choice_run,
@@ -702,63 +703,68 @@ class BGamingProvider(_BGamingProvider):
             index: int,
         ) -> dict[str, Any]:
             nonlocal dynamic_probe_runs
-            dynamic_probe_runs += 1
             scope = str(point.get("scope") or "")
             command = str(point.get("command") or "")
             prefix = tuple(str(value) for value in point.get("prefix") or ())
-            if dynamic_probe_runs > MAX_DYNAMIC_INDEX_PROBE_RUNS:
-                return {
-                    "index": index,
-                    "outcome": DYNAMIC_INDEX_PROTOCOL_ERROR,
-                    "error": (
-                        "BGaming dynamic index probe guard exceeded "
-                        f"({MAX_DYNAMIC_INDEX_PROBE_RUNS})"
-                    ),
-                }
-
             path_label = "__".join(prefix) or "ROOT"
+
             progress(
                 f"[{game.name}] BGaming {command}: probando índice {index} "
                 f"en {scope} / {path_label}."
             )
-            try:
-                sub, _trace, probe = self._raw_dynamic_index_probe(
-                    game,
-                    scope=scope,
-                    command=command,
-                    prefix=prefix,
-                    variant=variant,
-                    index=index,
-                    timeout_s=timeout_s,
-                    stop_event=stop_event,
-                    progress=progress,
-                )
-            except Exception as exc:
-                return {
-                    "index": index,
-                    "outcome": DYNAMIC_INDEX_PROTOCOL_ERROR,
-                    "error": f"{type(exc).__name__}: {exc}",
-                }
 
-            target_dir = (
-                master_root
-                / "dynamic-index-probes"
-                / _safe_label(scope)
-                / _safe_label(command)
-                / _safe_label(path_label)
-                / f"index-{int(index):03d}-sample-{dynamic_probe_runs:03d}"
-            )
-            if Path(str(sub.run_dir or "")).is_dir():
-                _move_run(sub, target_dir)
-            if not isinstance(probe, dict) or not probe.get("target_reached"):
-                return {
-                    "index": index,
-                    "outcome": DYNAMIC_INDEX_PROTOCOL_ERROR,
-                    "error": "fresh replay did not reach requested dynamic picker",
-                }
-            observed = dict(probe)
+            def run_once() -> dict[str, Any]:
+                nonlocal dynamic_probe_runs
+                dynamic_probe_runs += 1
+                if dynamic_probe_runs > MAX_DYNAMIC_INDEX_PROBE_RUNS:
+                    return {
+                        "index": index,
+                        "target_reached": False,
+                        "outcome": DYNAMIC_INDEX_PROTOCOL_ERROR,
+                        "error": (
+                            "BGaming dynamic index probe guard exceeded "
+                            f"({MAX_DYNAMIC_INDEX_PROBE_RUNS})"
+                        ),
+                    }
+                try:
+                    sub, _trace, probe = self._raw_dynamic_index_probe(
+                        game,
+                        scope=scope,
+                        command=command,
+                        prefix=prefix,
+                        variant=variant,
+                        index=index,
+                        timeout_s=timeout_s,
+                        stop_event=stop_event,
+                        progress=progress,
+                    )
+                except Exception as exc:
+                    return {
+                        "index": index,
+                        "target_reached": False,
+                        "outcome": DYNAMIC_INDEX_PROTOCOL_ERROR,
+                        "error": f"{type(exc).__name__}: {exc}",
+                    }
+
+                target_dir = (
+                    master_root
+                    / "dynamic-index-probes"
+                    / _safe_label(scope)
+                    / _safe_label(command)
+                    / _safe_label(path_label)
+                    / f"index-{int(index):03d}-sample-{dynamic_probe_runs:03d}"
+                )
+                if Path(str(sub.run_dir or "")).is_dir():
+                    _move_run(sub, target_dir)
+
+                observed = dict(probe) if isinstance(probe, dict) else {}
+                observed["index"] = int(index)
+                observed.setdefault("target_reached", False)
+                _write_json(target_dir / "probe.json", observed)
+                return observed
+
+            observed = retry_until_target(run_once, max_attempts=6)
             observed["index"] = int(index)
-            _write_json(target_dir / "probe.json", observed)
             return observed
 
         def register_dynamic_option(
