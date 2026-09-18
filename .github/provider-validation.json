@@ -1,15 +1,15 @@
 {
-  "provider": "pragmatic",
-  "slug": "big-bass-bonanza",
-  "game_url": "https://www.pragmaticplay.com/en/games/big-bass-bonanza/",
-  "game_name": "Big Bass Bonanza",
-  "symbol": "vs10bbbonanza",
+  "provider": "bgaming",
+  "slug": "alice-wonderluck",
+  "game_url": "https://bgaming.com/games/alice-wonderluck",
+  "game_name": "Alice WonderLuck",
+  "symbol": "",
   "game_offset": 0,
   "game_limit": 1,
   "spins": 1,
-  "timeout": 45,
+  "timeout": 90,
   "max_pages": 1,
   "allow_har_fallback": false,
   "install_browser": false,
-  "run_sequence": 73
+  "run_sequence": 74
 }
