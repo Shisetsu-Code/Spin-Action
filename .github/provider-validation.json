@@ -3,7 +3,7 @@
   "slug": "alice-wonderluck",
   "game_url": "https://bgaming.com/games/alice-wonderluck",
   "game_name": "Alice WonderLuck",
-  "symbol": "",
+  "symbol": "AliceWonderLuck",
   "game_offset": 0,
   "game_limit": 1,
   "spins": 1,
@@ -11,5 +11,5 @@
   "max_pages": 1,
   "allow_har_fallback": false,
   "install_browser": false,
-  "run_sequence": 76
+  "run_sequence": 77
 }
