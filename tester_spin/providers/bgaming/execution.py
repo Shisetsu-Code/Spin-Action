@@ -82,6 +82,39 @@ def _purchase_mode_id(purchase: dict[str, Any]) -> str:
     return f"PURCHASE_{name}_LEVEL_{str(level).upper()}"
 
 
+_MODE_FILTER_LOCAL = threading.local()
+
+
+def set_execution_mode_filter(mode_id: str) -> None:
+    _MODE_FILTER_LOCAL.mode_id = str(mode_id or "").strip()
+
+
+def clear_execution_mode_filter() -> None:
+    try:
+        delattr(_MODE_FILTER_LOCAL, "mode_id")
+    except AttributeError:
+        pass
+
+
+def filter_execution_mode_specs(
+    mode_specs: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    target = str(getattr(_MODE_FILTER_LOCAL, "mode_id", "") or "").strip()
+    rows = [dict(item) for item in mode_specs if isinstance(item, dict)]
+    if not target:
+        return rows
+    selected = [
+        item for item in rows
+        if str(item.get("id") or "") == target
+    ]
+    if not selected:
+        raise ValueError(
+            f"BGaming targeted execution mode {target!r} was not discovered "
+            "in the fresh provider session."
+        )
+    return selected
+
+
 class BGamingExecutionMixin:
     def test_game(
         self,
@@ -886,6 +919,7 @@ class BGamingExecutionMixin:
                 new_session.close()
                 raise
 
+        mode_specs = filter_execution_mode_specs(mode_specs)
         requested_total = repetitions * len(mode_specs)
 
         if runtime is not None and isinstance(default_bet, (int, float)):
