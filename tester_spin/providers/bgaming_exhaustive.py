@@ -279,6 +279,8 @@ def _merge_choice_trace(
                 "covered": set(),
                 "sample_counts": {},
                 "unresolved_option_variants": [],
+                "server_sequence_contracts": {},
+                "server_sequence_picks": {},
             },
         )
         merged_available = list(point.get("available") or ())
@@ -307,7 +309,26 @@ def _merge_choice_trace(
             }
             if marker not in existing:
                 unresolved_store.append(normalized)
+        sequence_contracts = point.setdefault("server_sequence_contracts", {})
+        for label, raw_spec in (item.get("sequence_specs") or {}).items():
+            if not str(label) or not isinstance(raw_spec, dict):
+                continue
+            sequence_contracts[str(label)] = {
+                "field": str(raw_spec.get("field") or ""),
+                "literal_options": dict(raw_spec.get("literal_options") or {}),
+                "authority": str(raw_spec.get("authority") or ""),
+                "issued": raw_spec.get("issued"),
+            }
+
         selected = str(item.get("selected") or "")
+        if selected and item.get("sequence_completed") is True:
+            picks = [
+                int(value)
+                for value in item.get("sequence_picks") or []
+                if isinstance(value, int) and not isinstance(value, bool) and value >= 0
+            ]
+            point.setdefault("server_sequence_picks", {})[selected] = picks
+
         if complete and selected in available:
             point["covered"].add(selected)
             point["sample_counts"][selected] = point["sample_counts"].get(selected, 0) + 1
@@ -393,6 +414,16 @@ def _choice_mode_from_point(
             for item in point.get("dynamic_index_not_applicable") or []
             if isinstance(item, dict)
         ],
+        "server_sequence_contracts": {
+            str(label): dict(spec)
+            for label, spec in (point.get("server_sequence_contracts") or {}).items()
+            if str(label) and isinstance(spec, dict)
+        },
+        "server_sequence_picks": {
+            str(label): list(values)
+            for label, values in (point.get("server_sequence_picks") or {}).items()
+            if str(label) and isinstance(values, list)
+        },
         "source": str(point.get("source") or "runtime"),
     }
 
@@ -1120,6 +1151,20 @@ class BGamingProvider(_BGamingProvider):
                                 point.get("dynamic_option_payloads") or {}
                             ).items()
                             if str(label) and isinstance(payload, dict)
+                        },
+                        "server_sequence_contracts": {
+                            str(label): dict(spec)
+                            for label, spec in (
+                                point.get("server_sequence_contracts") or {}
+                            ).items()
+                            if str(label) and isinstance(spec, dict)
+                        },
+                        "server_sequence_picks": {
+                            str(label): list(values)
+                            for label, values in (
+                                point.get("server_sequence_picks") or {}
+                            ).items()
+                            if str(label) and isinstance(values, list)
                         },
                         "source": str(point.get("source") or "runtime"),
                     }
