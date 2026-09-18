@@ -238,8 +238,9 @@ def test_picker_without_server_progress_contract_remains_unresolved() -> None:
 
 
 def test_dynamic_index_probe_forces_prefix_then_injects_candidate(monkeypatch) -> None:
-    data = _response()
-    evidence = analyze_server_response_against_bundle(data, _bundle())
+    root = _response()
+    picker = _picker_response()
+    picker["features"].pop("cards_data")
     sent: list[tuple[str, dict[str, Any]]] = []
 
     monkeypatch.setattr(flow_choices, "_ORIGINAL_FLOW_CONTINUATION", lambda _data: "")
@@ -247,12 +248,18 @@ def test_dynamic_index_probe_forces_prefix_then_injects_candidate(monkeypatch) -
     def fake_post(runtime, command: str, *, timeout_s: float, options=None, extra_data=None):
         payload = dict(options or {})
         sent.append((command, payload))
-        return object(), {"command": command, "options": payload}, data
+        response_data = (
+            picker
+            if payload == {"mode": "select_pick_cards"}
+            else picker
+        )
+        return object(), {"command": command, "options": payload}, response_data
 
     monkeypatch.setattr(flow_choices, "_ORIGINAL_POST_COMMAND", fake_post)
 
     begin_dynamic_contract_run()
-    remember_dynamic_evidence(evidence)
+    remember_dynamic_evidence(analyze_server_response_against_bundle(root, _bundle()))
+    remember_dynamic_evidence(analyze_server_response_against_bundle(picker, _bundle()))
     flow_choices.begin_flow_choice_run(
         forced_scope="PURCHASE_FUTURE_FEATURE_LEVEL_0",
         forced_command="pick_cards",
@@ -267,9 +274,12 @@ def test_dynamic_index_probe_forces_prefix_then_injects_candidate(monkeypatch) -
         },
     )
     try:
+        data = root
         command = flow_choices._flow_continuation_with_choices(data)
         assert command == "pick_cards"
-        flow_choices._post_command_with_choices(object(), command, timeout_s=3.0)
+        _response_obj, _request, data = flow_choices._post_command_with_choices(
+            object(), command, timeout_s=3.0
+        )
         assert sent[-1] == ("pick_cards", {"mode": "select_pick_cards"})
 
         command = flow_choices._flow_continuation_with_choices(data)
@@ -282,9 +292,6 @@ def test_dynamic_index_probe_forces_prefix_then_injects_candidate(monkeypatch) -
         assert probe["outcome"] == "ACCEPTED"
         assert probe["value"] == 7
         assert probe["request_options"] == {"mode": "any", "index": 7}
-
-        # Probe sessions stop after the candidate request. We do not consume
-        # more choices or feature rounds in the same session.
         assert flow_choices._flow_continuation_with_choices(data) == ""
     finally:
         flow_choices.end_flow_choice_run()
@@ -294,8 +301,9 @@ def test_dynamic_index_probe_forces_prefix_then_injects_candidate(monkeypatch) -
 def test_dynamic_index_probe_classifies_http_422_as_semantic_rejection(monkeypatch) -> None:
     import requests
 
-    data = _response()
-    evidence = analyze_server_response_against_bundle(data, _bundle())
+    root = _response()
+    picker = _picker_response()
+    picker["features"].pop("cards_data")
     calls = 0
 
     monkeypatch.setattr(flow_choices, "_ORIGINAL_FLOW_CONTINUATION", lambda _data: "")
@@ -309,12 +317,13 @@ def test_dynamic_index_probe_classifies_http_422_as_semantic_rejection(monkeypat
             response.status_code = 422
             response._content = b'{"errors":{"options.index":"invalid"}}'
             raise requests.HTTPError("422 Unprocessable Entity", response=response)
-        return object(), {"command": command, "options": payload}, data
+        return object(), {"command": command, "options": payload}, picker
 
     monkeypatch.setattr(flow_choices, "_ORIGINAL_POST_COMMAND", fake_post)
 
     begin_dynamic_contract_run()
-    remember_dynamic_evidence(evidence)
+    remember_dynamic_evidence(analyze_server_response_against_bundle(root, _bundle()))
+    remember_dynamic_evidence(analyze_server_response_against_bundle(picker, _bundle()))
     flow_choices.begin_flow_choice_run(
         forced_scope="PURCHASE_FUTURE_FEATURE_LEVEL_0",
         forced_command="pick_cards",
@@ -329,8 +338,11 @@ def test_dynamic_index_probe_classifies_http_422_as_semantic_rejection(monkeypat
         },
     )
     try:
+        data = root
         command = flow_choices._flow_continuation_with_choices(data)
-        flow_choices._post_command_with_choices(object(), command, timeout_s=3.0)
+        _response_obj, _request, data = flow_choices._post_command_with_choices(
+            object(), command, timeout_s=3.0
+        )
 
         command = flow_choices._flow_continuation_with_choices(data)
         try:
