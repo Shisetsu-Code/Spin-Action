@@ -597,6 +597,43 @@ def _resolve_dynamic_index_domains_until_stable(
     return changed_any, proofs, passes
 
 
+def _next_discovery_choice(
+    graph: dict[tuple[str, str, tuple[str, ...]], dict[str, Any]],
+    attempted: set[tuple[str, str, tuple[str, ...]]],
+) -> tuple[str, str, tuple[str, ...]] | None:
+    """Return one structurally open choice branch at most once.
+
+    Discovery runs are allowed to be non-terminal. Their purpose is to expose
+    child prompts before finite domains are proven; exhaustive terminal retries
+    happen only after dynamic domain resolution stabilizes.
+    """
+    ordered = sorted(
+        graph.values(),
+        key=lambda item: (
+            str(item.get("scope") or ""),
+            str(item.get("command") or ""),
+            len(tuple(item.get("prefix") or ())),
+            tuple(str(value) for value in item.get("prefix") or ()),
+        ),
+    )
+    for point in ordered:
+        counts = point.get("sample_counts")
+        counts = counts if isinstance(counts, dict) else {}
+        prefix = tuple(str(value) for value in point.get("prefix") or ())
+        for raw_option in point.get("available") or ():
+            option = str(raw_option)
+            if not option or int(counts.get(option, 0) or 0) > 0:
+                continue
+            target = (
+                str(point.get("scope") or ""),
+                str(point.get("command") or ""),
+                (*prefix, option),
+            )
+            if target not in attempted:
+                return target
+    return None
+
+
 def _next_missing_choice(
     graph: dict[tuple[str, str, tuple[str, ...]], dict[str, Any]],
     attempted: set[tuple[str, str, tuple[str, ...]]],
@@ -752,63 +789,62 @@ class BGamingProvider(_BGamingProvider):
         branch_errors: list[str] = []
         branch_diagnostics: list[str] = []
         attempted: set[tuple[str, str, tuple[str, ...]]] = set()
+        discovery_attempted: set[tuple[str, str, tuple[str, ...]]] = set()
         executed = 0
+        discovery_executed = 0
 
         dynamic_probe_runs = 0
 
-        def replay_missing_choices() -> bool:
-            nonlocal added_requested, added_successes, executed
-            made_progress = False
-            while not stop_event.is_set():
-                target = _next_missing_choice(
-                    graph,
-                    attempted,
-                    max(1, int(spins)),
-                )
-                if target is None:
-                    break
-                scope, command, forced_path = target
-                attempted.add(target)
-                if executed >= MAX_FLOW_CHOICE_RUNS:
-                    branch_errors.append(
-                        f"elecciones de flujo exceden guard de {MAX_FLOW_CHOICE_RUNS} replays"
-                    )
-                    break
-                executed += 1
-                made_progress = True
-                path_label = " → ".join(forced_path)
-                progress(
-                    f"[{game.name}] BGaming {command}: reproduciendo "
-                    f"{scope} → {path_label}."
-                )
+        def _run_choice_target(
+            target: tuple[str, str, tuple[str, ...]],
+            *,
+            discovery: bool,
+        ) -> tuple[GameTestResult | None, list[dict[str, Any]], bool]:
+            nonlocal added_requested, added_successes
+            scope, command, forced_path = target
+            path_label = " → ".join(forced_path)
+            phase = "descubriendo" if discovery else "reproduciendo"
+            progress(
+                f"[{game.name}] BGaming {command}: {phase} "
+                f"{scope} → {path_label}."
+            )
 
-                try:
-                    sub, trace = self._raw_test(
-                        game,
-                        spins=max(1, int(spins)),
-                        timeout_s=timeout_s,
-                        stop_event=stop_event,
-                        progress=progress,
-                        forced_scope=scope,
-                        forced_command=command,
-                        forced_path=forced_path,
-                    )
-                except Exception as exc:
-                    branch_diagnostics.append(
-                        f"{scope}/{command}/{path_label}: {type(exc).__name__}: {exc}"
-                    )
-                    continue
-
-                target_dir = (
-                    master_root
-                    / "flow-choice-runs"
-                    / _safe_label(scope)
-                    / _safe_label(command)
-                    / _safe_label("__".join(forced_path))
+            try:
+                sub, trace = self._raw_test(
+                    game,
+                    spins=1 if discovery else max(1, int(spins)),
+                    timeout_s=timeout_s,
+                    stop_event=stop_event,
+                    progress=progress,
+                    forced_scope=scope,
+                    forced_command=command,
+                    forced_path=forced_path,
                 )
-                if Path(str(sub.run_dir or "")).is_dir():
-                    _move_run(sub, target_dir)
+            except Exception as exc:
+                branch_diagnostics.append(
+                    f"{scope}/{command}/{path_label}: {type(exc).__name__}: {exc}"
+                )
+                return None, [], False
 
+            target_dir = (
+                master_root
+                / (
+                    "flow-choice-discovery-runs"
+                    if discovery
+                    else "flow-choice-runs"
+                )
+                / _safe_label(scope)
+                / _safe_label(command)
+                / _safe_label("__".join(forced_path))
+            )
+            if Path(str(sub.run_dir or "")).is_dir():
+                _move_run(sub, target_dir)
+
+            sub_complete = _complete(sub)
+            _merge_choice_trace(graph, trace, complete=sub_complete)
+            _merge_modes(result, sub)
+
+            if not discovery:
                 added_requested += sub.requested_spins
                 added_successes += sub.successful_spins
                 suffix = _safe_label(
@@ -818,21 +854,64 @@ class BGamingProvider(_BGamingProvider):
                     attempt.mode_id = f"{attempt.mode_id}__FLOW_{suffix}"
                     attempt.mode_kind = f"{attempt.mode_kind}_CHOICE_VARIANT"
                     result.attempts.append(attempt)
-                _merge_modes(result, sub)
 
-                sub_complete = _complete(sub)
-                _merge_choice_trace(graph, trace, complete=sub_complete)
-                if not _trace_confirms(trace, scope, command, forced_path):
-                    branch_diagnostics.append(
-                        f"{scope}/{command}/{path_label}: la ronda fresca no volvió a alcanzar esa rama"
+            if not _trace_confirms(trace, scope, command, forced_path):
+                branch_diagnostics.append(
+                    f"{scope}/{command}/{path_label}: "
+                    "la ronda fresca no volvió a alcanzar esa rama"
+                )
+            elif not sub_complete:
+                branch_diagnostics.append(
+                    f"{scope}/{command}/{path_label}: "
+                    f"{sub.status} {sub.error}".strip()
+                )
+            return sub, trace, sub_complete
+
+        def discover_choice_graph() -> bool:
+            nonlocal discovery_executed
+            made_progress = False
+            while not stop_event.is_set():
+                target = _next_discovery_choice(graph, discovery_attempted)
+                if target is None:
+                    break
+                discovery_attempted.add(target)
+                if discovery_executed >= MAX_FLOW_CHOICE_RUNS:
+                    branch_errors.append(
+                        "descubrimiento de elecciones de flujo excede guard de "
+                        f"{MAX_FLOW_CHOICE_RUNS} replays"
                     )
-                elif not sub_complete:
-                    branch_diagnostics.append(
-                        f"{scope}/{command}/{path_label}: {sub.status} {sub.error}".strip()
-                    )
+                    break
+                discovery_executed += 1
+                made_progress = True
+                _run_choice_target(target, discovery=True)
             return made_progress
 
-        replay_missing_choices()
+        def replay_missing_choices() -> bool:
+            nonlocal executed
+            made_progress = False
+            while not stop_event.is_set():
+                target = _next_missing_choice(
+                    graph,
+                    attempted,
+                    max(1, int(spins)),
+                )
+                if target is None:
+                    break
+                attempted.add(target)
+                if executed >= MAX_FLOW_CHOICE_RUNS:
+                    branch_errors.append(
+                        f"elecciones de flujo exceden guard de {MAX_FLOW_CHOICE_RUNS} replays"
+                    )
+                    break
+                executed += 1
+                made_progress = True
+                _run_choice_target(target, discovery=False)
+            return made_progress
+
+        # First expose each branch once. An unresolved dynamic picker is allowed
+        # to leave this discovery run non-terminal; retrying it before proving
+        # its domain can never make the branch complete and only burns sessions.
+        discover_choice_graph()
 
         def probe_dynamic_index(
             point: dict[str, Any],
@@ -926,7 +1005,7 @@ class BGamingProvider(_BGamingProvider):
             _resolve_dynamic_index_domains_until_stable(
                 graph,
                 probe_value=probe_dynamic_index,
-                replay_new_options=replay_missing_choices,
+                replay_new_options=discover_choice_graph,
                 register_option=register_dynamic_option,
                 max_index=32,
                 boundary_confirmations=2,
@@ -944,6 +1023,11 @@ class BGamingProvider(_BGamingProvider):
                     "changed": dynamic_changed,
                 },
             )
+
+        # Domains are now stable. Only at this point require terminal samples
+        # for every literal and materialized indexed branch.
+        if not stop_event.is_set():
+            replay_missing_choices()
 
         result.requested_spins += added_requested
         result.successful_spins += added_successes
@@ -1043,6 +1127,7 @@ class BGamingProvider(_BGamingProvider):
                 ],
                 "complete": not missing_labels and not branch_errors and not stop_event.is_set(),
                 "replays": executed,
+                "discovery_replays": discovery_executed,
                 "replay_diagnostics": branch_diagnostics[-100:],
                 "dynamic_index_probe_runs": dynamic_probe_runs,
             },
