@@ -426,3 +426,58 @@ def test_dynamic_domain_resolution_repeats_when_replay_discovers_nested_picker()
         not point.get("unresolved_option_variants")
         for point in graph.values()
     )
+
+
+def test_probe_trace_can_promote_dynamic_variant_to_server_sequence() -> None:
+    from tester_spin.providers import bgaming_exhaustive
+
+    variant = {
+        "literal_options": {"mode": "any"},
+        "unresolved_fields": ["index"],
+        "source": "client-callsite:requestCardsPick",
+    }
+    point = {
+        "scope": "PURCHASE_A",
+        "command": "pick_cards",
+        "prefix": ('mode="select_pick_cards"',),
+        "available": ('mode="auto"',),
+        "covered": set(),
+        "sample_counts": {},
+        "unresolved_option_variants": [dict(variant)],
+        "server_sequence_contracts": {},
+        "server_sequence_picks": {},
+    }
+    graph = {
+        ("PURCHASE_A", "pick_cards", ('mode="select_pick_cards"',)): point
+    }
+    trace = [
+        {
+            "scope": "PURCHASE_A",
+            "command": "pick_cards",
+            "prefix": ['mode="select_pick_cards"'],
+            "available": [
+                'mode="auto"',
+                'mode="any"|index=<server-sequence>',
+            ],
+            "sequence_specs": {
+                'mode="any"|index=<server-sequence>': {
+                    "field": "index",
+                    "literal_options": {"mode": "any"},
+                    "authority": "features.cards_data.issued+list",
+                    "issued": 3,
+                }
+            },
+        }
+    ]
+
+    resolved = bgaming_exhaustive._merge_probe_trace_discovery(
+        graph,
+        trace,
+        point=point,
+        variant=variant,
+    )
+
+    assert resolved is True
+    assert point["unresolved_option_variants"] == []
+    assert 'mode="any"|index=<server-sequence>' in point["available"]
+    assert point["server_sequence_contracts"]
