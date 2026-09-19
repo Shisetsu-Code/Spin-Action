@@ -41,7 +41,7 @@ on:
         default: '0'
         type: string
       game_limit:
-        description: Number of games
+        description: Number of games; 0 means full catalog
         required: true
         default: '1'
         type: string
@@ -87,7 +87,7 @@ concurrency:
 jobs:
   validate:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 360
     steps:
       - uses: actions/checkout@v4
 
@@ -140,8 +140,8 @@ jobs:
           allowed = {'pragmatic', 'belatra', '1spin4win', 'rubyplay', 'redtiger', 'bgaming'}
           if cfg.get('provider') not in allowed:
               raise SystemExit(f"unsupported provider: {cfg.get('provider')!r}")
-          if int(cfg.get('game_limit', 1)) < 1:
-              raise SystemExit('game_limit must be >= 1 in live Actions validation')
+          if int(cfg.get('game_limit', 1)) < 0:
+              raise SystemExit('game_limit must be >= 0; 0 means full catalog')
           if int(cfg.get('max_pages', 1)) < 0:
               raise SystemExit('max_pages must be >= 0')
           if cfg.get('game_url') and not cfg.get('slug'):
