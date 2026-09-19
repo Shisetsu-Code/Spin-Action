@@ -23,7 +23,9 @@ from tester_spin.providers.bgaming.server_guided import (
     dynamic_action_option_fields,
     dynamic_action_source,
     dynamic_action_unresolved_variants,
+    dynamic_action_unresolved_variants_any_state,
     dynamic_action_variants,
+    dynamic_action_variants_any_state,
 )
 
 
@@ -406,6 +408,22 @@ def _sequence_specs_from_unresolved(
 def _dynamic_prompt_for(data: dict[str, Any], command: str) -> FlowChoicePrompt | None:
     variants = dynamic_action_variants(data, command)
     unresolved_variants = dynamic_action_unresolved_variants(data, command)
+
+    # The first response that enters a server-issued picker can arrive before
+    # server-guided evidence for that exact flow.state has been remembered.
+    # In that narrow case, cards_data.issued+list is independent provider
+    # authority that we are inside the picker, so reuse the already client-proven
+    # command serializer shape from an earlier state instead of falling back to
+    # blind index probing.
+    sequence_progress = _server_sequence_progress(data, command)
+    if sequence_progress is not None:
+        if not variants:
+            variants = dynamic_action_variants_any_state(command)
+        if not unresolved_variants:
+            unresolved_variants = dynamic_action_unresolved_variants_any_state(
+                command
+            )
+
     context = _prompt_context(data, command)
     if context is None or (not variants and not unresolved_variants):
         return None
