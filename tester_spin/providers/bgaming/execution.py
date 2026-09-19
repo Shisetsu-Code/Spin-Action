@@ -1328,9 +1328,13 @@ class BGamingExecutionMixin:
                                 if isinstance(actions, list)
                                 else set()
                             )
-                            continuation_command = flow_continuation_command(
-                                {"flow": flow}
-                            )
+                            # Choice-aware continuations need the complete
+                            # provider response. In particular, BGaming manual
+                            # pickers expose their authoritative progress under
+                            # features.cards_data; passing only flow would erase
+                            # that evidence and incorrectly fall back to blind
+                            # index-domain probing.
+                            continuation_command = flow_continuation_command(data)
                             if not continuation_command:
                                 break
                             if continuation_command not in action_names:
