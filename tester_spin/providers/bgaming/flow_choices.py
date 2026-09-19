@@ -35,6 +35,7 @@ _ORIGINAL_FLOW_CONTINUATION = _runtime.flow_continuation_command
 _ORIGINAL_PENDING_FLOW_ACTIONS = _runtime.pending_flow_actions
 _ORIGINAL_POST_COMMAND = _runtime.post_command
 _ORIGINAL_VALIDATE_SPIN = _execution.validate_spin
+_MAX_SERVER_SEQUENCE_PICKS = 64
 
 
 @dataclass(slots=True)
@@ -285,23 +286,31 @@ def _static_prompt_for(
     )
 
 
-def _server_sequence_progress(
+def _server_sequence_active(
     data: dict[str, Any],
     command: str,
-) -> dict[str, Any] | None:
+) -> bool:
     if not isinstance(data, dict):
-        return None
+        return False
     flow = data.get("flow")
     if not isinstance(flow, dict):
-        return None
-    if _clean(flow.get("state")).casefold() != str(command or "").casefold():
-        return None
+        return False
+    expected = str(command or "").casefold()
+    if _clean(flow.get("state")).casefold() != expected:
+        return False
     actions = flow.get("available_actions")
     advertised = {
         _clean(item).casefold()
         for item in actions
     } if isinstance(actions, list) else set()
-    if str(command or "").casefold() not in advertised:
+    return expected in advertised
+
+
+def _server_sequence_progress(
+    data: dict[str, Any],
+    command: str,
+) -> dict[str, Any] | None:
+    if not _server_sequence_active(data, command):
         return None
 
     features = data.get("features")
@@ -343,6 +352,7 @@ def _server_sequence_progress(
         "issued": issued,
         "selected_indices": selected,
         "authority": "features.cards_data.issued+list",
+        "termination": "state-change",
     }
 
 
@@ -375,9 +385,14 @@ def _sequence_specs_from_unresolved(
     data: dict[str, Any],
     command: str,
     unresolved_variants: list[dict[str, Any]],
+    *,
+    allow_state_terminated: bool = False,
 ) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
     progress = _server_sequence_progress(data, command)
-    if progress is None:
+    state_terminated = bool(
+        allow_state_terminated and _server_sequence_active(data, command)
+    )
+    if progress is None and not state_terminated:
         return {}, list(unresolved_variants)
 
     specs: dict[str, dict[str, Any]] = {}
@@ -395,13 +410,24 @@ def _sequence_specs_from_unresolved(
             remaining.append(dict(variant))
             continue
         label = _sequence_label(literal, "index")
-        specs[label] = {
-            "field": "index",
-            "literal_options": literal,
-            "authority": str(progress["authority"]),
-            "issued": int(progress["issued"]),
-            "selected_indices": list(progress["selected_indices"]),
-        }
+        if progress is not None:
+            specs[label] = {
+                "field": "index",
+                "literal_options": literal,
+                "authority": str(progress["authority"]),
+                "issued": int(progress["issued"]),
+                "selected_indices": list(progress["selected_indices"]),
+                "termination": "state-change",
+            }
+        else:
+            specs[label] = {
+                "field": "index",
+                "literal_options": literal,
+                "authority": "flow.state+available_actions+client-setup-variant",
+                "issued": None,
+                "selected_indices": [],
+                "termination": "state-change",
+            }
     return specs, remaining
 
 
@@ -416,7 +442,8 @@ def _dynamic_prompt_for(data: dict[str, Any], command: str) -> FlowChoicePrompt 
     # command serializer shape from an earlier state instead of falling back to
     # blind index probing.
     sequence_progress = _server_sequence_progress(data, command)
-    if sequence_progress is not None:
+    sequence_active = _server_sequence_active(data, command)
+    if sequence_active:
         if not variants:
             variants = dynamic_action_variants_any_state(command)
         if not unresolved_variants:
@@ -453,6 +480,7 @@ def _dynamic_prompt_for(data: dict[str, Any], command: str) -> FlowChoicePrompt 
         data,
         command,
         unresolved_variants,
+        allow_state_terminated=_setup_variant_exists(variants, command),
     )
 
     # Dynamically learned literal payloads come from distinct client call sites.
@@ -635,9 +663,13 @@ def _flow_continuation_with_choices(data: dict[str, Any]) -> str:
 
     if run is not None and run.active_sequence:
         sequence_command = str(run.active_sequence.get("command") or "")
-        progress = _server_sequence_progress(data, sequence_command)
-        if progress is not None and len(progress["selected_indices"]) < progress["issued"]:
-            run.active_sequence["progress"] = progress
+        if _server_sequence_active(data, sequence_command):
+            progress = _server_sequence_progress(data, sequence_command)
+            if progress is not None:
+                run.active_sequence["progress"] = progress
+                if len(progress["selected_indices"]) >= int(progress["issued"]):
+                    run.active_sequence["stalled_after_issued"] = True
+                    return ""
             return sequence_command
         run.active_sequence = {}
 
@@ -690,8 +722,7 @@ def _pending_flow_actions_with_choices(data: dict[str, Any]) -> list[str]:
 
     if run.active_sequence:
         sequence_command = str(run.active_sequence.get("command") or "")
-        progress = _server_sequence_progress(data, sequence_command)
-        if progress is not None and len(progress["selected_indices"]) < progress["issued"]:
+        if _server_sequence_active(data, sequence_command):
             return [item for item in pending if str(item) != sequence_command]
         run.active_sequence = {}
 
@@ -769,21 +800,59 @@ def _update_sequence_after_response(
     prompt: FlowChoicePrompt,
     command: str,
     data: dict[str, Any],
+    *,
+    sent_index: int,
 ) -> None:
-    progress = _server_sequence_progress(data, command)
-    if progress is None:
-        observed = _response_selected_indices(data)
-        if observed:
-            prompt.sequence_picks = observed
-        prompt.sequence_completed = True
-        run.active_sequence = {}
-        return
+    active = _server_sequence_active(data, command)
+    provider_progress = _server_sequence_progress(data, command)
+    current = run.active_sequence.get("progress")
+    current = dict(current) if isinstance(current, dict) else {}
+
+    local_selected = [
+        int(value)
+        for value in current.get("selected_indices") or []
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0
+    ]
+    if sent_index not in local_selected:
+        local_selected.append(int(sent_index))
+
+    if provider_progress is not None:
+        selected = list(provider_progress["selected_indices"])
+        for value in local_selected:
+            if value not in selected:
+                selected.append(value)
+        progress = {
+            "issued": int(provider_progress["issued"]),
+            "selected_indices": selected,
+            "authority": str(provider_progress["authority"]),
+            "termination": "state-change",
+        }
+    else:
+        progress = {
+            "issued": current.get("issued"),
+            "selected_indices": local_selected,
+            "authority": str(
+                current.get("authority")
+                or "flow.state+available_actions+client-setup-variant"
+            ),
+            "termination": "state-change",
+        }
+
     prompt.sequence_picks = list(progress["selected_indices"])
-    if len(progress["selected_indices"]) >= int(progress["issued"]):
-        prompt.sequence_completed = True
-        run.active_sequence = {}
+    if active:
+        if len(prompt.sequence_picks) >= _MAX_SERVER_SEQUENCE_PICKS:
+            run.active_sequence["guard_exhausted"] = True
+            run.active_sequence["progress"] = progress
+            return
+        run.active_sequence["progress"] = progress
         return
-    run.active_sequence["progress"] = progress
+
+    observed = _response_selected_indices(data)
+    for value in observed:
+        if value not in prompt.sequence_picks:
+            prompt.sequence_picks.append(value)
+    prompt.sequence_completed = True
+    run.active_sequence = {}
 
 
 def _dispatch_sequence(
@@ -803,14 +872,42 @@ def _dispatch_sequence(
 
     progress = run.active_sequence.get("progress")
     if not isinstance(progress, dict):
+        raw_issued = spec.get("issued")
+        issued = None
+        if raw_issued is not None and not isinstance(raw_issued, bool):
+            try:
+                issued = int(raw_issued)
+            except (TypeError, ValueError):
+                issued = None
         progress = {
-            "issued": int(spec.get("issued") or 0),
+            "issued": issued,
             "selected_indices": list(spec.get("selected_indices") or []),
             "authority": str(spec.get("authority") or ""),
+            "termination": str(spec.get("termination") or "state-change"),
         }
-    issued = int(progress.get("issued") or 0)
-    if issued <= 0:
-        raise ValueError(f"BGaming {command}: secuencia sin issued positivo.")
+
+    selected_indices = [
+        int(value)
+        for value in progress.get("selected_indices") or []
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0
+    ]
+    if len(selected_indices) >= _MAX_SERVER_SEQUENCE_PICKS:
+        raise ValueError(
+            f"BGaming {command}: secuencia manual excedió guard "
+            f"{_MAX_SERVER_SEQUENCE_PICKS} sin transición de estado."
+        )
+
+    raw_issued = progress.get("issued")
+    if raw_issued is not None and not isinstance(raw_issued, bool):
+        try:
+            issued = int(raw_issued)
+        except (TypeError, ValueError):
+            issued = 0
+        if issued > 0 and len(selected_indices) >= issued:
+            raise ValueError(
+                f"BGaming {command}: provider reportó issued={issued} pero "
+                "el flujo sigue en el estado de picker."
+            )
 
     payload_options = dict(options) if isinstance(options, dict) else {}
     literal = dict(spec.get("literal_options") or {})
@@ -820,7 +917,8 @@ def _dispatch_sequence(
         command=command,
     )
     field = str(spec.get("field") or "index")
-    payload_options[field] = _next_sequence_index(progress)
+    sent_index = _next_sequence_index(progress)
+    payload_options[field] = sent_index
 
     result = _ORIGINAL_POST_COMMAND(
         runtime,
@@ -833,7 +931,7 @@ def _dispatch_sequence(
 
     if not run.active_sequence:
         prompt.selected = selected
-        prompt.sequence_picks = list(progress.get("selected_indices") or [])
+        prompt.sequence_picks = list(selected_indices)
         run.prompts.append(prompt)
         run.round_paths[(prompt.scope, prompt.round_id, prompt.command)] = [
             *prompt.prefix,
@@ -848,7 +946,13 @@ def _dispatch_sequence(
             "progress": progress,
         }
 
-    _update_sequence_after_response(run, prompt, command, data)
+    _update_sequence_after_response(
+        run,
+        prompt,
+        command,
+        data,
+        sent_index=sent_index,
+    )
     run.pending = None
     return result
 
