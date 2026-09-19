@@ -38,6 +38,13 @@ def _bundle() -> str:
     )
 
 
+def _probe_only_bundle() -> str:
+    return (
+        'requestCardsPick=async e=>q.request({command:"pick_cards",options:e});'
+        'onPlayer=async e=>requestCardsPick({mode:"any",index:e});'
+    )
+
+
 def test_dynamic_literal_variants_advance_instead_of_repeating(monkeypatch) -> None:
     data = _response()
     evidence = analyze_server_response_against_bundle(data, _bundle())
@@ -203,13 +210,14 @@ def test_picker_state_promotes_manual_index_to_server_issued_sequence() -> None:
             "authority": "features.cards_data.issued+list",
             "issued": 3,
             "selected_indices": [],
+            "termination": "state-change",
         }
     finally:
         flow_choices.end_flow_choice_run()
         end_dynamic_contract_run()
 
 
-def test_picker_without_server_progress_contract_remains_unresolved() -> None:
+def test_picker_without_cards_data_uses_server_state_termination() -> None:
     data = _picker_response()
     data["features"].pop("cards_data")
     evidence = analyze_server_response_against_bundle(data, _bundle())
@@ -224,23 +232,28 @@ def test_picker_without_server_progress_contract_remains_unresolved() -> None:
             if prompt.command == "pick_cards"
         )
         payload = prompt.to_dict()
-        assert payload["unresolved_option_variants"] == [
-            {
-                "literal_options": {"mode": "any"},
-                "unresolved_fields": ["index"],
-                "source": "client-callsite:requestCardsPick",
-            }
-        ]
-        assert payload.get("sequence_specs", {}) == {}
+        label = 'mode="any"|index=<server-sequence>'
+        assert label in payload["available"]
+        assert payload.get("unresolved_option_variants", []) == []
+        assert payload["sequence_specs"][label] == {
+            "field": "index",
+            "literal_options": {"mode": "any"},
+            "authority": "flow.state+available_actions+client-setup-variant",
+            "issued": None,
+            "selected_indices": [],
+            "termination": "state-change",
+        }
     finally:
         flow_choices.end_flow_choice_run()
         end_dynamic_contract_run()
 
 
-def test_dynamic_index_probe_forces_prefix_then_injects_candidate(monkeypatch) -> None:
+def test_state_terminated_manual_sequence_uses_unique_indices_until_state_changes(monkeypatch) -> None:
     root = _response()
     picker = _picker_response()
     picker["features"].pop("cards_data")
+    terminal = _picker_response(state="freespins")
+    terminal["features"].pop("cards_data")
     sent: list[tuple[str, dict[str, Any]]] = []
 
     monkeypatch.setattr(flow_choices, "_ORIGINAL_FLOW_CONTINUATION", lambda _data: "")
@@ -248,11 +261,14 @@ def test_dynamic_index_probe_forces_prefix_then_injects_candidate(monkeypatch) -
     def fake_post(runtime, command: str, *, timeout_s: float, options=None, extra_data=None):
         payload = dict(options or {})
         sent.append((command, payload))
-        response_data = (
-            picker
-            if payload == {"mode": "select_pick_cards"}
-            else picker
-        )
+        if payload == {"mode": "select_pick_cards"}:
+            response_data = picker
+        elif payload.get("mode") == "any" and payload.get("index") in {0, 1}:
+            response_data = picker
+        elif payload == {"mode": "any", "index": 2}:
+            response_data = terminal
+        else:
+            raise AssertionError(f"unexpected payload: {payload!r}")
         return object(), {"command": command, "options": payload}, response_data
 
     monkeypatch.setattr(flow_choices, "_ORIGINAL_POST_COMMAND", fake_post)
@@ -263,26 +279,73 @@ def test_dynamic_index_probe_forces_prefix_then_injects_candidate(monkeypatch) -
     flow_choices.begin_flow_choice_run(
         forced_scope="PURCHASE_FUTURE_FEATURE_LEVEL_0",
         forced_command="pick_cards",
-        forced_path=('mode="select_pick_cards"',),
+        forced_path=(
+            'mode="select_pick_cards"',
+            'mode="any"|index=<server-sequence>',
+        ),
+    )
+    try:
+        data = root
+        for _ in range(4):
+            command = flow_choices._flow_continuation_with_choices(data)
+            assert command == "pick_cards"
+            _response_obj, _request, data = flow_choices._post_command_with_choices(
+                object(), command, timeout_s=3.0
+            )
+
+        assert sent == [
+            ("pick_cards", {"mode": "select_pick_cards"}),
+            ("pick_cards", {"mode": "any", "index": 0}),
+            ("pick_cards", {"mode": "any", "index": 1}),
+            ("pick_cards", {"mode": "any", "index": 2}),
+        ]
+        assert flow_choices._flow_continuation_with_choices(data) == ""
+        trace = flow_choices.end_flow_choice_run()
+        sequence = next(
+            row
+            for row in trace
+            if row.get("selected") == 'mode="any"|index=<server-sequence>'
+        )
+        assert sequence["sequence_completed"] is True
+        assert sequence["sequence_picks"] == [0, 1, 2]
+    finally:
+        # end_flow_choice_run is idempotent after the explicit trace read above.
+        flow_choices.end_flow_choice_run()
+        end_dynamic_contract_run()
+
+
+def test_dynamic_index_probe_remains_fallback_without_setup_variant(monkeypatch) -> None:
+    picker = _picker_response()
+    picker["features"].pop("cards_data")
+    sent: list[tuple[str, dict[str, Any]]] = []
+
+    monkeypatch.setattr(flow_choices, "_ORIGINAL_FLOW_CONTINUATION", lambda _data: "")
+
+    def fake_post(runtime, command: str, *, timeout_s: float, options=None, extra_data=None):
+        payload = dict(options or {})
+        sent.append((command, payload))
+        return object(), {"command": command, "options": payload}, picker
+
+    monkeypatch.setattr(flow_choices, "_ORIGINAL_POST_COMMAND", fake_post)
+
+    begin_dynamic_contract_run()
+    remember_dynamic_evidence(
+        analyze_server_response_against_bundle(picker, _probe_only_bundle())
+    )
+    flow_choices.begin_flow_choice_run(
+        forced_scope="PURCHASE_FUTURE_FEATURE_LEVEL_0",
+        forced_command="pick_cards",
         dynamic_probe={
             "scope": "PURCHASE_FUTURE_FEATURE_LEVEL_0",
             "command": "pick_cards",
-            "prefix": ['mode="select_pick_cards"'],
+            "prefix": [],
             "literal_options": {"mode": "any"},
             "field": "index",
             "value": 7,
         },
     )
     try:
-        data = root
-        command = flow_choices._flow_continuation_with_choices(data)
-        assert command == "pick_cards"
-        _response_obj, _request, data = flow_choices._post_command_with_choices(
-            object(), command, timeout_s=3.0
-        )
-        assert sent[-1] == ("pick_cards", {"mode": "select_pick_cards"})
-
-        command = flow_choices._flow_continuation_with_choices(data)
+        command = flow_choices._flow_continuation_with_choices(picker)
         assert command == "pick_cards"
         flow_choices._post_command_with_choices(object(), command, timeout_s=3.0)
         assert sent[-1] == ("pick_cards", {"mode": "any", "index": 7})
@@ -292,7 +355,7 @@ def test_dynamic_index_probe_forces_prefix_then_injects_candidate(monkeypatch) -
         assert probe["outcome"] == "ACCEPTED"
         assert probe["value"] == 7
         assert probe["request_options"] == {"mode": "any", "index": 7}
-        assert flow_choices._flow_continuation_with_choices(data) == ""
+        assert flow_choices._flow_continuation_with_choices(picker) == ""
     finally:
         flow_choices.end_flow_choice_run()
         end_dynamic_contract_run()
@@ -301,7 +364,6 @@ def test_dynamic_index_probe_forces_prefix_then_injects_candidate(monkeypatch) -
 def test_dynamic_index_probe_classifies_http_422_as_semantic_rejection(monkeypatch) -> None:
     import requests
 
-    root = _response()
     picker = _picker_response()
     picker["features"].pop("cards_data")
     calls = 0
@@ -322,29 +384,23 @@ def test_dynamic_index_probe_classifies_http_422_as_semantic_rejection(monkeypat
     monkeypatch.setattr(flow_choices, "_ORIGINAL_POST_COMMAND", fake_post)
 
     begin_dynamic_contract_run()
-    remember_dynamic_evidence(analyze_server_response_against_bundle(root, _bundle()))
-    remember_dynamic_evidence(analyze_server_response_against_bundle(picker, _bundle()))
+    remember_dynamic_evidence(
+        analyze_server_response_against_bundle(picker, _probe_only_bundle())
+    )
     flow_choices.begin_flow_choice_run(
         forced_scope="PURCHASE_FUTURE_FEATURE_LEVEL_0",
         forced_command="pick_cards",
-        forced_path=('mode="select_pick_cards"',),
         dynamic_probe={
             "scope": "PURCHASE_FUTURE_FEATURE_LEVEL_0",
             "command": "pick_cards",
-            "prefix": ['mode="select_pick_cards"'],
+            "prefix": [],
             "literal_options": {"mode": "any"},
             "field": "index",
             "value": 16,
         },
     )
     try:
-        data = root
-        command = flow_choices._flow_continuation_with_choices(data)
-        _response_obj, _request, data = flow_choices._post_command_with_choices(
-            object(), command, timeout_s=3.0
-        )
-
-        command = flow_choices._flow_continuation_with_choices(data)
+        command = flow_choices._flow_continuation_with_choices(picker)
         try:
             flow_choices._post_command_with_choices(object(), command, timeout_s=3.0)
         except requests.HTTPError:
@@ -357,7 +413,7 @@ def test_dynamic_index_probe_classifies_http_422_as_semantic_rejection(monkeypat
         assert probe["outcome"] == "SEMANTIC_REJECTION"
         assert probe["http_status"] == 422
         assert probe["value"] == 16
-        assert calls == 2
+        assert calls == 1
     finally:
         flow_choices.end_flow_choice_run()
         end_dynamic_contract_run()
