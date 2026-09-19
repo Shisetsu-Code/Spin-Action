@@ -460,5 +460,64 @@ class ExhaustiveProviderPathTests(unittest.TestCase):
         self.assertEqual(mode["server_sequence_picks"][label], [0, 1, 2])
 
 
+    def test_bgaming_server_sequence_trace_resolves_prior_unresolved_variant(self) -> None:
+        graph = {}
+        unresolved = {
+            "literal_options": {"mode": "any"},
+            "unresolved_fields": ["index"],
+            "source": "client-callsite:requestCardsPick",
+        }
+        bgaming_exhaustive._merge_choice_trace(
+            graph,
+            [
+                {
+                    "scope": "PURCHASE_A",
+                    "command": "pick_cards",
+                    "prefix": ['mode="select_pick_cards"'],
+                    "available": ['mode="auto"'],
+                    "unresolved_option_variants": [unresolved],
+                }
+            ],
+            complete=False,
+        )
+        bgaming_exhaustive._merge_choice_trace(
+            graph,
+            [
+                {
+                    "scope": "PURCHASE_A",
+                    "command": "pick_cards",
+                    "prefix": ['mode="select_pick_cards"'],
+                    "available": [
+                        'mode="auto"',
+                        'mode="any"|index=<server-sequence>',
+                    ],
+                    "sequence_specs": {
+                        'mode="any"|index=<server-sequence>': {
+                            "field": "index",
+                            "literal_options": {"mode": "any"},
+                            "authority": "features.cards_data.issued+list",
+                            "issued": 3,
+                        }
+                    },
+                    "unresolved_option_variants": [],
+                }
+            ],
+            complete=False,
+        )
+
+        point = next(iter(graph.values()))
+        self.assertEqual(point["unresolved_option_variants"], [])
+        self.assertIn(
+            'mode="any"|index=<server-sequence>',
+            point["available"],
+        )
+        self.assertEqual(
+            point["server_sequence_contracts"][
+                'mode="any"|index=<server-sequence>'
+            ]["authority"],
+            "features.cards_data.issued+list",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
