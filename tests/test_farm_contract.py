@@ -74,6 +74,14 @@ class _ExplodingProvider(_UnsupportedProvider):
         raise RuntimeError("builder exploded")
 
 
+class _ReadyProvider(_UnsupportedProvider):
+    def build_farm_contract(self, game: Game, result: GameTestResult) -> dict:
+        return _contract()
+
+    def validate_farm_contract(self, contract: dict) -> list[str]:
+        return []
+
+
 class FarmContractTests(unittest.TestCase):
     def test_valid_common_contract_passes(self) -> None:
         self.assertEqual(validate_common_contract(_contract()), [])
@@ -169,6 +177,37 @@ class FarmContractTests(unittest.TestCase):
             )
             self.assertEqual(published["schema"], SCHEMA)
             self.assertTrue(published["ready"])
+
+    def test_promoted_export_closes_action_inventory(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            provider = _ReadyProvider(root)
+            game = Game(
+                provider="synthetic",
+                slug="game-a",
+                name="Game A",
+                url="https://example.test/game-a",
+                symbol="GameA",
+            )
+            result = GameTestResult(
+                provider="synthetic",
+                slug="game-a",
+                game_name="Game A",
+                game_url=game.url,
+                requested_spins=1,
+                successful_spins=1,
+                failed_spins=0,
+                status="OK",
+                symbol="GameA",
+            )
+
+            export_farm_contract(provider, game, result, progress=lambda _message: None)
+
+            inventory = result.structural_map["action_inventory"]
+            self.assertEqual(inventory["state"], "COMPLETE")
+            self.assertEqual(inventory["source"], "synthetic:promoted-farm-contract")
+            self.assertEqual(inventory["mode_ids"], ["SPIN"])
+            self.assertTrue((root / "farm-contract.json").is_file())
 
     def test_unsupported_provider_emits_explicit_nonready_candidate(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
