@@ -515,3 +515,40 @@ def test_server_issued_manual_sequence_sends_distinct_indices_until_picker_exits
         if flow_choices._current_run() is not None:
             flow_choices.end_flow_choice_run()
         end_dynamic_contract_run()
+
+
+def test_picker_server_progress_promotes_client_contract_before_state_scan() -> None:
+    root = _response()
+    picker = _picker_response()
+
+    begin_dynamic_contract_run()
+    # This reproduces the live ordering: client call-site evidence was learned
+    # while the flow was still in gamble_bonus. The first pick_cards response
+    # already has authoritative server progress before a second bundle scan for
+    # the new state has been remembered.
+    remember_dynamic_evidence(
+        analyze_server_response_against_bundle(root, _bundle())
+    )
+    flow_choices.begin_flow_choice_run()
+    try:
+        prompt = next(
+            prompt
+            for prompt in flow_choices._candidate_prompts(picker)
+            if prompt.command == "pick_cards"
+        )
+        payload = prompt.to_dict()
+        sequence = 'mode="any"|index=<server-sequence>'
+
+        assert payload["available"] == [
+            'mode="select_pick_cards"',
+            'mode="auto"',
+            sequence,
+        ]
+        assert payload["unresolved_option_variants"] == []
+        assert payload["sequence_specs"][sequence]["issued"] == 3
+        assert payload["sequence_specs"][sequence]["authority"] == (
+            "features.cards_data.issued+list"
+        )
+    finally:
+        flow_choices.end_flow_choice_run()
+        end_dynamic_contract_run()
