@@ -310,15 +310,39 @@ def _merge_choice_trace(
             if marker not in existing:
                 unresolved_store.append(normalized)
         sequence_contracts = point.setdefault("server_sequence_contracts", {})
+        resolved_sequence_variants: list[tuple[dict[str, Any], str]] = []
         for label, raw_spec in (item.get("sequence_specs") or {}).items():
             if not str(label) or not isinstance(raw_spec, dict):
                 continue
+            field = str(raw_spec.get("field") or "")
+            literal_options = dict(raw_spec.get("literal_options") or {})
             sequence_contracts[str(label)] = {
-                "field": str(raw_spec.get("field") or ""),
-                "literal_options": dict(raw_spec.get("literal_options") or {}),
+                "field": field,
+                "literal_options": literal_options,
                 "authority": str(raw_spec.get("authority") or ""),
                 "issued": raw_spec.get("issued"),
             }
+            if field:
+                resolved_sequence_variants.append((literal_options, field))
+
+        if resolved_sequence_variants:
+            point["unresolved_option_variants"] = [
+                variant
+                for variant in unresolved_store
+                if not (
+                    isinstance(variant, dict)
+                    and any(
+                        dict(variant.get("literal_options") or {}) == literal_options
+                        and [
+                            str(value)
+                            for value in variant.get("unresolved_fields") or []
+                            if str(value)
+                        ] == [field]
+                        for literal_options, field in resolved_sequence_variants
+                    )
+                )
+            ]
+            unresolved_store = point["unresolved_option_variants"]
 
         selected = str(item.get("selected") or "")
         if selected and item.get("sequence_completed") is True:
