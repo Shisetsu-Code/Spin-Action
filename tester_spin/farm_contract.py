@@ -219,6 +219,27 @@ def _merge_unresolved(contract: dict[str, Any], reasons: list[str]) -> None:
     contract["unresolved"] = unresolved
 
 
+def _attach_promoted_action_inventory(result, contract: dict[str, Any]) -> None:
+    structural = result.structural_map if isinstance(result.structural_map, dict) else {}
+    modes = contract.get("modes")
+    mode_ids = [
+        str(mode.get("id") or "").strip()
+        for mode in modes
+        if isinstance(mode, dict) and str(mode.get("id") or "").strip()
+    ] if isinstance(modes, list) else []
+    provider = str(contract.get("provider") or result.provider or "").strip()
+    structural["action_inventory"] = {
+        "state": "COMPLETE",
+        "source": f"{provider}:promoted-farm-contract",
+        "reason": (
+            "Provider farm contract was promoted after common/provider validation: "
+            "required modes are demonstrated and no unresolved actions or continuations remain."
+        ),
+        "mode_ids": mode_ids,
+    }
+    result.structural_map = structural
+
+
 def export_farm_contract(provider, game, result, *, progress) -> None:
     """Persist a provider-built contract candidate after final discovery gates.
 
@@ -257,6 +278,7 @@ def export_farm_contract(provider, game, result, *, progress) -> None:
         write_contract_candidate(Path(game_dir), contract)
         promoted = promote_contract_if_ready(Path(game_dir), contract)
         if promoted:
+            _attach_promoted_action_inventory(result, contract)
             progress("farm contract: PROMOTED")
             return
 
