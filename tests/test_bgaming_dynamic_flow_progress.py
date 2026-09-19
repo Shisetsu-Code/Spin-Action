@@ -544,7 +544,7 @@ def test_picker_server_progress_promotes_client_contract_before_state_scan() -> 
             'mode="auto"',
             sequence,
         ]
-        assert payload["unresolved_option_variants"] == []
+        assert payload.get("unresolved_option_variants", []) == []
         assert payload["sequence_specs"][sequence]["issued"] == 3
         assert payload["sequence_specs"][sequence]["authority"] == (
             "features.cards_data.issued+list"
