@@ -321,6 +321,7 @@ def _merge_choice_trace(
                 "literal_options": literal_options,
                 "authority": str(raw_spec.get("authority") or ""),
                 "issued": raw_spec.get("issued"),
+                "termination": str(raw_spec.get("termination") or ""),
             }
             if field:
                 resolved_sequence_variants.append((literal_options, field))
@@ -353,7 +354,15 @@ def _merge_choice_trace(
             ]
             point.setdefault("server_sequence_picks", {})[selected] = picks
 
-        if complete and selected in available:
+        selected_is_sequence = bool(
+            selected
+            and selected in (item.get("sequence_specs") or {})
+        )
+        if (
+            complete
+            and selected in available
+            and (not selected_is_sequence or item.get("sequence_completed") is True)
+        ):
             point["covered"].add(selected)
             point["sample_counts"][selected] = point["sample_counts"].get(selected, 0) + 1
 
