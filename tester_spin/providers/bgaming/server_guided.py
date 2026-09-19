@@ -606,6 +606,34 @@ def dynamic_action_unresolved_variants(
     return [dict(item) for item in rows if isinstance(item, dict)]
 
 
+def dynamic_action_variants_any_state(action: str) -> list[dict[str, Any]]:
+    """Return client-proven literal variants without requiring prior state scan.
+
+    Callers must provide an independent runtime authority before using this
+    fallback. This is intentionally not used for ordinary replay discovery.
+    """
+    spec = _dynamic_specs().get(str(action or ""))
+    variants = spec.get("variants") if isinstance(spec, dict) else None
+    if not isinstance(variants, dict):
+        return []
+    return [
+        {"label": str(label), "options": dict(options)}
+        for label, options in variants.items()
+        if str(label) and isinstance(options, dict)
+    ]
+
+
+def dynamic_action_unresolved_variants_any_state(
+    action: str,
+) -> list[dict[str, Any]]:
+    """Return client-proven unresolved variants independent of observed state."""
+    spec = _dynamic_specs().get(str(action or ""))
+    rows = spec.get("unresolved_variants") if isinstance(spec, dict) else None
+    if not isinstance(rows, list):
+        return []
+    return [dict(item) for item in rows if isinstance(item, dict)]
+
+
 def dynamic_action_source(action: str) -> str:
     spec = _dynamic_specs().get(str(action or ""))
     if not isinstance(spec, dict):
