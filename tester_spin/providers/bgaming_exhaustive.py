@@ -469,6 +469,40 @@ def _dynamic_variant_identity(variant: dict[str, Any]) -> str:
     )
 
 
+def _variant_still_unresolved(
+    point: dict[str, Any],
+    variant: dict[str, Any],
+) -> bool:
+    identity = _dynamic_variant_identity(variant)
+    return any(
+        isinstance(item, dict)
+        and _dynamic_variant_identity(item) == identity
+        for item in point.get("unresolved_option_variants") or []
+    )
+
+
+def _merge_probe_trace_discovery(
+    graph: dict[tuple[str, str, tuple[str, ...]], dict[str, Any]],
+    trace: list[dict[str, Any]],
+    *,
+    point: dict[str, Any],
+    variant: dict[str, Any],
+) -> bool:
+    """Promote stronger choice evidence observed while running a probe.
+
+    A dynamic index probe can be the first fresh session that reaches a state
+    carrying a provider-side sequence contract. Its trace is discovery evidence
+    even when that probe itself is not terminal.
+    """
+    was_unresolved = _variant_still_unresolved(point, variant)
+    _merge_choice_trace(graph, trace, complete=False)
+    return bool(
+        was_unresolved
+        and not _variant_still_unresolved(point, variant)
+        and point.get("server_sequence_contracts")
+    )
+
+
 def _confirmed_zero_semantic_rejection(
     proof: dict[str, Any],
     *,
@@ -565,6 +599,19 @@ def _resolve_dynamic_index_domains(
                 str(label)
                 for label in (point.get("dynamic_option_payloads") or {})
             )
+            if not _variant_still_unresolved(point, variant):
+                record["state"] = "RESOLVED_BY_SERVER_SEQUENCE"
+                record["server_sequence_contracts"] = {
+                    str(label): dict(spec)
+                    for label, spec in (
+                        point.get("server_sequence_contracts") or {}
+                    ).items()
+                    if str(label) and isinstance(spec, dict)
+                }
+                proofs.append(record)
+                changed = True
+                continue
+
             applied = apply_index_domain_proof(point, variant, proof)
             if applied:
                 changed = True
@@ -998,7 +1045,7 @@ class BGamingProvider(_BGamingProvider):
                         ),
                     }
                 try:
-                    sub, _trace, probe = self._raw_dynamic_index_probe(
+                    sub, probe_trace, probe = self._raw_dynamic_index_probe(
                         game,
                         scope=scope,
                         command=command,
@@ -1017,6 +1064,13 @@ class BGamingProvider(_BGamingProvider):
                         "error": f"{type(exc).__name__}: {exc}",
                     }
 
+                resolved_by_sequence = _merge_probe_trace_discovery(
+                    graph,
+                    probe_trace,
+                    point=point,
+                    variant=variant,
+                )
+
                 target_dir = (
                     master_root
                     / "dynamic-index-probes"
@@ -1030,7 +1084,16 @@ class BGamingProvider(_BGamingProvider):
 
                 observed = dict(probe) if isinstance(probe, dict) else {}
                 observed["index"] = int(index)
-                observed.setdefault("target_reached", False)
+                if resolved_by_sequence:
+                    observed.update(
+                        {
+                            "target_reached": True,
+                            "outcome": DYNAMIC_INDEX_PROTOCOL_ERROR,
+                            "resolved_by_server_sequence": True,
+                        }
+                    )
+                else:
+                    observed.setdefault("target_reached", False)
                 _write_json(target_dir / "probe.json", observed)
                 return observed
 
