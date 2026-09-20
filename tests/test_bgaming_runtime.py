@@ -1206,6 +1206,85 @@ class BGamingRuntimeTests(unittest.TestCase):
         )
         self.assertTrue(any("balance inconsistente" in warning for warning in warnings))
 
+    def test_outcomeless_terminal_continuation_requires_closed_unchanged_balance(self) -> None:
+        data = {
+            "api_version": "2",
+            "balance": {"wallet": 99980, "game": 40},
+            "flow": {
+                "command": "close",
+                "state": "closed",
+                "available_actions": ["init", "spin"],
+            },
+        }
+        self.assertEqual(
+            validate_spin(
+                data,
+                requested_bet=20,
+                previous_balance_total=100020,
+                expected_reels=None,
+                expected_rows=None,
+                command="close",
+                expected_debit=0,
+            ),
+            [],
+        )
+        data["balance"]["wallet"] -= 1
+        self.assertIn(
+            "close sin outcome",
+            validate_spin(
+                data,
+                requested_bet=20,
+                previous_balance_total=100020,
+                expected_reels=None,
+                expected_rows=None,
+                command="close",
+                expected_debit=0,
+            ),
+        )
+
+    def test_observed_effective_bet_requires_exact_balance_proof(self) -> None:
+        data = {
+            "api_version": "2",
+            "outcome": {
+                "screen": [["1"], ["2"], ["3"]],
+                "bet": 60,
+                "win": 40,
+            },
+            "balance": {"wallet": 99940, "game": 40},
+            "flow": {
+                "command": "spin",
+                "state": "closed",
+                "available_actions": ["init", "spin"],
+            },
+        }
+        self.assertEqual(
+            validate_spin(
+                data,
+                requested_bet=20,
+                previous_balance_total=100000,
+                expected_reels=None,
+                expected_rows=None,
+                command="spin",
+                expected_debit=20,
+                expected_outcome_bet=20,
+                allow_observed_effective_bet=True,
+            ),
+            [],
+        )
+        data["balance"]["wallet"] = 99941
+        warnings = validate_spin(
+            data,
+            requested_bet=20,
+            previous_balance_total=100000,
+            expected_reels=None,
+            expected_rows=None,
+            command="spin",
+            expected_debit=20,
+            expected_outcome_bet=20,
+            allow_observed_effective_bet=True,
+        )
+        self.assertTrue(any("bet devuelta" in warning for warning in warnings))
+
     def test_422_infers_only_fields_named_by_server_validation(self) -> None:
         class Response:
             text = '{"error":{"rows":["is required"]}}'

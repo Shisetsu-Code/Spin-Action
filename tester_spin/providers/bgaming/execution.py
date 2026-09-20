@@ -942,6 +942,7 @@ class BGamingExecutionMixin:
 
         if runtime is not None and isinstance(default_bet, (int, float)):
             runtime_needs_refresh = False
+            observed_base_bet_multiplier = 1.0
             for mode_index, mode_spec in enumerate(mode_specs):
                 if mode_index > 0 and active_profile is not None and active_profile.family == API_V2:
                     runtime_needs_refresh = True
@@ -1031,6 +1032,7 @@ class BGamingExecutionMixin:
                                 ),
                                 options=spin_options,
                             )
+                            expected_outcome_bet *= observed_base_bet_multiplier
                             expected_debit = purchase_expected_debit(
                                 expected_outcome_bet,
                                 purchase if isinstance(purchase, dict) else None,
@@ -1221,8 +1223,46 @@ class BGamingExecutionMixin:
                                 ),
                                 variable_layout=variable_layout,
                                 allow_observed_debit=learn_purchase_debit,
+                                allow_observed_effective_bet=(
+                                    mode_id == "SPIN"
+                                    and not isinstance(purchase, dict)
+                                    and observed_base_bet_multiplier == 1.0
+                                ),
                             )
                         )
+
+                        if mode_id == "SPIN" and not isinstance(purchase, dict) and not warnings:
+                            outcome = data.get("outcome")
+                            actual_base_bet = (
+                                outcome.get("bet") if isinstance(outcome, dict) else None
+                            )
+                            if (
+                                isinstance(actual_base_bet, (int, float))
+                                and actual_base_bet > 0
+                                and float(default_bet) > 0
+                            ):
+                                learned_ratio = float(actual_base_bet) / float(default_bet)
+                                if abs(learned_ratio - 1.0) > 1e-9:
+                                    observed_base_bet_multiplier = learned_ratio
+                                    for discovered in discovered_modes:
+                                        if discovered.get("id") == "SPIN":
+                                            discovered["effective_bet_multiplier"] = learned_ratio
+                                        elif (
+                                            discovered.get("kind") == "PURCHASE"
+                                            and isinstance(discovered.get("cost_multiplier"), (int, float))
+                                        ):
+                                            declared = float(discovered["cost_multiplier"])
+                                            discovered["declared_cost_multiplier"] = declared
+                                            discovered["cost_multiplier"] = (
+                                                declared * learned_ratio
+                                            )
+                                            discovered["cost_source"] = (
+                                                "init-feature-multiplier+observed-effective-bet"
+                                            )
+                                    progress(
+                                        f"[{game.name}] apuesta efectiva observada: "
+                                        f"x{learned_ratio:g} sobre bet solicitada."
+                                    )
 
                         if (
                             learn_purchase_debit

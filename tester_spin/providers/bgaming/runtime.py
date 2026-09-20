@@ -1537,6 +1537,7 @@ def validate_spin(
     expected_outcome_bet: int | float | None = None,
     variable_layout: bool = False,
     allow_observed_debit: bool = False,
+    allow_observed_effective_bet: bool = False,
     selected_choice: str = "",
 ) -> list[str]:
     warnings: list[str] = []
@@ -1546,6 +1547,7 @@ def validate_spin(
 
     outcome = data.get("outcome")
     outcomeless_choice = False
+    outcomeless_terminal = False
     if not isinstance(outcome, dict):
         contract = command_contract(command)
         flow = data.get("flow")
@@ -1563,13 +1565,24 @@ def validate_spin(
             and isinstance(previous_balance_total, (int, float))
             and isinstance(current_total, (int, float))
         )
-        if not outcomeless_choice:
+        outcomeless_terminal = bool(
+            command != "spin"
+            and isinstance(flow, dict)
+            and str(flow.get("command") or "") == command
+            and str(flow.get("state") or "") == "closed"
+            and provider_error_envelope(data) is None
+            and float(expected_debit or 0) == 0.0
+            and isinstance(previous_balance_total, (int, float))
+            and isinstance(current_total, (int, float))
+            and abs(float(current_total) - float(previous_balance_total)) <= 1e-9
+        )
+        if not outcomeless_choice and not outcomeless_terminal:
             warnings.append(f"{command} sin outcome")
             return warnings
         outcome = {}
 
     actual_bet = outcome.get("bet")
-    win = 0 if outcomeless_choice else outcome.get("win")
+    win = 0 if (outcomeless_choice or outcomeless_terminal) else outcome.get("win")
     # BGaming is not consistent about outcome.bet inside zero-debit continuations.
     # For freespins/preselection, the balance delta is authoritative.
     if command == "spin":
@@ -1582,11 +1595,30 @@ def validate_spin(
             not isinstance(actual_bet, (int, float))
             or abs(float(actual_bet) - float(expected_bet)) > 1e-9
         ):
-            warnings.append(
-                f"bet devuelta={actual_bet!r}, esperada={expected_bet!r}, "
-                f"solicitada={requested_bet!r}"
-            )
-    if not outcomeless_choice and not isinstance(win, (int, float)):
+            observed_effective = False
+            current_total_for_bet = balance_total(data)
+            if (
+                allow_observed_effective_bet
+                and isinstance(actual_bet, (int, float))
+                and actual_bet > 0
+                and isinstance(previous_balance_total, (int, float))
+                and isinstance(current_total_for_bet, (int, float))
+                and isinstance(win, (int, float))
+            ):
+                observed_expected = (
+                    float(previous_balance_total)
+                    - float(actual_bet)
+                    + float(win)
+                )
+                observed_effective = (
+                    abs(float(current_total_for_bet) - observed_expected) <= 1e-9
+                )
+            if not observed_effective:
+                warnings.append(
+                    f"bet devuelta={actual_bet!r}, esperada={expected_bet!r}, "
+                    f"solicitada={requested_bet!r}"
+                )
+    if not (outcomeless_choice or outcomeless_terminal) and not isinstance(win, (int, float)):
         warnings.append(f"{command} sin win numérico")
 
     screen = outcome.get("screen")
@@ -1605,7 +1637,7 @@ def validate_spin(
             warnings.append(
                 f"screen contiene reels vacíos/inválidos={bad}"
             )
-    elif not outcomeless_choice and not result_has_authoritative_shape(data):
+    elif not (outcomeless_choice or outcomeless_terminal) and not result_has_authoritative_shape(data):
         # Continuations may be balance/flow-only. FrozenFruit and Hottest666,
         # for example, return valid freespin steps without screen/seed while
         # still providing numeric win, balance and an authoritative flow.
@@ -1666,9 +1698,19 @@ def validate_spin(
                 )
         else:
             debit = (
-                float(expected_debit)
-                if isinstance(expected_debit, (int, float))
-                else (0.0 if command == "freespin" else float(actual_bet or 0))
+                float(actual_bet)
+                if (
+                    command == "spin"
+                    and allow_observed_effective_bet
+                    and isinstance(actual_bet, (int, float))
+                    and isinstance(expected_outcome_bet, (int, float))
+                    and abs(float(actual_bet) - float(expected_outcome_bet)) > 1e-9
+                )
+                else (
+                    float(expected_debit)
+                    if isinstance(expected_debit, (int, float))
+                    else (0.0 if command == "freespin" else float(actual_bet or 0))
+                )
             )
             expected = float(previous_balance_total) - debit + float(win)
             if abs(float(current_total) - expected) > 1e-9:
