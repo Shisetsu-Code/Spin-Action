@@ -224,6 +224,21 @@ def build_action_audit(result: GameTestResult) -> dict[str, Any]:
     sufficient for a `COMPLETE` audit verdict.
     """
     runtime_status = str(result.status or "").strip().upper()
+    if runtime_status == "UNAVAILABLE":
+        reason = str(result.error or "").strip() or "Provider catalog marks this target unavailable."
+        return {
+            "schema": "tester-spin/action-audit/v1",
+            "provider": result.provider,
+            "game": result.slug,
+            "runtime_status": result.status,
+            "verdict": "UNAVAILABLE",
+            "inventory": {},
+            "actions": [],
+            "unknown_reasons": [],
+            "missing_reasons": [],
+            "unavailable_reason": reason,
+            "counts": {"actions": 0, "demonstrated": 0, "incomplete": 0, "unknown": 0},
+        }
     if runtime_status == "ERROR":
         return {
             "schema": "tester-spin/action-audit/v1",
