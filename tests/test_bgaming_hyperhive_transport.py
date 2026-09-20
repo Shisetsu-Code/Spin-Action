@@ -219,7 +219,9 @@ class BGamingHyperHiveTransportTests(unittest.TestCase):
             prepare_hyperhive_client(runtime, timeout_s=1, force=True)
         prepare_hyperhive_client(runtime, timeout_s=1)
 
-        requested_urls = [call.args[0] for call in runtime.session.get.call_args_list]\n        self.assertEqual(requested_urls.count(client), 2)\n        self.assertIn(
+        requested_urls = [call.args[0] for call in runtime.session.get.call_args_list]
+        self.assertEqual(requested_urls.count(client), 2)
+        self.assertIn(
             "https://the-godfather3-pillars-of-power.demo.bgaming-network.com/client.js",
             runtime.script_urls,
         )
