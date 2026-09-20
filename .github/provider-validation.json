@@ -11,6 +11,6 @@
   "max_pages": 0,
   "allow_har_fallback": false,
   "install_browser": false,
-  "run_sequence": 118,
+  "run_sequence": 119,
   "slugs": "scratch-alpaca-gold,ice-scratch-silver,capymania-orange,scratch-alpaca-silver,luck-magic-scratch,ice-scratch-gold,capymania-yellow,capymania-green,ice-scratch-bronze,scratch-alpaca-bronze"
 }
