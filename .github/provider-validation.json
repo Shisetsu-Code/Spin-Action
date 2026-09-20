@@ -1,16 +1,16 @@
 {
   "provider": "bgaming",
-  "slug": "big-bucks-saloon",
+  "slug": "",
   "game_url": "",
   "game_name": "",
   "symbol": "",
   "game_offset": 0,
-  "game_limit": 1,
+  "game_limit": 0,
   "spins": 1,
   "timeout": 90,
   "max_pages": 0,
   "allow_har_fallback": false,
   "install_browser": false,
-  "run_sequence": 100,
+  "run_sequence": 101,
   "slugs": ""
 }
