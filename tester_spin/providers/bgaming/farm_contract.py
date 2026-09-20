@@ -153,6 +153,25 @@ def _mode_evidence(mode: dict[str, Any], *, result_status: str) -> str:
     return "SOLO_ANUNCIADO"
 
 
+def _mode_proves_base_spin(mode: dict[str, Any], *, evidence: str) -> bool:
+    """Return whether a demonstrated mode proves the mandatory base spin primitive.
+
+    SPIN is protocol baseline, not an optional feature. A canonical SPIN mode
+    proves it directly. Switchable containers prove the same primitive through
+    their concrete lobby_switch+init+spin variant executor. Purchase commands
+    that happen to be transported through "spin" must never satisfy the base
+    spin requirement.
+    """
+    if evidence != "DEMOSTRADO":
+        return False
+    kind = str(mode.get("kind") or "").upper()
+    command = str(mode.get("wire_command") or "").strip()
+    if kind == "SPIN":
+        return command == "spin"
+    if kind == "VARIANT":
+        return command == "lobby_switch+init+spin"
+    return False
+
 def _safe_profile_payload(
     profile: BGamingProfile,
     unresolved: list[str],
@@ -296,7 +315,7 @@ def build_bgaming_farm_contract(
             item["cost_multiplier"] = raw_mode["cost_multiplier"]
         modes.append(item)
 
-        if mode_id == "SPIN" and evidence == "DEMOSTRADO":
+        if _mode_proves_base_spin(raw_mode, evidence=evidence):
             spin_demonstrated = True
 
         if kind == "CONTINUATION":
