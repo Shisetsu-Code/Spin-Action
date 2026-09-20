@@ -1168,6 +1168,10 @@ def _validate_spin_with_choices(data: dict[str, Any], **kwargs):
         if isinstance(queue, list) and queue:
             kwargs["expected_debit"] = float(queue.pop(0))
             kwargs["allow_observed_debit"] = False
+        if run.prompts:
+            prompt = run.prompts[-1]
+            if prompt.command == command and prompt.selected:
+                kwargs["selected_choice"] = prompt.selected
     return _ORIGINAL_VALIDATE_SPIN(data, **kwargs)
 
 

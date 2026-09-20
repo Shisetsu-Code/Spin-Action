@@ -1108,6 +1108,87 @@ class BGamingRuntimeTests(unittest.TestCase):
         self.assertEqual(profile["spin_options"], {"mode": "60"})
         self.assertEqual(profile["kind"], "selectable-lines-mode")
 
+    def test_outcomeless_choice_modifier_requires_ack_and_exact_debit(self) -> None:
+        data = {
+            "api_version": "2",
+            "features": {
+                "bonus_data": {
+                    "last_purchased_extra_bonus": "extra_multiplier",
+                }
+            },
+            "balance": {"wallet": 900, "game": 0},
+            "flow": {
+                "command": "buy_extra_bonus",
+                "state": "freespins",
+                "available_actions": ["buy_extra_bonus", "freespin"],
+            },
+        }
+        warnings = validate_spin(
+            data,
+            requested_bet=20,
+            previous_balance_total=1000,
+            expected_reels=None,
+            expected_rows=None,
+            command="buy_extra_bonus",
+            expected_debit=100,
+            selected_choice="extra_multiplier",
+        )
+        self.assertEqual(warnings, [])
+
+    def test_outcomeless_choice_modifier_wrong_ack_fails_closed(self) -> None:
+        data = {
+            "api_version": "2",
+            "features": {
+                "bonus_data": {
+                    "last_purchased_extra_bonus": "extra_board",
+                }
+            },
+            "balance": {"wallet": 900, "game": 0},
+            "flow": {
+                "command": "buy_extra_bonus",
+                "state": "freespins",
+                "available_actions": ["buy_extra_bonus", "freespin"],
+            },
+        }
+        warnings = validate_spin(
+            data,
+            requested_bet=20,
+            previous_balance_total=1000,
+            expected_reels=None,
+            expected_rows=None,
+            command="buy_extra_bonus",
+            expected_debit=100,
+            selected_choice="extra_multiplier",
+        )
+        self.assertIn("buy_extra_bonus sin outcome", warnings)
+
+    def test_outcomeless_choice_modifier_wrong_debit_fails_closed(self) -> None:
+        data = {
+            "api_version": "2",
+            "features": {
+                "bonus_data": {
+                    "last_purchased_extra_bonus": "extra_multiplier",
+                }
+            },
+            "balance": {"wallet": 901, "game": 0},
+            "flow": {
+                "command": "buy_extra_bonus",
+                "state": "freespins",
+                "available_actions": ["buy_extra_bonus", "freespin"],
+            },
+        }
+        warnings = validate_spin(
+            data,
+            requested_bet=20,
+            previous_balance_total=1000,
+            expected_reels=None,
+            expected_rows=None,
+            command="buy_extra_bonus",
+            expected_debit=100,
+            selected_choice="extra_multiplier",
+        )
+        self.assertTrue(any("balance inconsistente" in warning for warning in warnings))
+
     def test_422_infers_only_fields_named_by_server_validation(self) -> None:
         class Response:
             text = '{"error":{"rows":["is required"]}}'

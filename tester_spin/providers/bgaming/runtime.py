@@ -14,6 +14,8 @@ from bs4 import BeautifulSoup
 from tester_spin.providers.bgaming.contracts import (
     CONTINUATION_BY_STATE,
     SAFE_CONTINUATION_COMMANDS,
+    choice_outcomeless_acknowledged,
+    command_contract,
 )
 
 
@@ -1516,6 +1518,7 @@ def validate_spin(
     expected_outcome_bet: int | float | None = None,
     variable_layout: bool = False,
     allow_observed_debit: bool = False,
+    selected_choice: str = "",
 ) -> list[str]:
     warnings: list[str] = []
 
@@ -1523,12 +1526,31 @@ def validate_spin(
         warnings.append(f"api_version no observada: {data.get('api_version')!r}")
 
     outcome = data.get("outcome")
+    outcomeless_choice = False
     if not isinstance(outcome, dict):
-        warnings.append(f"{command} sin outcome")
-        return warnings
+        contract = command_contract(command)
+        flow = data.get("flow")
+        current_total = balance_total(data)
+        outcomeless_choice = bool(
+            contract is not None
+            and contract.choice is not None
+            and choice_outcomeless_acknowledged(data, command, selected_choice)
+            and isinstance(flow, dict)
+            and str(flow.get("command") or "") == command
+            and bool(str(flow.get("state") or ""))
+            and contract.accepts_state(str(flow.get("state") or ""))
+            and provider_error_envelope(data) is None
+            and isinstance(expected_debit, (int, float))
+            and isinstance(previous_balance_total, (int, float))
+            and isinstance(current_total, (int, float))
+        )
+        if not outcomeless_choice:
+            warnings.append(f"{command} sin outcome")
+            return warnings
+        outcome = {}
 
     actual_bet = outcome.get("bet")
-    win = outcome.get("win")
+    win = 0 if outcomeless_choice else outcome.get("win")
     # BGaming is not consistent about outcome.bet inside zero-debit continuations.
     # For freespins/preselection, the balance delta is authoritative.
     if command == "spin":
@@ -1545,7 +1567,7 @@ def validate_spin(
                 f"bet devuelta={actual_bet!r}, esperada={expected_bet!r}, "
                 f"solicitada={requested_bet!r}"
             )
-    if not isinstance(win, (int, float)):
+    if not outcomeless_choice and not isinstance(win, (int, float)):
         warnings.append(f"{command} sin win numérico")
 
     screen = outcome.get("screen")
@@ -1564,7 +1586,7 @@ def validate_spin(
             warnings.append(
                 f"screen contiene reels vacíos/inválidos={bad}"
             )
-    elif not result_has_authoritative_shape(data):
+    elif not outcomeless_choice and not result_has_authoritative_shape(data):
         # Continuations may be balance/flow-only. FrozenFruit and Hottest666,
         # for example, return valid freespin steps without screen/seed while
         # still providing numeric win, balance and an authoritative flow.

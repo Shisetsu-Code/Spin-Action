@@ -33,6 +33,7 @@ class ChoiceContract:
     mapping_values_are_debit: bool = False
     balance_path: tuple[str, ...] = ()
     repeatable_domain: bool = False
+    outcomeless_ack_path: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,6 +88,11 @@ _COMMANDS = (
             mapping_values_are_debit=True,
             balance_path=("balance", "wallet"),
             repeatable_domain=True,
+            outcomeless_ack_path=(
+                "features",
+                "bonus_data",
+                "last_purchased_extra_bonus",
+            ),
         ),
         source=(
             "provider-client.buyExtraBonus(options.bonus_type)+"
@@ -203,6 +209,23 @@ def choice_costs(data: dict[str, Any], command: str) -> dict[str, float]:
             continue
         costs[str(key)] = float(mapping_value)
     return costs
+
+
+def choice_outcomeless_acknowledged(
+    data: dict[str, Any],
+    command: str,
+    selected: str,
+) -> bool:
+    """Validate a provider-declared acknowledgement for a choice without outcome."""
+    contract = command_contract(command)
+    choice = contract.choice if contract is not None else None
+    if choice is None or not choice.outcomeless_ack_path:
+        return False
+    selected_value = str(selected or "").strip()
+    if not selected_value:
+        return False
+    acknowledged = _path_value(data, choice.outcomeless_ack_path)
+    return str(acknowledged or "").strip() == selected_value
 
 
 # Compatibility exports used by runtime.py. They are derived from the command

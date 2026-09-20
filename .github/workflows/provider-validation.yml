@@ -202,8 +202,9 @@ jobs:
             --output-dir action-results
           )
           if [[ "${{ steps.config.outputs.provider }}" == "bgaming" \
-             && "${{ steps.config.outputs.game_limit }}" == "0" \
-             && "${{ steps.config.outputs.max_pages }}" == "0" ]]; then
+             && "${{ steps.config.outputs.max_pages }}" == "0" \
+             && ( "${{ steps.config.outputs.game_limit }}" == "0" \
+                  || -n "${{ steps.config.outputs.slugs }}" ) ]]; then
             args+=(--bgaming-full-portfolio)
           fi
           if [[ "${{ steps.config.outputs.allow_har_fallback }}" == "true" ]]; then
