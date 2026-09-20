@@ -103,6 +103,17 @@ def _literal_assignment(text: str, name: str) -> str:
     return str(match.group(1)) if match else ""
 
 
+def _loader_res_value(text: str) -> str:
+    """Recover a BGaming loader resource version without evaluating JavaScript."""
+    direct = _literal_assignment(text, "res")
+    if direct:
+        return direct
+    match = re.search(
+        r"\\bres\\s*(?::|=)[^\\\"\']{0,240}[\\\"\']([^\\\"\']{1,160})[\\\"\']",
+        text or "",
+    )
+    return str(match.group(1) or "") if match else ""
+
 def _dynamic_loader_script_urls(runtime: Any, html: str, base_url: str) -> list[str]:
     """Recover scripts referenced by BGaming's inline loadScript bootstrap.
 
@@ -145,7 +156,7 @@ def _dynamic_loader_script_urls(runtime: Any, html: str, base_url: str) -> list[
     # Some HyperHive loaders expose a version/resource directory as a literal
     # "res" field and then append bundle.js at runtime. This is provider-owned
     # path evidence, not a title rule. Follow only a bounded relative res value.
-    res = _literal_assignment(html, "res").strip().strip("/")
+    res = _loader_res_value(html).strip().strip("/")
     if (
         res
         and "bundle.js" in (html or "")
