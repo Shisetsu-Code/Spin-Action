@@ -75,6 +75,22 @@ def _inventory(result: GameTestResult) -> tuple[str, dict[str, Any], list[str]]:
     return state, raw, []
 
 
+def _promoted_inventory_mode_ids(inventory: dict[str, Any]) -> set[str]:
+    """Return modes proven by a validated/promoted farm contract.
+
+    Farm-contract promotion occurs only after provider + common validation has
+    established that every required mode is DEMOSTRADO and that no unresolved
+    actions or continuations remain. Trust only that narrow inventory source;
+    arbitrary COMPLETE inventories must still supply direct terminal/wire proof.
+    """
+    if str(inventory.get("state") or "").strip().upper() != "COMPLETE":
+        return set()
+    source = str(inventory.get("source") or "").strip()
+    if not source.endswith(":promoted-farm-contract"):
+        return set()
+    return set(_clean_list(inventory.get("mode_ids")))
+
+
 def _terminal_attempts(result: GameTestResult) -> dict[str, int]:
     counts: dict[str, int] = {}
     for attempt in result.attempts:
@@ -103,6 +119,7 @@ def _audit_mode(
     mode: dict[str, Any],
     terminal_counts: dict[str, int],
     wire_counts: dict[str, int],
+    promoted_mode_ids: set[str],
 ) -> dict[str, Any]:
     mode_id = str(mode.get("id") or "UNKNOWN").strip() or "UNKNOWN"
     kind = str(mode.get("kind") or "UNKNOWN").strip().upper() or "UNKNOWN"
@@ -117,6 +134,8 @@ def _audit_mode(
         else mode.get("selected_options")
     )
 
+    # Explicit branch coverage remains authoritative even after farm promotion:
+    # a promoted parent mode must never mask a missing required branch option.
     if mode.get("coverage_required") is True:
         if not required:
             return {
@@ -151,13 +170,16 @@ def _audit_mode(
             or str(mode.get("evidence_level") or "").strip().upper() in _PROVEN_EVIDENCE
         )
     )
-    if direct_count > 0 or wire_count > 0 or provider_marked_proven:
+    promoted_contract_proven = mode_id in promoted_mode_ids
+    if direct_count > 0 or wire_count > 0 or provider_marked_proven or promoted_contract_proven:
         if direct_count:
             evidence = f"terminal remote attempts={direct_count}"
         elif wire_count:
             evidence = f"remote wire executions={wire_count}"
-        else:
+        elif provider_marked_proven:
             evidence = "provider terminal remote proof"
+        else:
+            evidence = "validated promoted farm contract proof"
         return {
             "id": mode_id,
             "kind": kind,
@@ -267,6 +289,7 @@ def build_action_audit(result: GameTestResult) -> dict[str, Any]:
         }
 
     inventory_state, inventory, unknown_reasons = _inventory(result)
+    promoted_mode_ids = _promoted_inventory_mode_ids(inventory)
     missing_reasons: list[str] = []
     terminal_counts = _terminal_attempts(result)
     wire_counts = successful_wire_commands(result)
@@ -275,7 +298,10 @@ def build_action_audit(result: GameTestResult) -> dict[str, Any]:
         for mode in result.discovered_modes
         if isinstance(mode, dict) and _is_actionable(mode)
     ]
-    actions = [_audit_mode(mode, terminal_counts, wire_counts) for mode in modes]
+    actions = [
+        _audit_mode(mode, terminal_counts, wire_counts, promoted_mode_ids)
+        for mode in modes
+    ]
 
     if not actions:
         unknown_reasons.append("No hay ninguna acción jugable registrada con evidencia auditable.")
