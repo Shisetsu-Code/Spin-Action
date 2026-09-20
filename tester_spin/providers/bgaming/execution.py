@@ -1006,6 +1006,40 @@ class BGamingExecutionMixin:
                                     purchase_level
                                 )
 
+                            # Some tiered purchases share their level domain with
+                            # a client-proven selectable row/grid contract. Align
+                            # that selector only when the client demonstrated
+                            # additionalSpinOptions.rows and init.valid_bets
+                            # independently proved the finite row domain.
+                            if (
+                                active_profile is not None
+                                and purchase_level is not None
+                                and "init.valid_bets:rows-domain"
+                                in active_profile.evidence
+                                and "rows" in active_profile.spin_options
+                            ):
+                                row_choices = active_profile.spin_option_choices.get(
+                                    "rows"
+                                )
+                                row_choice_keys = (
+                                    {str(value) for value in row_choices}
+                                    if isinstance(row_choices, list)
+                                    else set()
+                                )
+                                if str(purchase_level) in row_choice_keys:
+                                    current_rows = active_profile.spin_options.get(
+                                        "rows"
+                                    )
+                                    try:
+                                        aligned_rows: Any = (
+                                            int(str(purchase_level))
+                                            if isinstance(current_rows, int)
+                                            else str(purchase_level)
+                                        )
+                                    except (TypeError, ValueError):
+                                        aligned_rows = str(purchase_level)
+                                    spin_options["rows"] = aligned_rows
+
                             if (
                                 active_profile is not None
                                 and purchase_level is not None
