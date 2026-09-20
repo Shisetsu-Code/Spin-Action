@@ -302,6 +302,64 @@ class BGamingRuntimeTests(unittest.TestCase):
         )
         self.assertEqual(profile["purchase_features"], ["bonus_buy"])
 
+    def test_protocol_discovery_resolves_vite_root_assets_under_resources_path(self) -> None:
+        runtime = BGamingRuntime(
+            session=requests.Session(),
+            launch_url="https://demo.bgaming-network.com/games/Generic/FUN",
+            api_url="https://demo.bgaming-network.com/api/Generic/1/session",
+            identifier="Generic",
+            csrf_header_name="X-CSRF",
+            csrf_header_value="secret",
+            options={
+                "resources_path": "https://cdn.bgaming-network.com/html/Generic",
+                "games_loader_source": (
+                    "https://cdn.bgaming-network.com/html/Generic/loader.js"
+                ),
+            },
+            round_series_id=1,
+        )
+
+        class Response:
+            headers = {}
+
+            def __init__(self, text: str, status_code: int = 200):
+                self.text = text
+                self.status_code = status_code
+
+            def raise_for_status(self) -> None:
+                if self.status_code >= 400:
+                    response = requests.Response()
+                    response.status_code = self.status_code
+                    raise requests.HTTPError(response=response)
+
+        loader = "https://cdn.bgaming-network.com/html/Generic/loader.js"
+        root_asset = "https://cdn.bgaming-network.com/assets/index-vite.js"
+        scoped_asset = (
+            "https://cdn.bgaming-network.com/html/Generic/assets/index-vite.js"
+        )
+        responses = {
+            loader: Response('import("/assets/index-vite.js")'),
+            root_asset: Response("", 404),
+            scoped_asset: Response(
+                'additionalSpinOptions.purchased_feature="bonus_buy";'
+                'purchased_feature:"bonus_buy";round_series_id'
+            ),
+        }
+        called: list[str] = []
+
+        def fake_get(url, **_kwargs):
+            called.append(url)
+            return responses[url]
+
+        with patch.object(runtime.session, "get", side_effect=fake_get):
+            profile = discover_api_v2_wire_profile(runtime, timeout_s=1)
+
+        self.assertIn(root_asset, called)
+        self.assertIn(scoped_asset, called)
+        self.assertEqual(profile["source"], scoped_asset)
+        self.assertTrue(profile["dynamic_purchased_feature"])
+        self.assertEqual(profile["purchase_features"], ["bonus_buy"])
+
     def test_protocol_discovery_ignores_gtag_and_uses_bgaming_bundle(self) -> None:
         runtime = BGamingRuntime(
             session=requests.Session(),

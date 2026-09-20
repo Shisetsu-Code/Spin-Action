@@ -615,6 +615,9 @@ def _runtime_bundle_candidates(
     loader_url = str(runtime.options.get("games_loader_source") or "").strip()
 
     if loader_url:
+        # The provider-declared loader is itself authoritative client material.
+        # Keep it in the graph even if it was not repeated in launch script tags.
+        candidates.append(loader_url)
         try:
             response = runtime.session.get(loader_url, timeout=timeout_s)
             response.raise_for_status()
@@ -922,13 +925,23 @@ def _provider_script_references(
             value = str(raw or "").strip()
             if not value:
                 continue
-            url = urljoin(parent_url, value)
-            if not _provider_script_url(runtime, url):
-                continue
-            if url in seen:
-                continue
-            seen.add(url)
-            refs.append(url)
+            candidates = [urljoin(parent_url, value)]
+            resources_path = str(runtime.options.get("resources_path") or "").strip()
+            if value.startswith("/assets/") and resources_path:
+                scoped = urljoin(
+                    resources_path.rstrip("/") + "/",
+                    value.lstrip("/"),
+                )
+                if scoped not in candidates:
+                    candidates.append(scoped)
+
+            for url in candidates:
+                if not _provider_script_url(runtime, url):
+                    continue
+                if url in seen:
+                    continue
+                seen.add(url)
+                refs.append(url)
     return refs
 
 
