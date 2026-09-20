@@ -652,6 +652,9 @@ def run_hyperhive_test(
         "base_request": dict(modes[0].get("request") or {}),
         "custom_req_profile": str(modes[0].get("custom_req_profile") or ""),
         "base_discovery_state": str(modes[0].get("discovery_state") or ""),
+        "transport_diagnostics": list(
+            runtime.options.get("_hyperhive_transport_diagnostics") or []
+        ) if isinstance(runtime.options, dict) else [],
     }
     (run_dir / "contract-diagnostic.json").write_text(
         json.dumps(contract_diagnostic, ensure_ascii=False, indent=2),

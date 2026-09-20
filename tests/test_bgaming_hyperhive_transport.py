@@ -139,6 +139,26 @@ class BGamingHyperHiveTransportTests(unittest.TestCase):
             runtime.script_urls,
         )
 
+    def test_transport_diagnostics_are_sanitized_and_bounded(self) -> None:
+        runtime = self._runtime()
+        client = hyperhive_client_url(runtime)
+        runtime.session.get.return_value = _Response(
+            text='<script src="/client.js"></script>',
+            url=client,
+        )
+
+        prepare_hyperhive_client(runtime, timeout_s=1, force=True)
+
+        rows = runtime.options.get("_hyperhive_transport_diagnostics")
+        self.assertIsInstance(rows, list)
+        self.assertTrue(rows)
+        rendered = str(rows)
+        self.assertNotIn("play-token-value", rendered)
+        self.assertIn("<session>", rendered)
+        self.assertTrue(
+            any(row.get("kind") == "inner-client-response" for row in rows)
+        )
+
     def test_failed_inner_get_is_not_cached_as_hydrated(self) -> None:
         runtime = self._runtime()
         client = hyperhive_client_url(runtime)

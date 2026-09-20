@@ -9,6 +9,8 @@ from urllib.parse import quote, urljoin, urlparse
 from tester_spin.providers.bgaming.runtime import (
     _provider_script_url,
     extract_script_urls,
+    sanitize_error_text,
+    sanitize_session_url,
 )
 
 
@@ -29,6 +31,33 @@ _ENGINE_CONTRACT_BASENAMES = {
     "game.min.js",
     "integration.min.js",
 }
+
+
+def _transport_diagnostics(runtime: Any) -> list[dict[str, Any]]:
+    options = getattr(runtime, "options", None)
+    if not isinstance(options, dict):
+        return []
+    rows = options.get("_hyperhive_transport_diagnostics")
+    if not isinstance(rows, list):
+        rows = []
+        options["_hyperhive_transport_diagnostics"] = rows
+    return rows
+
+
+def _record_transport_diagnostic(runtime: Any, kind: str, **fields: Any) -> None:
+    rows = _transport_diagnostics(runtime)
+    safe: dict[str, Any] = {"kind": str(kind)}
+    for key, value in fields.items():
+        if key.endswith("_url"):
+            safe[key] = sanitize_session_url(str(value or ""))
+        elif key == "error":
+            safe[key] = sanitize_error_text(str(value or ""))[:1200]
+        elif isinstance(value, (str, int, float, bool)) or value is None:
+            safe[key] = value
+    rows.append(safe)
+    if len(rows) > 64:
+        del rows[:-64]
+
 
 
 def hyperhive_client_url(runtime: Any) -> str:
@@ -162,20 +191,51 @@ def prepare_hyperhive_client(
             # Unexpected non-weakrefable session-like objects simply skip cache.
             pass
 
-    response = runtime.session.get(
-        client_url,
-        headers={
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Referer": outer_url,
-        },
-        timeout=timeout_s,
+    _record_transport_diagnostic(
+        runtime,
+        "inner-client-request",
+        client_url=client_url,
+        play_token_present=bool(
+            isinstance(getattr(runtime, "options", None), dict)
+            and runtime.options.get("play_token")
+        ),
     )
-    response.raise_for_status()
+    try:
+        response = runtime.session.get(
+            client_url,
+            headers={
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Referer": outer_url,
+            },
+            timeout=timeout_s,
+        )
+        response.raise_for_status()
+    except Exception as exc:
+        _record_transport_diagnostic(
+            runtime,
+            "inner-client-error",
+            client_url=client_url,
+            error=f"{type(exc).__name__}: {exc}",
+        )
+        raise
 
     response_url = str(getattr(response, "url", "") or client_url)
-    discovered = extract_script_urls(response.text, response_url)
-    discovered.extend(
-        _dynamic_loader_script_urls(runtime, response.text or "", response_url)
+    static_scripts = extract_script_urls(response.text, response_url)
+    dynamic_scripts = _dynamic_loader_script_urls(
+        runtime,
+        response.text or "",
+        response_url,
+    )
+    discovered = [*static_scripts, *dynamic_scripts]
+    _record_transport_diagnostic(
+        runtime,
+        "inner-client-response",
+        client_url=client_url,
+        response_url=response_url,
+        status=int(getattr(response, "status_code", 0) or 0),
+        html_bytes=len((response.text or "").encode("utf-8", errors="replace")),
+        static_scripts=len(static_scripts),
+        dynamic_scripts=len(dynamic_scripts),
     )
 
     # The dynamic bootstrap first fetches hash manifests and then composes the
@@ -188,14 +248,29 @@ def prepare_hyperhive_client(
         try:
             manifest_response = runtime.session.get(manifest_url, timeout=timeout_s)
             manifest_response.raise_for_status()
-        except Exception:
-            continue
-        keyed_scripts.extend(
-            _hash_manifest_script_urls(
+        except Exception as exc:
+            _record_transport_diagnostic(
                 runtime,
-                str(getattr(manifest_response, "url", "") or manifest_url),
-                manifest_response.text or "",
+                "manifest-error",
+                manifest_url=manifest_url,
+                error=f"{type(exc).__name__}: {exc}",
             )
+            continue
+        resolved_manifest_url = str(
+            getattr(manifest_response, "url", "") or manifest_url
+        )
+        manifest_scripts = _hash_manifest_script_urls(
+            runtime,
+            resolved_manifest_url,
+            manifest_response.text or "",
+        )
+        keyed_scripts.extend(manifest_scripts)
+        _record_transport_diagnostic(
+            runtime,
+            "manifest-response",
+            manifest_url=resolved_manifest_url,
+            status=int(getattr(manifest_response, "status_code", 0) or 0),
+            keyed_scripts=len(manifest_scripts),
         )
     discovered.extend(keyed_scripts)
 
@@ -207,6 +282,14 @@ def prepare_hyperhive_client(
         existing.append(url)
         seen.add(url)
     runtime.script_urls = existing
+    _record_transport_diagnostic(
+        runtime,
+        "inner-client-complete",
+        response_url=response_url,
+        discovered_scripts=len(discovered),
+        keyed_scripts=len(keyed_scripts),
+        total_runtime_scripts=len(existing),
+    )
 
     if session is not None:
         try:
