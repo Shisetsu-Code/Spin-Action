@@ -260,6 +260,20 @@ def analyze_engine_wire(engine_contract: str) -> ObservedHyperHiveWire:
     )
 
 
+def _apply_observed_custom_profile_to_base_mode(
+    mode: dict[str, Any],
+    profile: ObservedHyperHiveWire,
+) -> None:
+    """Prefer an exact live serializer contract over legacy shape heuristics."""
+    if not profile.custom_req:
+        return
+    mode["custom_req_profile"] = profile.custom_profile
+    mode["custom_req_literal_keys"] = sorted(profile.custom_literals)
+    if bool(mode.get("executable")):
+        mode["discovery_state"] = "OBSERVED_ENGINE_CONTRACT"
+        mode["source"] = "live-inner-client+engine-contract"
+
+
 def apply_observed_play_wire(
     params: dict[str, Any],
     profile: ObservedHyperHiveWire,
@@ -498,13 +512,7 @@ def install_observed_wire_adapter() -> None:
                         request["bet_type"] = profile.bet_type
 
             if profile.custom_req and modes:
-                base = modes[0]
-                if not str(base.get("custom_req_profile") or ""):
-                    base["custom_req_profile"] = profile.custom_profile
-                    base["custom_req_literal_keys"] = sorted(profile.custom_literals)
-                    if bool(base.get("executable")):
-                        base["discovery_state"] = "OBSERVED_ENGINE_CONTRACT"
-                        base["source"] = "live-inner-client+engine-contract"
+                _apply_observed_custom_profile_to_base_mode(modes[0], profile)
 
             # Some HyperHive games expose one transport purchase feature (for
             # example buy_bonus) while the actual normal/super choice is encoded
