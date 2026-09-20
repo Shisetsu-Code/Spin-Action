@@ -32,6 +32,7 @@ _PROVIDER_CLASSES = {
 
 _VERDICT_PRIORITY = {
     "COMPLETE": 0,
+    "UNAVAILABLE": 0,
     "UNKNOWN": 1,
     "INCOMPLETE": 2,
     "CANCELLED": 3,
@@ -115,6 +116,8 @@ def summarize_audits(audits: list[dict[str, Any]]) -> str:
     if not audits:
         return "UNKNOWN"
     verdicts = [str(audit.get("verdict") or "UNKNOWN").upper() for audit in audits]
+    if all(value in {"COMPLETE", "UNAVAILABLE"} for value in verdicts):
+        return "COMPLETE"
     return max(verdicts, key=lambda value: _VERDICT_PRIORITY.get(value, 4))
 
 
@@ -280,39 +283,59 @@ def run_probe(args: argparse.Namespace) -> tuple[str, dict[str, Any]]:
 
     for game in selected:
         game_progress = lambda message, name=game.name: progress(f"[{name}] {message}")
-        try:
-            if args.allow_har_fallback:
-                game_progress("HAR fallback habilitado explícitamente: preparando artefactos.")
-                provider.prepare_test_artifacts(
+        unavailable_reason = ""
+        unavailable_hook = getattr(provider, "validation_unavailable_reason", None)
+        if callable(unavailable_hook):
+            unavailable_reason = str(unavailable_hook(game) or "").strip()
+
+        if unavailable_reason:
+            result = GameTestResult(
+                provider=game.provider,
+                slug=game.slug,
+                game_name=game.name,
+                game_url=game.url,
+                requested_spins=0,
+                successful_spins=0,
+                failed_spins=0,
+                status="UNAVAILABLE",
+                symbol=game.symbol,
+                error=unavailable_reason,
+            )
+            game_progress(f"UNAVAILABLE: {unavailable_reason}")
+        else:
+            try:
+                    if args.allow_har_fallback:
+                    game_progress("HAR fallback habilitado explícitamente: preparando artefactos.")
+                    provider.prepare_test_artifacts(
+                        game,
+                        timeout_s=timeout_s,
+                        stop_event=stop_event,
+                        progress=game_progress,
+                    )
+                else:
+                    game_progress(
+                        "HAR fallback deshabilitado: prepare_test_artifacts() omitido; "
+                        "se usa sólo wire/bootstrap normal."
+                    )
+
+                result = provider.test_game(
                     game,
+                    spins=spins,
                     timeout_s=timeout_s,
                     stop_event=stop_event,
                     progress=game_progress,
                 )
-            else:
-                game_progress(
-                    "HAR fallback deshabilitado: prepare_test_artifacts() omitido; "
-                    "se usa sólo wire/bootstrap normal."
+                result.samples_per_path = spins
+                result = provider.finalize_test_result(result, progress=game_progress)
+                export_farm_contract(
+                    provider,
+                    game,
+                    result,
+                    progress=game_progress,
                 )
-
-            result = provider.test_game(
-                game,
-                spins=spins,
-                timeout_s=timeout_s,
-                stop_event=stop_event,
-                progress=game_progress,
-            )
-            result.samples_per_path = spins
-            result = provider.finalize_test_result(result, progress=game_progress)
-            export_farm_contract(
-                provider,
-                game,
-                result,
-                progress=game_progress,
-            )
-        except BaseException as exc:
-            result = _error_result(game, spins, exc)
-            game_progress(f"ERROR de laboratorio: {result.error}")
+            except BaseException as exc:
+                result = _error_result(game, spins, exc)
+                game_progress(f"ERROR de laboratorio: {result.error}")
 
         audit = build_action_audit(result)
         audits.append(audit)
@@ -358,6 +381,11 @@ def run_probe(args: argparse.Namespace) -> tuple[str, dict[str, Any]]:
         },
         "catalog_count": len(games),
         "selected_count": len(selected),
+        "complete_count": sum(audit.get("verdict") == "COMPLETE" for audit in audits),
+        "unavailable_count": sum(audit.get("verdict") == "UNAVAILABLE" for audit in audits),
+        "incomplete_count": sum(audit.get("verdict") == "INCOMPLETE" for audit in audits),
+        "unknown_count": sum(audit.get("verdict") == "UNKNOWN" for audit in audits),
+        "error_count": sum(audit.get("verdict") == "ERROR" for audit in audits),
         "results": result_rows,
         "audits": audits,
     }
