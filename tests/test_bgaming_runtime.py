@@ -7,6 +7,7 @@ import requests
 
 from tester_spin.providers.bgaming.runtime import (
     BGamingRuntime,
+    _additional_spin_option_fields,
     balance_total,
     build_line_bets,
     discover_additional_spin_option_choices,
@@ -86,6 +87,22 @@ class BGamingRuntimeTests(unittest.TestCase):
                 "https://demo.example/assets/runtime-a1.js",
                 "https://cdn.example/game-b2.js",
             ],
+        )
+
+    def test_additional_spin_fields_cover_object_and_bracket_syntax(self) -> None:
+        bundle = (
+            'this.additionalSpinOptions={purchased_feature:t,'
+            'purchased_feature_level:e,mode:"60"};'
+            'this.additionalSpinOptions["volatility"]="high";'
+        )
+        self.assertEqual(
+            set(_additional_spin_option_fields(bundle)),
+            {
+                "purchased_feature",
+                "purchased_feature_level",
+                "mode",
+                "volatility",
+            },
         )
 
     def test_discovers_literal_dynamic_spin_choices(self) -> None:

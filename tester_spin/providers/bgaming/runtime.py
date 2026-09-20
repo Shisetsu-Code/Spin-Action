@@ -766,16 +766,47 @@ def _dedupe_values(values: list[Any]) -> list[Any]:
     return out
 
 
+def _additional_spin_option_fields(bundle: str) -> list[str]:
+    """Discover fields written into the provider's additionalSpinOptions object."""
+    text = bundle or ""
+    fields: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: str) -> None:
+        field = str(value or "").strip()
+        if field and field not in seen:
+            seen.add(field)
+            fields.append(field)
+
+    for value in re.findall(
+        r"(?:this\.)?additionalSpinOptions\.([A-Za-z_][A-Za-z0-9_]*)",
+        text,
+    ):
+        add(value)
+    for value in re.findall(
+        r"(?:this\.)?additionalSpinOptions\[['\"]([A-Za-z_][A-Za-z0-9_]*)['\"]\]",
+        text,
+    ):
+        add(value)
+
+    object_patterns = (
+        r"(?:this\.)?additionalSpinOptions\s*=\s*\{([^{}]{1,2400})\}",
+        r"Object\.assign\(\s*(?:this\.)?additionalSpinOptions\s*,\s*\{([^{}]{1,2400})\}",
+    )
+    for pattern in object_patterns:
+        for match in re.finditer(pattern, text):
+            body = match.group(1)
+            for key in re.findall(
+                r"(?:^|,)\s*(?:['\"])?([A-Za-z_][A-Za-z0-9_]*)(?:['\"])?\s*:",
+                body,
+            ):
+                add(key)
+    return fields
+
+
 def discover_additional_spin_option_choices(bundle: str) -> dict[str, list[Any]]:
     """Discover finite client-side choices for additionalSpinOptions fields."""
-    fields = list(
-        dict.fromkeys(
-            re.findall(
-                r"additionalSpinOptions\.([A-Za-z_][A-Za-z0-9_]*)",
-                bundle or "",
-            )
-        )
-    )
+    fields = _additional_spin_option_fields(bundle)
     discovered: dict[str, list[Any]] = {}
 
     for field in fields:
@@ -1056,32 +1087,20 @@ def discover_api_v2_wire_profile(
     spin_option_choices = discover_additional_spin_option_choices(bundle)
     effective_bet_multipliers = discover_effective_bet_multipliers(bundle)
 
+    additional_fields = set(_additional_spin_option_fields(bundle))
     required_option_fields = sorted(
-        {
-            str(match)
-            for match in re.findall(
-                r"additionalSpinOptions\.([A-Za-z_][A-Za-z0-9_]*)",
-                bundle,
-            )
-            if str(match) not in {"purchased_feature", "purchased_feature_level"}
-        }
+        field
+        for field in additional_fields
+        if field not in {"purchased_feature", "purchased_feature_level"}
     )
 
     profile: dict[str, Any] = {
         "spin_options": {},
         "request_extra_data": dict(request_extra_data),
         "purchase_features": sorted(purchase_features),
-        "dynamic_purchased_feature": bool(
-            re.search(
-                r"additionalSpinOptions\.purchased_feature(?:\b|\s*=)",
-                bundle,
-            )
-        ),
-        "purchase_feature_level_supported": bool(
-            re.search(
-                r"additionalSpinOptions\.purchased_feature_level(?:\b|\s*=)",
-                bundle,
-            )
+        "dynamic_purchased_feature": "purchased_feature" in additional_fields,
+        "purchase_feature_level_supported": (
+            "purchased_feature_level" in additional_fields
         ),
         "required_option_fields": required_option_fields,
         "spin_option_choices": spin_option_choices,
@@ -1097,7 +1116,7 @@ def discover_api_v2_wire_profile(
     if not bundle:
         return profile
 
-    if "additionalSpinOptions.mode" in bundle:
+    if "mode" in additional_fields:
         default_mode = ""
         patterns = [
             r'this\.linesCount=this\.linesCount\|\|"([0-9]+)"',
