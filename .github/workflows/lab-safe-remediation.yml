@@ -22,8 +22,10 @@ jobs:
           else
             python .github/scripts/bgaming_safe_remediate.py
           fi
+      - name: Apply purchase guard remediation
+        run: python .github/scripts/bgaming_purchase_guard_remediate.py
       - name: Targeted regression tests
-        run: python -m unittest -v tests.test_bgaming_adapter.BGamingAdapterContractTests.test_level_selector_drives_effective_bet_and_purchase_level tests.test_bgaming_adapter.BGamingAdapterContractTests.test_unexplained_bet_translation_cannot_be_ok tests.test_bgaming_hyperhive.BGamingHyperHiveTests.test_bling_blitz_discovers_custom_req_engine_profile tests.test_bgaming_hyperhive_wire.BGamingHyperHiveWireTests.test_observed_serializer_does_not_replace_legacy_pz_profile tests.test_bgaming_hyperhive_wire.BGamingHyperHiveWireTests.test_no_observed_serializer_keeps_legacy_profile
+        run: python -m unittest -v tests.test_bgaming_adapter.BGamingAdapterContractTests.test_level_selector_drives_effective_bet_and_purchase_level tests.test_bgaming_adapter.BGamingAdapterContractTests.test_unexplained_bet_translation_cannot_be_ok tests.test_bgaming_path_policy.BGamingPathPolicyTests.test_purchase_modes_guard_forwards_selector_domains tests.test_bgaming_hyperhive.BGamingHyperHiveTests.test_bling_blitz_discovers_custom_req_engine_profile tests.test_bgaming_hyperhive_wire.BGamingHyperHiveWireTests.test_observed_serializer_does_not_replace_legacy_pz_profile tests.test_bgaming_hyperhive_wire.BGamingHyperHiveWireTests.test_no_observed_serializer_keeps_legacy_profile
       - name: Full unit tests
         run: python -m unittest discover -s tests -v
       - name: Commit remediation if changed
@@ -31,6 +33,6 @@ jobs:
           if git diff --quiet; then exit 0; fi
           git config user.name github-actions-bot
           git config user.email github-actions-bot@users.noreply.github.com
-          git add tester_spin/providers/bgaming/execution.py tester_spin/providers/bgaming/hyperhive_wire.py tests/test_bgaming_hyperhive_wire.py .github/provider-validation.json
-          git commit -m 'fix: preserve BGaming fail-closed authority'
+          git add tester_spin/providers/bgaming/execution.py tester_spin/providers/bgaming/hyperhive_wire.py tester_spin/providers/bgaming_paths_v2.py tests/test_bgaming_hyperhive_wire.py tests/test_bgaming_path_policy.py .github/provider-validation.json
+          git commit -m 'fix: preserve BGaming purchase selector evidence'
           git push origin HEAD:lab/actions-validation
