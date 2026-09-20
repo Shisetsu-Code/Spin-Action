@@ -112,6 +112,23 @@ class BGamingProvider(BGamingExecutionMixin, ProviderAdapter):
             return "URL vacía"
         return ""
 
+    def validation_unavailable_reason(self, game: Game) -> str:
+        metadata_path = self.game_dir(game) / "game.json"
+        if not metadata_path.is_file():
+            return ""
+        try:
+            payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except Exception:
+            return ""
+        if not isinstance(payload, dict):
+            return ""
+        availability = str(payload.get("availability") or "").strip().upper()
+        if availability == "COMING_SOON":
+            return "BGaming catalog authority: COMING_SOON; no runnable demo is advertised."
+        if availability == "NO_DEMO":
+            return "BGaming catalog authority: NO_DEMO; no runnable demo is advertised."
+        return ""
+
     @staticmethod
     def _record_to_dict(record: BGamingCatalogRecord) -> dict[str, Any]:
         game = record.game
