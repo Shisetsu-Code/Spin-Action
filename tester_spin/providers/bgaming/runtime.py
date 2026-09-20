@@ -1046,6 +1046,40 @@ def _collect_provider_script_contracts(
 
     return contracts
 
+def discover_command_request_hints(bundle: str) -> dict[str, list[str]]:
+    """Extract structural request-key hints adjacent to provider command literals."""
+    text = bundle or ""
+    out: dict[str, list[str]] = {}
+    ignored = {
+        "command", "action", "type", "name", "state", "data", "result",
+        "error", "message", "value", "id", "key", "label",
+    }
+    for command in ("play", "start", "demo_play"):
+        counts: dict[str, int] = {}
+        patterns = (
+            rf"(?:command|action)\s*:\s*['\"]{re.escape(command)}['\"]",
+            rf"(?:send|request|post|dispatch)[A-Za-z0-9_$]*\(\s*['\"]{re.escape(command)}['\"]",
+        )
+        positions: list[int] = []
+        for pattern in patterns:
+            positions.extend(match.start() for match in re.finditer(pattern, text))
+        for pos in positions[:80]:
+            segment = text[max(0, pos - 900): min(len(text), pos + 1200)]
+            for key in re.findall(
+                r"(?:^|[,{])\s*(?:['\"])?([A-Za-z_][A-Za-z0-9_]*)(?:['\"])?\s*:",
+                segment,
+            ):
+                if key in ignored:
+                    continue
+                counts[key] = counts.get(key, 0) + 1
+        if counts:
+            out[command] = sorted(
+                counts,
+                key=lambda key: (-counts[key], key),
+            )[:40]
+    return out
+
+
 def discover_api_v2_wire_profile(
     runtime: BGamingRuntime,
     *,
@@ -1086,6 +1120,15 @@ def discover_api_v2_wire_profile(
 
     spin_option_choices = discover_additional_spin_option_choices(bundle)
     effective_bet_multipliers = discover_effective_bet_multipliers(bundle)
+    command_request_hints = discover_command_request_hints(bundle)
+    for command, keys in command_request_hints.items():
+        diagnostics.append(
+            {
+                "kind": "command-request-hint",
+                "command": command,
+                "keys": list(keys),
+            }
+        )
 
     additional_fields = set(_additional_spin_option_fields(bundle))
     required_option_fields = sorted(

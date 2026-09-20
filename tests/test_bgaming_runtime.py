@@ -13,6 +13,7 @@ from tester_spin.providers.bgaming.runtime import (
     discover_additional_spin_option_choices,
     discover_api_v2_wire_profile,
     discover_client_extra_data_defaults,
+    discover_command_request_hints,
     discover_effective_bet_multipliers,
     discover_purchase_modes,
     effective_bet_for_options,
@@ -104,6 +105,18 @@ class BGamingRuntimeTests(unittest.TestCase):
                 "volatility",
             },
         )
+
+    def test_discovers_structural_command_request_hints(self) -> None:
+        bundle = (
+            'sendGameRequest("play",{bet:100,risk_level:"high",rows:8});'
+            'const x={command:"start",bet:50,hands:3,insurance:false};'
+        )
+        hints = discover_command_request_hints(bundle)
+        self.assertIn("bet", hints["play"])
+        self.assertIn("risk_level", hints["play"])
+        self.assertIn("rows", hints["play"])
+        self.assertIn("bet", hints["start"])
+        self.assertIn("hands", hints["start"])
 
     def test_discovers_literal_dynamic_spin_choices(self) -> None:
         bundle = (
