@@ -505,21 +505,21 @@ class BGamingAdapterContractTests(unittest.TestCase):
             )
             self.assertEqual(purchase["cost_multiplier"], 1.5)
 
-    def test_tiered_purchase_uses_matching_client_proven_row_domain(self) -> None:
+    def test_selector_priced_purchase_omits_feature_level_and_uses_row_variant(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             provider = BGamingProvider(Path(temp))
             game = Game(
                 provider="bgaming",
-                slug="tiered-row-slot",
-                name="Tiered Row Slot",
-                url="https://demo.bgaming-network.com/games/TieredRows/FUN",
+                slug="selector-priced-slot",
+                name="Selector Priced Slot",
+                url="https://demo.bgaming-network.com/games/SelectorPriced/FUN",
             )
             session = requests.Session()
             runtime = BGamingRuntime(
                 session=session,
-                launch_url="https://demo.bgaming-network.com/games/TieredRows/FUN",
-                api_url="https://demo.bgaming-network.com/api/TieredRows/1/session",
-                identifier="TieredRows",
+                launch_url="https://demo.bgaming-network.com/games/SelectorPriced/FUN",
+                api_url="https://demo.bgaming-network.com/api/SelectorPriced/1/session",
+                identifier="SelectorPriced",
                 csrf_header_name="X-CSRF-Token",
                 csrf_header_value="secret",
                 options={},
@@ -537,7 +537,11 @@ class BGamingAdapterContractTests(unittest.TestCase):
                     },
                     "feature_options": {
                         "feature_multipliers": {
-                            "freespin_buy": {"3": 12000}
+                            "freespin_buy": {
+                                "3": 12000,
+                                "4": 20000,
+                                "5": 30000,
+                            }
                         },
                         "disabled_features": [],
                     },
@@ -566,37 +570,20 @@ class BGamingAdapterContractTests(unittest.TestCase):
                     "purchased_feature": {},
                 },
             }
-            purchase_spin = {
-                "api_version": "2",
-                "outcome": {
-                    "screen": [["1", "2", "3"]] * 5,
-                    "bet": 20,
-                    "win": 0,
-                },
-                "balance": {"wallet": 88000, "game": 0},
-                "flow": {
-                    "round_id": 2,
-                    "last_action_id": "2_1",
-                    "command": "spin",
-                    "state": "closed",
-                    "available_actions": ["init", "spin"],
-                    "purchased_feature": {
-                        "name": "freespin_buy",
-                        "level": "3",
-                    },
-                },
-            }
             sent_options = []
+            purchase_counter = 0
 
             def fake_post(_runtime, command, **kwargs):
+                nonlocal purchase_counter
                 if command == "init":
                     return Response(), {"command": "init"}, init
                 options = dict(kwargs.get("options") or {})
                 sent_options.append(options)
                 payload = {"command": command, "options": options}
                 if options.get("purchased_feature"):
-                    if str(options.get("rows")) != str(
-                        options.get("purchased_feature_level")
+                    if (
+                        "purchased_feature_level" in options
+                        or str(options.get("rows")) not in {"3", "4", "5"}
                     ):
                         response = requests.Response()
                         response.status_code = 422
@@ -612,6 +599,33 @@ class BGamingAdapterContractTests(unittest.TestCase):
                             "422 invalid_options",
                             response=response,
                         )
+
+                    purchase_counter += 1
+                    row_value = int(options["rows"])
+                    balance_after = {
+                        3: 88000,
+                        4: 80000,
+                        5: 70000,
+                    }[row_value]
+                    purchase_spin = {
+                        "api_version": "2",
+                        "outcome": {
+                            "screen": [["1", "2", "3"]] * 5,
+                            "bet": 20,
+                            "win": 0,
+                        },
+                        "balance": {"wallet": balance_after, "game": 0},
+                        "flow": {
+                            "round_id": 1 + purchase_counter,
+                            "last_action_id": f"{1 + purchase_counter}_1",
+                            "command": "spin",
+                            "state": "closed",
+                            "available_actions": ["init", "spin"],
+                            "purchased_feature": {
+                                "name": "freespin_buy",
+                            },
+                        },
+                    }
                     return Response(), payload, purchase_spin
                 return Response(), payload, base_spin
 
@@ -658,15 +672,32 @@ class BGamingAdapterContractTests(unittest.TestCase):
                 )
 
             self.assertEqual(result.status, "OK")
-            self.assertEqual(result.successful_spins, 2)
-            purchase_options = next(
-                options for options in sent_options
+            self.assertEqual(result.successful_spins, 4)
+            purchase_options = [
+                options
+                for options in sent_options
                 if options.get("purchased_feature") == "freespin_buy"
-            )
-            self.assertEqual(purchase_options["rows"], 3)
+            ]
             self.assertEqual(
-                purchase_options["purchased_feature_level"],
-                "3",
+                sorted(int(options["rows"]) for options in purchase_options),
+                [3, 4, 5],
+            )
+            self.assertTrue(
+                all(
+                    "purchased_feature_level" not in options
+                    for options in purchase_options
+                )
+            )
+            self.assertEqual(
+                {
+                    mode["id"] for mode in result.discovered_modes
+                    if mode.get("kind") == "PURCHASE"
+                },
+                {
+                    "PURCHASE_FREESPIN_BUY_ROWS_3",
+                    "PURCHASE_FREESPIN_BUY_ROWS_4",
+                    "PURCHASE_FREESPIN_BUY_ROWS_5",
+                },
             )
 
     def test_unexplained_bet_translation_cannot_be_ok(self) -> None:
