@@ -20,6 +20,11 @@ on:
         required: false
         default: ''
         type: string
+      slugs:
+        description: CSV of exact game slugs; takes priority over slug/offset
+        required: false
+        default: ''
+        type: string
       game_url:
         description: Direct game URL; when set, catalog crawl is skipped
         required: false
@@ -104,6 +109,7 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           INPUT_PROVIDER: ${{ inputs.provider }}
           INPUT_SLUG: ${{ inputs.slug }}
+          INPUT_SLUGS: ${{ inputs.slugs }}
           INPUT_GAME_URL: ${{ inputs.game_url }}
           INPUT_GAME_NAME: ${{ inputs.game_name }}
           INPUT_SYMBOL: ${{ inputs.symbol }}
@@ -124,6 +130,7 @@ jobs:
               cfg = {
                   'provider': os.environ.get('INPUT_PROVIDER') or 'pragmatic',
                   'slug': os.environ.get('INPUT_SLUG') or '',
+                  'slugs': os.environ.get('INPUT_SLUGS') or '',
                   'game_url': os.environ.get('INPUT_GAME_URL') or '',
                   'game_name': os.environ.get('INPUT_GAME_NAME') or '',
                   'symbol': os.environ.get('INPUT_SYMBOL') or '',
@@ -151,6 +158,7 @@ jobs:
           values = {
               'provider': cfg['provider'],
               'slug': str(cfg.get('slug') or ''),
+              'slugs': str(cfg.get('slugs') or ''),
               'game_url': str(cfg.get('game_url') or ''),
               'game_name': str(cfg.get('game_name') or ''),
               'symbol': str(cfg.get('symbol') or ''),
@@ -181,6 +189,7 @@ jobs:
           args=(
             --provider "${{ steps.config.outputs.provider }}"
             --slug "${{ steps.config.outputs.slug }}"
+            --slugs "${{ steps.config.outputs.slugs }}"
             --game-url "${{ steps.config.outputs.game_url }}"
             --game-name "${{ steps.config.outputs.game_name }}"
             --symbol "${{ steps.config.outputs.symbol }}"
