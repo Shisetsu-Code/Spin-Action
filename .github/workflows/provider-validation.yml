@@ -70,6 +70,7 @@ on:
         required: true
         default: true
         type: boolean
+
   push:
     branches:
       - lab/actions-validation
@@ -191,6 +192,11 @@ jobs:
             --data-root action-results/data
             --output-dir action-results
           )
+          if [[ "${{ steps.config.outputs.provider }}" == "bgaming" \
+             && "${{ steps.config.outputs.game_limit }}" == "0" \
+             && "${{ steps.config.outputs.max_pages }}" == "0" ]]; then
+            args+=(--bgaming-full-portfolio)
+          fi
           if [[ "${{ steps.config.outputs.allow_har_fallback }}" == "true" ]]; then
             args+=(--allow-har-fallback)
           fi
