@@ -148,7 +148,7 @@ def _request_static_defaults(compact: str) -> dict[str, Any]:
         # Ternary serializers often provide a provider-defined normal fallback,
         # e.g. machineId=0. Preserve it only when it is an explicit scalar.
         for pair in re.finditer(
-            rf"(?:^|,)([A-Za-z_$][A-Za-z0-9_$]*):[^{{}}]{{1,500}}\?[^{{}}]{{1,500}}:({scalar})(?=,[A-Za-z_$][A-Za-z0-9_$]*:|$)",
+            rf"(?:^|,)([A-Za-z_$][A-Za-z0-9_$]*):[^{{}}]{{1,500}}\?(?!\.)[^{{}}]{{1,500}}:({scalar})(?=,[A-Za-z_$][A-Za-z0-9_$]*:|$)",
             body,
         ):
             key = pair.group(1)
