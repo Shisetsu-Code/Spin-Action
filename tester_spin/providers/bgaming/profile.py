@@ -410,6 +410,45 @@ def discover_profile(
                     f"client.additionalSpinOptions.{field}:choice"
                 )
 
+    # Some API-v2 games expose a selectable row/grid contract by indexing
+    # options.valid_bets with the allowed row counts. Treat that mapping as a
+    # finite rows domain only when the provider client has independently proven
+    # that rows is an additionalSpinOptions wire field and the current init row
+    # belongs to the same domain. This stays fail-closed and does not infer
+    # arbitrary selectors from layout alone.
+    if (
+        isinstance(init_options, dict)
+        and "rows" in profile.spin_options
+        and "client.additionalSpinOptions.rows" in profile.evidence
+        and not profile.spin_option_choices.get("rows")
+    ):
+        valid_bets = init_options.get("valid_bets")
+        if isinstance(valid_bets, dict):
+            numeric_rows: list[int] = []
+            for raw_rows, wagers in valid_bets.items():
+                try:
+                    rows_value = int(str(raw_rows))
+                except (TypeError, ValueError):
+                    continue
+                if rows_value <= 0 or str(rows_value) != str(raw_rows).strip():
+                    continue
+                if not isinstance(wagers, list) or not any(
+                    isinstance(value, (int, float)) and value > 0
+                    for value in wagers
+                ):
+                    continue
+                numeric_rows.append(rows_value)
+
+            row_domain = sorted(set(numeric_rows))
+            current_rows = profile.spin_options.get("rows")
+            try:
+                current_rows_int = int(current_rows)
+            except (TypeError, ValueError):
+                current_rows_int = -1
+            if len(row_domain) >= 2 and current_rows_int in row_domain:
+                profile.spin_option_choices["rows"] = row_domain
+                profile.evidence.append("init.valid_bets:rows-domain")
+
     selector_candidates: list[str] = []
     multiplier_keys = set(profile.effective_bet_multipliers)
     if multiplier_keys:
