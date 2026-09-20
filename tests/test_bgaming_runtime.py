@@ -20,6 +20,7 @@ from tester_spin.providers.bgaming.runtime import (
     extract_options,
     extract_script_urls,
     flow_continuation_command,
+    initial_flow_command,
     infer_missing_wire_options,
     infer_observed_debit,
     is_line_bet_init,
@@ -1467,6 +1468,36 @@ class BGamingRuntimeTests(unittest.TestCase):
         self.assertTrue(any("flow.state" in warning for warning in warnings))
         self.assertEqual(pending_flow_actions(spin), ["select_bonus"])
         self.assertTrue(any("balance inconsistente" in warning for warning in warnings))
+
+
+    def test_initial_flow_command_accepts_provider_advertised_play(self) -> None:
+        init = {
+            "api_version": "2",
+            "options": {"bet": 100},
+            "flow": {
+                "state": "ready",
+                "command": "init",
+                "available_actions": ["init", "play"],
+            },
+        }
+        self.assertEqual(initial_flow_command(init), "play")
+        self.assertEqual(validate_init(init), [])
+        self.assertEqual(pending_flow_actions(init), [])
+
+    def test_initial_flow_command_fails_closed_on_ambiguous_actions(self) -> None:
+        init = {
+            "api_version": "2",
+            "options": {"bet": 100},
+            "flow": {
+                "state": "ready",
+                "command": "init",
+                "available_actions": ["init", "deal", "play_bonus"],
+            },
+        }
+        self.assertEqual(initial_flow_command(init), "")
+        self.assertTrue(
+            any("acción base no resoluble" in item for item in validate_init(init))
+        )
 
 
 if __name__ == "__main__":

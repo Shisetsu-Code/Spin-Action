@@ -34,6 +34,7 @@ from tester_spin.providers.bgaming.runtime import (
     effective_bet_for_options,
     flow_continuation_command,
     http_error_evidence,
+    initial_flow_command,
     is_line_bet_init,
     line_bet_count,
     pending_flow_actions,
@@ -226,6 +227,7 @@ class BGamingExecutionMixin:
         legacy_line_bets = False
         legacy_line_count = 0
         rows_required = False
+        base_wire_command = "spin"
         api_profile_checked = False
         learned_wire_options: dict[str, Any] = {}
         purchase_modes: list[dict[str, Any]] = []
@@ -509,6 +511,7 @@ class BGamingExecutionMixin:
                     "RAW y mapa estructural preservados sin ejecutar comandos de juego."
                 )
 
+            base_wire_command = initial_flow_command(init_data) or "spin"
             init_warnings = validate_init(init_data)
             global_warnings.extend(init_warnings)
             options = init_data.get("options")
@@ -554,7 +557,7 @@ class BGamingExecutionMixin:
                     "id": "SPIN",
                     "kind": "SPIN",
                     "observed": True,
-                    "wire_command": "spin",
+                    "wire_command": base_wire_command,
                 }
             )
 
@@ -629,7 +632,7 @@ class BGamingExecutionMixin:
                                 else "ADVERTISED_ONLY"
                             )
                         ),
-                        "wire_command": "spin",
+                        "wire_command": base_wire_command,
                         "purchased_feature": name,
                         "purchased_feature_level": level,
                         "selector_field": purchase.get("selector_field") or "",
@@ -1090,7 +1093,7 @@ class BGamingExecutionMixin:
                             )
 
                         response, request_payload, data = send_api_command(
-                            "spin",
+                            base_wire_command,
                             options_payload=spin_options,
                             extra_data_payload=request_extra_data,
                         )
@@ -1265,7 +1268,7 @@ class BGamingExecutionMixin:
                                 previous_balance_total=previous_total,
                                 expected_reels=expected_reels,
                                 expected_rows=expected_rows,
-                                command="spin",
+                                command=base_wire_command,
                                 expected_debit=expected_debit,
                                 expected_outcome_bet=(
                                     expected_outcome_bet

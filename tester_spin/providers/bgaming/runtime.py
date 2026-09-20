@@ -1444,6 +1444,30 @@ def result_has_authoritative_shape(data: dict[str, Any]) -> bool:
     return False
 
 
+def initial_flow_command(data: dict[str, Any]) -> str:
+    """Return the provider-advertised initial wager command for API-v2 flow.
+
+    The server flow is authoritative. Prefer the canonical slot command when
+    present, otherwise accept play (used by several BGaming API-v2 clients), or
+    one uniquely advertised non-init action. No title/identifier routing is used.
+    """
+    flow = data.get("flow")
+    if not isinstance(flow, dict):
+        return ""
+    actions = flow.get("available_actions")
+    if not isinstance(actions, list):
+        return ""
+    names = [str(action) for action in actions if str(action) and str(action) != "init"]
+    names = list(dict.fromkeys(names))
+    if "spin" in names:
+        return "spin"
+    if "play" in names:
+        return "play"
+    if len(names) == 1:
+        return names[0]
+    return ""
+
+
 def flow_available_actions(data: dict[str, Any]) -> list[str]:
     flow = data.get("flow")
     if not isinstance(flow, dict):
@@ -1486,6 +1510,9 @@ def pending_flow_actions(data: dict[str, Any]) -> list[str]:
     actions = set(flow_available_actions(data))
     continuation = flow_continuation_command(data)
     handled = {"init", "spin"}
+    initial = initial_flow_command(data)
+    if initial:
+        handled.add(initial)
     handled.update(SAFE_CONTINUATION_COMMANDS)
     handled.update(CONTINUATION_BY_STATE)
     if continuation:
@@ -1599,8 +1626,10 @@ def validate_init(data: dict[str, Any]) -> list[str]:
         if state not in {"ready", "closed"}:
             warnings.append(f"flow.state init no observado: {state!r}")
         actions = flow.get("available_actions")
-        if isinstance(actions, list) and "spin" not in actions:
-            warnings.append(f"spin no disponible tras init: {actions!r}")
+        if isinstance(actions, list) and not initial_flow_command(data):
+            warnings.append(
+                f"acción base no resoluble tras init: {actions!r}"
+            )
 
     return warnings
 
