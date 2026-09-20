@@ -280,6 +280,85 @@ def _has_request_bet_contract(text: str) -> bool:
         )
     )
 
+def _wire_evidence_snippets(
+    text: str,
+    *,
+    radius: int = 220,
+    max_per_pattern: int = 4,
+) -> list[dict[str, Any]]:
+    """Persist bounded structural excerpts explaining live wire classification.
+
+    These excerpts are diagnostic evidence only. They never authorize execution.
+    Sensitive runtime-looking literals are redacted before writing artifacts.
+    """
+    source = text or ""
+    patterns = (
+        (
+            "method-play",
+            r'(?:\bmethod\s*:\s*["\']play["\']|["\']method["\']\s*:\s*["\']play["\'])',
+        ),
+        (
+            "req-bet",
+            r'(?:\breq\s*:\s*\{[^{}]{0,1600}\bbet\s*:|\.req\.bet\s*=|\.req\[["\']bet["\']\]\s*=)',
+        ),
+        (
+            "req-bet-type",
+            r'(?:\breq\s*:\s*\{[^{}]{0,1600}\bbet_type\s*:|\.req\.bet_type\s*=|\.req\[["\']bet_type["\']\]\s*=)',
+        ),
+        (
+            "req-action",
+            r'(?:\breq\s*:\s*\{[^{}]{0,1600}\baction\s*:|\.req\.action\s*=|\.req\[["\']action["\']\]\s*=)',
+        ),
+        (
+            "custom-req",
+            r'(?:\bcustom_req\b|\.req\.custom_req\s*=)',
+        ),
+        (
+            "rpc-id-zero",
+            r'(?:\bid\s*:\s*0\s*,\s*jsonrpc|["\']id["\']\s*:\s*0|\.id\s*=\s*0)',
+        ),
+        (
+            "bet-type-model",
+            r'bet_type\s*:\s*(?:this\.)?betType\b',
+        ),
+    )
+
+    out: list[dict[str, Any]] = []
+    seen: set[tuple[str, int]] = set()
+    for label, pattern in patterns:
+        count = 0
+        for match in re.finditer(pattern, source, flags=re.IGNORECASE):
+            key = (label, match.start())
+            if key in seen:
+                continue
+            seen.add(key)
+            start = max(0, match.start() - max(40, int(radius)))
+            end = min(len(source), match.end() + max(40, int(radius)))
+            snippet = re.sub(r"\s+", " ", source[start:end]).strip()
+            snippet = re.sub(
+                r"eyJ[A-Za-z0-9_.\-]{24,}",
+                "<redacted-jwt>",
+                snippet,
+            )
+            snippet = re.sub(
+                r'((?:play_token|launch_token|state_lock|token)\s*[:=]\s*["\'])[^"\']{4,}(["\'])',
+                r"\1<redacted>\2",
+                snippet,
+                flags=re.IGNORECASE,
+            )
+            out.append(
+                {
+                    "kind": label,
+                    "offset": int(match.start()),
+                    "snippet": snippet[:700],
+                }
+            )
+            count += 1
+            if count >= max(1, int(max_per_pattern)):
+                break
+    return out[:32]
+
+
 def discover_action_vocabulary(bundle_text: str, engine_contract: str = "") -> set[str]:
     """Discover action values actually encoded by the loaded HyperHive client."""
     combined = (bundle_text or "") + "\n" + (engine_contract or "")
@@ -649,6 +728,7 @@ def run_hyperhive_test(
         ).hexdigest() if engine_contract else "",
         "rpc_id_profile": "uuid" if isinstance(rpc_id_probe, str) else "zero",
         "action_vocabulary": sorted(action_vocabulary),
+        "wire_evidence": _wire_evidence_snippets(rpc_contract),
         "base_request": dict(modes[0].get("request") or {}),
         "custom_req_profile": str(modes[0].get("custom_req_profile") or ""),
         "base_discovery_state": str(modes[0].get("discovery_state") or ""),

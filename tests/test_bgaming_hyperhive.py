@@ -14,6 +14,7 @@ from tester_spin.providers.bgaming.hyperhive import (
     _hyperhive_rpc_id,
     _pz_custom_req,
     _result_summary,
+    _wire_evidence_snippets,
     discover_action_vocabulary,
     discover_modes_from_bundle,
     is_hyperhive_runtime,
@@ -522,6 +523,24 @@ class BGamingHyperHiveTests(unittest.TestCase):
             variable_layout=True,
         )
         self.assertEqual(warnings, [])
+
+
+    def test_wire_evidence_snippets_are_structural_and_redacted(self) -> None:
+        contract = (
+            'x={id:0,jsonrpc:"2.0",method:"play",params:{token:"secret-token",'
+            'req:{bet:t.stake,bet_type:"bet",action:"spin"},'
+            'state_lock:"secret-lock"}};'
+        )
+        rows = _wire_evidence_snippets(contract, radius=80)
+        kinds = {row["kind"] for row in rows}
+        self.assertIn("method-play", kinds)
+        self.assertIn("req-bet", kinds)
+        self.assertIn("req-bet-type", kinds)
+        self.assertIn("rpc-id-zero", kinds)
+        joined = " ".join(row["snippet"] for row in rows)
+        self.assertNotIn("secret-token", joined)
+        self.assertNotIn("secret-lock", joined)
+        self.assertIn("<redacted>", joined)
 
 
 if __name__ == "__main__":
