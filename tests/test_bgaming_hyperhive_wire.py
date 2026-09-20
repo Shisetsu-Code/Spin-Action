@@ -319,5 +319,41 @@ class BGamingHyperHiveWireTests(unittest.TestCase):
         self.assertEqual(mode["custom_req_profile"], "pz-per-line")
 
 
+    def test_dynamic_default_bet_type_and_req_defaults_are_applied(self) -> None:
+        contract = (
+            'let s=this.freeBets.isActive()?"freebet":"default";'
+            'this.network.invoke("play",{token:this.network.token,'
+            'req:{bet:e,bet_type:s,custom_field:"custom_value",'
+            'fe_exponent:this.globalState.feBetExponent}});'
+        )
+        profile = analyze_engine_wire(contract)
+        profile.exponent = 3
+        self.assertEqual(profile.bet_type, "default")
+        self.assertEqual(profile.req_literals, {"custom_field": "custom_value"})
+        self.assertEqual(profile.req_exponent_fields, ["fe_exponent"])
+        adapted = apply_observed_play_wire(
+            {"token": "secret", "req": {"bet": 20, "bet_type": "bet"}},
+            profile,
+        )
+        self.assertEqual(
+            adapted["req"],
+            {
+                "bet": 20,
+                "bet_type": "default",
+                "custom_field": "custom_value",
+                "fe_exponent": 3,
+            },
+        )
+
+    def test_req_ternary_scalar_fallback_is_preserved(self) -> None:
+        contract = (
+            'network.invoke("play",{req:{bet:e.bet,'
+            'machineId:e.spinParams?.machineId?parseInt(e.spinParams.machineId,10):0,'
+            'bet_type:e.free?"freebet":void 0}});'
+        )
+        profile = analyze_engine_wire(contract)
+        self.assertEqual(profile.req_literals.get("machineId"), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

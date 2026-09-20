@@ -32,6 +32,8 @@ class ObservedHyperHiveWire:
     custom_stake_on_spin: bool = False
     custom_literals: dict[str, Any] = field(default_factory=dict)
     purchase_custom_variants: list[dict[str, Any]] = field(default_factory=list)
+    req_literals: dict[str, Any] = field(default_factory=dict)
+    req_exponent_fields: list[str] = field(default_factory=list)
     exponent: int = 2
 
     @property
@@ -112,6 +114,93 @@ def _formatted_request_literals(compact: str) -> dict[str, Any]:
     for dynamic in ("action", "exponent", "stake"):
         found.pop(dynamic, None)
     return found
+
+
+def _request_object_bodies(compact: str) -> list[str]:
+    return [
+        match.group(1)
+        for match in re.finditer(r"\breq:\{([^{}]{1,2400})\}", compact or "")
+    ]
+
+
+def _request_static_defaults(compact: str) -> dict[str, Any]:
+    """Extract only scalar defaults explicitly serialized inside req objects."""
+    scalar = r'(?:!0|!1|true|false|null|-?\d+(?:\.\d+)?|"[^"\\]{0,200}"|\'[^\'\\]{0,200}\')'
+    by_key: dict[str, list[Any]] = {}
+    reserved = {
+        "bet", "bet_type", "action", "purchased_feature",
+        "bonus_multiplier_type", "custom_req",
+    }
+    for body in _request_object_bodies(compact):
+        for pair in re.finditer(
+            rf"(?:^|,)([A-Za-z_$][A-Za-z0-9_$]*):({scalar})(?=,|$)",
+            body,
+        ):
+            key = pair.group(1)
+            if key in reserved or not _safe_literal_key(key):
+                continue
+            try:
+                value = _parse_js_scalar(pair.group(2))
+            except ValueError:
+                continue
+            by_key.setdefault(key, []).append(value)
+
+        # Ternary serializers often provide a provider-defined normal fallback,
+        # e.g. machineId=0. Preserve it only when it is an explicit scalar.
+        for pair in re.finditer(
+            rf"(?:^|,)([A-Za-z_$][A-Za-z0-9_$]*):[^{{}}]{{1,500}}\?[^{{}}]{{1,500}}:({scalar})(?=,[A-Za-z_$][A-Za-z0-9_$]*:|$)",
+            body,
+        ):
+            key = pair.group(1)
+            if key in reserved or not _safe_literal_key(key):
+                continue
+            try:
+                value = _parse_js_scalar(pair.group(2))
+            except ValueError:
+                continue
+            by_key.setdefault(key, []).append(value)
+
+    out: dict[str, Any] = {}
+    for key, values in by_key.items():
+        unique: list[Any] = []
+        for value in values:
+            if value not in unique:
+                unique.append(value)
+        if len(unique) == 1:
+            out[key] = unique[0]
+    return out
+
+
+def _request_exponent_fields(compact: str) -> list[str]:
+    fields: set[str] = set()
+    for body in _request_object_bodies(compact):
+        for pair in re.finditer(
+            r"(?:^|,)([A-Za-z_$][A-Za-z0-9_$]*):([^,]{1,260})(?=,|$)",
+            body,
+        ):
+            key, expression = pair.group(1), pair.group(2)
+            if (
+                "exponent" in key.casefold()
+                and "exponent" in expression.casefold()
+                and _safe_literal_key(key)
+            ):
+                fields.add(key)
+    return sorted(fields)
+
+
+def _dynamic_default_bet_type(compact: str) -> str:
+    """Resolve a normal bet_type when a local ternary feeds req.bet_type."""
+    candidates: set[str] = set()
+    for match in re.finditer(
+        r"(?:let|const|var)([A-Za-z_$][A-Za-z0-9_$]*)="
+        r"[^;]{0,800}\?[\"']freebet[\"']:[\"']([A-Za-z0-9_\-]+)[\"']",
+        compact or "",
+    ):
+        variable, normal = match.group(1), match.group(2)
+        tail = (compact or "")[match.end() : match.end() + 3500]
+        if re.search(rf"\bbet_type:{re.escape(variable)}\b", tail):
+            candidates.add(normal)
+    return next(iter(candidates)) if len(candidates) == 1 else ""
 
 
 def _feature_buy_boolean_contract(
@@ -249,14 +338,20 @@ def analyze_engine_wire(engine_contract: str) -> ObservedHyperHiveWire:
         for key, value in feature_defaults.items():
             custom_literals.setdefault(key, value)
 
+    dynamic_bet_type = _dynamic_default_bet_type(compact)
+    req_literals = _request_static_defaults(compact)
+    req_exponent_fields = _request_exponent_fields(compact)
+
     return ObservedHyperHiveWire(
-        bet_type="default" if default_bet_type else "",
+        bet_type="default" if default_bet_type else dynamic_bet_type,
         custom_req=custom_req,
         custom_action=custom_action,
         custom_exponent=custom_exponent,
         custom_stake_on_spin=custom_stake_on_spin,
         custom_literals=custom_literals,
         purchase_custom_variants=feature_variants if custom_req else [],
+        req_literals=req_literals,
+        req_exponent_fields=req_exponent_fields,
     )
 
 
@@ -292,6 +387,11 @@ def apply_observed_play_wire(
 
     if profile.bet_type:
         req["bet_type"] = profile.bet_type
+
+    for key, value in profile.req_literals.items():
+        req.setdefault(key, value)
+    for key in profile.req_exponent_fields:
+        req.setdefault(key, int(profile.exponent))
 
     existing_custom = req.get("custom_req")
     if profile.custom_req and not isinstance(existing_custom, dict):
@@ -337,13 +437,26 @@ def apply_observed_play_wire(
 
 
 def _has_req_bet_evidence(text: str) -> bool:
-    """Require direct live-client evidence that bet belongs to JSON-RPC req."""
-    return bool(
-        re.search(
-            r'(?:\breq\s*:\s*\{[^{}]{0,1600}\bbet\s*:|\.req\.bet\s*=|\.req\[["\']bet["\']\]\s*=)',
-            text or "",
-        )
-    )
+    """Require live-client evidence that a bet-bearing object becomes params.req."""
+    source = text or ""
+    if re.search(
+        r'(?:\breq\s*:\s*\{[^{}]{0,1600}\bbet\s*:|\.req\.bet\s*=|\.req\[["\']bet["\']\]\s*=)',
+        source,
+    ):
+        return True
+    for match in re.finditer(
+        r'\b(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*\{([^{}]{1,1800})\}',
+        source,
+    ):
+        variable, body = match.group(1), match.group(2)
+        if not re.search(r'(?:^|,)\s*bet\s*:', body):
+            continue
+        if re.search(
+            rf'\breq\s*:\s*{re.escape(variable)}\b',
+            source[match.end() : match.end() + 5000],
+        ):
+            return True
+    return False
 
 
 def _has_req_bet_type_evidence(text: str) -> bool:

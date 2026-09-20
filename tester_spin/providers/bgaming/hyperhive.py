@@ -273,10 +273,38 @@ def _request_literal_assignments(text: str, key: str) -> set[str]:
 
 
 def _has_request_bet_contract(text: str) -> bool:
+    source = text or ""
+    if re.search(
+        r'(?:\breq\s*:\s*\{[^{}]{0,1200}\bbet\s*:|\.req\.bet\s*=|\.req\[["\']bet["\']\]\s*=)',
+        source,
+    ):
+        return True
+
+    # Modern clients may construct req in a local variable and only later place
+    # that object under params.req. Accept it only when the same local object
+    # explicitly contains a bet field and is subsequently bound to req.
+    for match in re.finditer(
+        r'\b(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*\{([^{}]{1,1800})\}',
+        source,
+    ):
+        variable, body = match.group(1), match.group(2)
+        if not re.search(r'(?:^|,)\s*bet\s*:', body):
+            continue
+        tail = source[match.end() : match.end() + 5000]
+        if re.search(rf'\breq\s*:\s*{re.escape(variable)}\b', tail):
+            return True
+    return False
+
+
+def _client_start_action(text: str) -> bool:
+    """Prove an initial action=start from a loaded client method."""
+    source = re.sub(r"\s+", "", text or "")
     return bool(
         re.search(
-            r'(?:\breq\s*:\s*\{[^{}]{0,1200}\bbet\s*:|\.req\.bet\s*=|\.req\[["\']bet["\']\]\s*=)',
-            text or "",
+            r'(?:async)?start\([^)]*\)\{[^{}]{0,1200}'
+            r'(?:call|invoke)\(["\']play["\'],\{[^{}]{0,500}'
+            r'req:\{[^{}]{0,700}\baction:["\']start["\']',
+            source,
         )
     )
 
@@ -400,6 +428,13 @@ def discover_modes_from_bundle(
         bet_type = "bet"
     elif len(normal_scoped) == 1:
         bet_type = next(iter(normal_scoped))
+    elif (
+        scoped_bet_types == {"freebet"}
+        and has_req_bet_contract
+    ):
+        # A req-scoped freebet-only assignment is stronger than unrelated loose
+        # bet_type literals elsewhere in replay/history code. Normal play omits it.
+        bet_type = ""
     elif "betting" in normal_loose:
         bet_type = "betting"
     elif "bet" in normal_loose:
@@ -435,6 +470,8 @@ def discover_modes_from_bundle(
     )
     if "spin" in request_actions or loose_spin_is_contractual:
         spin_request["action"] = "spin"
+    elif _client_start_action(combined):
+        spin_request["action"] = "start"
 
     custom_req_profile = (
         "pz-per-line"

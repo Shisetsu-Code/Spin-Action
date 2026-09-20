@@ -543,5 +543,48 @@ class BGamingHyperHiveTests(unittest.TestCase):
         self.assertIn("<redacted>", joined)
 
 
+    def test_indirect_req_object_is_a_live_bet_contract(self) -> None:
+        runtime = BGamingRuntime(
+            session=requests.Session(),
+            launch_url="https://demo.example/hyperhive",
+            api_url="https://unused.example/api/session",
+            identifier="Generic",
+            csrf_header_name="X-CSRF",
+            csrf_header_value="secret",
+            options={},
+            round_series_id=1,
+        )
+        contract = (
+            'const n={bet:t,purchased_feature:e,bonus_buy:s};'
+            'fetch("/api",{body:JSON.stringify({id:"x",jsonrpc:"2.0",'
+            'method:"play",params:{token:"t",req:n}})});'
+        )
+        modes = discover_modes_from_bundle(
+            runtime, timeout_s=1, bundle_text=contract, engine_contract=contract
+        )
+        self.assertTrue(modes[0]["executable"])
+        self.assertNotEqual(modes[0]["discovery_state"], "CONTRACT_UNRESOLVED")
+
+    def test_start_method_proves_initial_hyperhive_action(self) -> None:
+        runtime = BGamingRuntime(
+            session=requests.Session(),
+            launch_url="https://demo.example/hyperhive",
+            api_url="https://unused.example/api/session",
+            identifier="Generic",
+            csrf_header_name="X-CSRF",
+            csrf_header_value="secret",
+            options={},
+            round_series_id=1,
+        )
+        contract = (
+            'async start(t,e){return await this.call("play",'
+            '{req:{bet:t,action:"start"},state_lock:e})}'
+        )
+        modes = discover_modes_from_bundle(
+            runtime, timeout_s=1, bundle_text=contract, engine_contract=contract
+        )
+        self.assertEqual(modes[0]["request"].get("action"), "start")
+
+
 if __name__ == "__main__":
     unittest.main()
