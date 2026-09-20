@@ -33,7 +33,11 @@ class ObservedHyperHiveWire:
     custom_literals: dict[str, Any] = field(default_factory=dict)
     purchase_custom_variants: list[dict[str, Any]] = field(default_factory=list)
     req_literals: dict[str, Any] = field(default_factory=dict)
+    req_alias_literals: dict[str, Any] = field(default_factory=dict)
     req_exponent_fields: list[str] = field(default_factory=list)
+    req_balance_fields: list[str] = field(default_factory=list)
+    omit_normal_bet_type: bool = False
+    runtime_balance: int | float | None = None
     exponent: int = 2
 
     @property
@@ -210,6 +214,102 @@ def _request_static_defaults(compact: str) -> dict[str, Any]:
     return out
 
 
+def _request_alias_defaults(compact: str) -> dict[str, Any]:
+    """Resolve local scalar defaults that are serialized through req aliases."""
+    scalar = r'(?:!0|!1|true|false|null|-?\d+(?:\.\d+)?|"[^"\\]{0,200}"|\'[^\'\\]{0,200}\')'
+    found: dict[str, list[Any]] = {}
+    source = compact or ""
+    for match in re.finditer(r"\breq:\{([^{}]{1,2400})\}", source):
+        body = match.group(1)
+        left = source[max(0, match.start() - 3500) : match.start()]
+        for field in _split_js_object_fields(body):
+            pair = re.match(
+                r"^([A-Za-z_$][A-Za-z0-9_$]*):([A-Za-z_$][A-Za-z0-9_$]*)$",
+                field,
+            )
+            if not pair:
+                continue
+            key, alias = pair.group(1), pair.group(2)
+            if not _safe_literal_key(key):
+                continue
+
+            assignments = list(
+                re.finditer(
+                    rf"\b{re.escape(alias)}\s*=\s*({scalar})(?=[,;])",
+                    left,
+                )
+            )
+            if assignments:
+                try:
+                    value = _parse_js_scalar(assignments[-1].group(1))
+                except ValueError:
+                    value = object()
+                if value is not object():
+                    found.setdefault(key, []).append(value)
+                    continue
+
+            # Optional purchased_feature aliases commonly serialize null for the
+            # normal wager and a buy_* literal for the purchase branch.
+            if key == "purchased_feature":
+                ternaries = list(
+                    re.finditer(
+                        rf"\b{re.escape(alias)}\s*=\s*[^;]{{0,500}}"
+                        rf"\?[\"'](?:buy_[A-Za-z0-9_\-]+|[A-Za-z0-9_\-]*(?:bonus|chance)[A-Za-z0-9_\-]*)[\"']"
+                        rf":(null)(?=[,;])",
+                        left,
+                        flags=re.IGNORECASE,
+                    )
+                )
+                if ternaries:
+                    found.setdefault(key, []).append(None)
+
+    out: dict[str, Any] = {}
+    for key, values in found.items():
+        unique: list[Any] = []
+        for value in values:
+            if value not in unique:
+                unique.append(value)
+        if len(unique) == 1:
+            out[key] = unique[0]
+    return out
+
+
+def _request_balance_fields(compact: str) -> list[str]:
+    fields: set[str] = set()
+    for body in _request_object_bodies(compact):
+        for field in _split_js_object_fields(body):
+            pair = re.match(
+                r"^([A-Za-z_$][A-Za-z0-9_$]*):(.*)$",
+                field,
+            )
+            if not pair:
+                continue
+            key, expression = pair.group(1), pair.group(2)
+            if (
+                "balance" in key.casefold()
+                and re.search(r"(?:\.|\b)balance\b", expression, flags=re.IGNORECASE)
+                and _safe_literal_key(key)
+            ):
+                fields.add(key)
+    return sorted(fields)
+
+
+def _normal_bet_type_is_omitted(compact: str) -> bool:
+    """Prove that normal play serializes bet_type as undefined/void 0."""
+    for body in _request_object_bodies(compact):
+        for field in _split_js_object_fields(body):
+            if not field.startswith("bet_type:"):
+                continue
+            expression = field.split(":", 1)[1]
+            if re.search(
+                r"\?[\"']freebet[\"']:(?:void0|undefined)$",
+                expression,
+                flags=re.IGNORECASE,
+            ):
+                return True
+    return False
+
+
 def _request_exponent_fields(compact: str) -> list[str]:
     fields: set[str] = set()
     for body in _request_object_bodies(compact):
@@ -379,7 +479,10 @@ def analyze_engine_wire(engine_contract: str) -> ObservedHyperHiveWire:
 
     dynamic_bet_type = _dynamic_default_bet_type(compact)
     req_literals = _request_static_defaults(compact)
+    req_alias_literals = _request_alias_defaults(compact)
     req_exponent_fields = _request_exponent_fields(compact)
+    req_balance_fields = _request_balance_fields(compact)
+    omit_normal_bet_type = _normal_bet_type_is_omitted(compact)
 
     return ObservedHyperHiveWire(
         bet_type="default" if default_bet_type else dynamic_bet_type,
@@ -390,7 +493,10 @@ def analyze_engine_wire(engine_contract: str) -> ObservedHyperHiveWire:
         custom_literals=custom_literals,
         purchase_custom_variants=feature_variants if custom_req else [],
         req_literals=req_literals,
+        req_alias_literals=req_alias_literals,
         req_exponent_fields=req_exponent_fields,
+        req_balance_fields=req_balance_fields,
+        omit_normal_bet_type=omit_normal_bet_type,
     )
 
 
@@ -424,13 +530,20 @@ def apply_observed_play_wire(
         return out
     req = dict(raw_req)
 
-    if profile.bet_type:
+    if profile.omit_normal_bet_type and not profile.bet_type:
+        req.pop("bet_type", None)
+    elif profile.bet_type:
         req["bet_type"] = profile.bet_type
 
     for key, value in profile.req_literals.items():
         req.setdefault(key, value)
+    for key, value in profile.req_alias_literals.items():
+        req.setdefault(key, value)
     for key in profile.req_exponent_fields:
         req.setdefault(key, int(profile.exponent))
+    if isinstance(profile.runtime_balance, (int, float)):
+        for key in profile.req_balance_fields:
+            req.setdefault(key, profile.runtime_balance)
 
     existing_custom = req.get("custom_req")
     if profile.custom_req and not isinstance(existing_custom, dict):
@@ -644,7 +757,9 @@ def install_observed_wire_adapter() -> None:
                 base = modes[0]
                 request = base.get("request")
                 if isinstance(request, dict):
-                    if (
+                    if profile.omit_normal_bet_type and not profile.bet_type:
+                        request.pop("bet_type", None)
+                    elif (
                         request.get("bet_type") == "bet"
                         and not req_bet_type_observed
                         and not profile.bet_type
@@ -775,6 +890,13 @@ def install_observed_wire_adapter() -> None:
                     exponent = attrs.get("exponent") if isinstance(attrs, dict) else None
                     if isinstance(exponent, int):
                         profile.exponent = exponent
+                    balance = (
+                        init_result.get("balance")
+                        if isinstance(init_result, dict)
+                        else None
+                    )
+                    if isinstance(balance, (int, float)):
+                        profile.runtime_balance = balance
                 except Exception:
                     pass
             return result

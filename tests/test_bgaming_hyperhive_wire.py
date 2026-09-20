@@ -355,5 +355,42 @@ class BGamingHyperHiveWireTests(unittest.TestCase):
         self.assertEqual(profile.req_literals.get("machineId"), 0)
 
 
+    def test_req_alias_defaults_and_runtime_balance_are_applied(self) -> None:
+        contract = (
+            'let e=this.freeBets.isActive()?"buy_chance":null,n="default",r=1;'
+            '"buy_bonus"==e&&(r=this.globalState.buyBonusModeMultiplier);'
+            'this.network.invoke("play",{req:{bet:i,bet_type:n,'
+            'purchased_feature:e,balance:this.globalState.balance,'
+            'buyBonusModeMultiplier:r}});'
+        )
+        profile = analyze_engine_wire(contract)
+        profile.runtime_balance = 100000
+        self.assertIsNone(profile.req_alias_literals["purchased_feature"])
+        self.assertEqual(profile.req_alias_literals["buyBonusModeMultiplier"], 1)
+        self.assertEqual(profile.req_balance_fields, ["balance"])
+        adapted = apply_observed_play_wire(
+            {"req": {"bet": 10, "bet_type": "default"}},
+            profile,
+        )
+        self.assertEqual(adapted["req"]["purchased_feature"], None)
+        self.assertEqual(adapted["req"]["balance"], 100000)
+        self.assertEqual(adapted["req"]["buyBonusModeMultiplier"], 1)
+
+    def test_freebet_or_undefined_omits_normal_bet_type(self) -> None:
+        contract = (
+            'network.post({req:{bet:e.bet,'
+            'machineId:e.spinParams?.machineId?parseInt(e.spinParams.machineId,10):0,'
+            'bet_type:n.hasActiveFreeRound()?"freebet":void 0}});'
+        )
+        profile = analyze_engine_wire(contract)
+        self.assertTrue(profile.omit_normal_bet_type)
+        adapted = apply_observed_play_wire(
+            {"req": {"bet": 25, "bet_type": "bet"}},
+            profile,
+        )
+        self.assertNotIn("bet_type", adapted["req"])
+        self.assertEqual(adapted["req"]["machineId"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()
