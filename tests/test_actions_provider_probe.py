@@ -36,6 +36,13 @@ class ActionsProviderProbeTests(unittest.TestCase):
     def test_har_fallback_is_disabled_by_default(self) -> None:
         args = build_parser().parse_args(["--provider", "pragmatic"])
         self.assertFalse(args.allow_har_fallback)
+        self.assertFalse(args.bgaming_full_portfolio)
+
+    def test_bgaming_full_portfolio_flag_is_explicit(self) -> None:
+        args = build_parser().parse_args(
+            ["--provider", "bgaming", "--bgaming-full-portfolio"]
+        )
+        self.assertTrue(args.bgaming_full_portfolio)
 
     def test_every_active_provider_is_addressable(self) -> None:
         expected = {
