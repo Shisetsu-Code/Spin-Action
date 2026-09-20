@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from scripts.provider_catalog_manifest import enumerate_provider_targets
+from scripts.bgaming_portfolio_targets import enumerate_bgaming_portfolio_targets
 from tester_spin.action_audit import build_action_audit
 from tester_spin.farm_contract import export_farm_contract
 from tester_spin.models import Game, GameTestResult
@@ -147,6 +148,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=1,
         help="Límite conservador del crawl. 0 significa catálogo completo.",
     )
+    parser.add_argument(
+        "--bgaming-full-portfolio",
+        action="store_true",
+        help="Para BGaming, enumera /games completo sin limitar a game_type=Slots.",
+    )
     parser.add_argument("--data-root", default="action-results/data")
     parser.add_argument("--output-dir", default="action-results")
     parser.add_argument(
@@ -247,12 +253,20 @@ def run_probe(args: argparse.Namespace) -> tuple[str, dict[str, Any]]:
         progress("Catálogo omitido: usando target directo conocido para evitar tráfico innecesario.")
     else:
         provider.set_catalog_authority(True, "")
-        games = enumerate_catalog_for_probe(
-            provider,
-            requested_pages=requested_pages,
-            stop_event=stop_event,
-            progress=progress,
-        )
+        if provider.key == "bgaming" and bool(args.bgaming_full_portfolio):
+            games = enumerate_bgaming_portfolio_targets(
+                provider,
+                requested_pages=requested_pages,
+                stop_event=stop_event,
+                progress=progress,
+            )
+        else:
+            games = enumerate_catalog_for_probe(
+                provider,
+                requested_pages=requested_pages,
+                stop_event=stop_event,
+                progress=progress,
+            )
         _write_json(
             output_dir / "catalog.json",
             {
@@ -378,6 +392,7 @@ def run_probe(args: argparse.Namespace) -> tuple[str, dict[str, Any]]:
             "timeout": timeout_s,
             "max_pages": requested_pages,
             "allow_har_fallback": bool(args.allow_har_fallback),
+            "bgaming_full_portfolio": bool(args.bgaming_full_portfolio),
         },
         "catalog_count": len(games),
         "selected_count": len(selected),
