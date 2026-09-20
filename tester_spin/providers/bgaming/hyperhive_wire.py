@@ -123,6 +123,44 @@ def _request_object_bodies(compact: str) -> list[str]:
     ]
 
 
+def _split_js_object_fields(body: str) -> list[str]:
+    """Split a flat JS object body on top-level commas.
+
+    Parenthesized calls may contain commas, so regex-only field splitting can
+    accidentally attribute a later ternary fallback to the preceding key.
+    """
+    out: list[str] = []
+    start = 0
+    parens = 0
+    brackets = 0
+    quote = ""
+    escaped = False
+    for index, char in enumerate(body or ""):
+        if quote:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = ""
+            continue
+        if char in {'"', "'"}:
+            quote = char
+        elif char == "(":
+            parens += 1
+        elif char == ")":
+            parens = max(0, parens - 1)
+        elif char == "[":
+            brackets += 1
+        elif char == "]":
+            brackets = max(0, brackets - 1)
+        elif char == "," and parens == 0 and brackets == 0:
+            out.append(body[start:index])
+            start = index + 1
+    out.append((body or "")[start:])
+    return [field.strip() for field in out if field.strip()]
+
+
 def _request_static_defaults(compact: str) -> dict[str, Any]:
     """Extract only scalar defaults explicitly serialized inside req objects."""
     scalar = r'(?:!0|!1|true|false|null|-?\d+(?:\.\d+)?|"[^"\\]{0,200}"|\'[^\'\\]{0,200}\')'
@@ -132,32 +170,33 @@ def _request_static_defaults(compact: str) -> dict[str, Any]:
         "bonus_multiplier_type", "custom_req",
     }
     for body in _request_object_bodies(compact):
-        for pair in re.finditer(
-            rf"(?:^|,)([A-Za-z_$][A-Za-z0-9_$]*):({scalar})(?=,|$)",
-            body,
-        ):
-            key = pair.group(1)
+        for field in _split_js_object_fields(body):
+            match = re.match(
+                r"^([A-Za-z_$][A-Za-z0-9_$]*):(.*)$",
+                field,
+            )
+            if not match:
+                continue
+            key, expression = match.group(1), match.group(2)
             if key in reserved or not _safe_literal_key(key):
                 continue
-            try:
-                value = _parse_js_scalar(pair.group(2))
-            except ValueError:
-                continue
-            by_key.setdefault(key, []).append(value)
 
-        # Ternary serializers often provide a provider-defined normal fallback,
-        # e.g. machineId=0. Preserve it only when it is an explicit scalar.
-        for pair in re.finditer(
-            rf"(?:^|,)([A-Za-z_$][A-Za-z0-9_$]*):[^{{}}]{{1,500}}\?(?!\.)[^{{}}]{{1,500}}:({scalar})(?=,[A-Za-z_$][A-Za-z0-9_$]*:|$)",
-            body,
-        ):
-            key = pair.group(1)
-            if key in reserved or not _safe_literal_key(key):
-                continue
+            value: Any
             try:
-                value = _parse_js_scalar(pair.group(2))
+                value = _parse_js_scalar(expression)
             except ValueError:
-                continue
+                # Preserve an explicit provider-defined ternary fallback, while
+                # ignoring optional-chaining question marks such as obj?.field.
+                fallback = re.search(
+                    rf"\?(?!\.)[^:]*:({scalar})$",
+                    expression,
+                )
+                if not fallback:
+                    continue
+                try:
+                    value = _parse_js_scalar(fallback.group(1))
+                except ValueError:
+                    continue
             by_key.setdefault(key, []).append(value)
 
     out: dict[str, Any] = {}
