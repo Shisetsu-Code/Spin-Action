@@ -93,6 +93,17 @@ class BGamingHyperHiveTransportTests(unittest.TestCase):
             "https://the-godfather3-pillars-of-power.demo.bgaming-network.com/v2026/bundle.js",
             urls,
         )
+    def test_loader_res_conditional_assignment_resolves_versioned_bundle(self) -> None:
+        runtime = self._runtime()
+        loader = "https://the-godfather3-pillars-of-power.demo.bgaming-network.com/loader.js"
+        text = 'const x={res:t="v2026"};loadScript(x.res+"/bundle.js");'
+
+        urls = _dynamic_loader_script_urls(runtime, text, loader)
+
+        self.assertIn(
+            "https://the-godfather3-pillars-of-power.demo.bgaming-network.com/v2026/bundle.js",
+            urls,
+        )
     def test_loader_script_can_reveal_hash_manifests_one_level_later(self) -> None:
         runtime = self._runtime()
         client = hyperhive_client_url(runtime)
