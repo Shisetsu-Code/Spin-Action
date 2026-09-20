@@ -121,7 +121,7 @@ class BGamingAdapterContractTests(unittest.TestCase):
                     progress=lambda _message: None,
                 )
 
-            self.assertEqual(result.status, "OK")
+            self.assertEqual(result.status, "OK", result.error)
             self.assertEqual(init_seen_extra[0], {"api_version": 2})
 
     def test_profile_options_are_present_on_first_spin(self) -> None:
@@ -216,7 +216,7 @@ class BGamingAdapterContractTests(unittest.TestCase):
                     progress=lambda _message: None,
                 )
 
-            self.assertEqual(result.status, "OK")
+            self.assertEqual(result.status, "OK", result.error)
             self.assertEqual(result.successful_spins, 1)
             self.assertTrue(result.attempts[0].ok)
             self.assertEqual(len(sent_spin_options), 1)
@@ -342,7 +342,7 @@ class BGamingAdapterContractTests(unittest.TestCase):
                     progress=lambda _message: None,
                 )
 
-            self.assertEqual(result.status, "OK")
+            self.assertEqual(result.status, "OK", result.error)
             self.assertEqual(result.successful_spins, 2)
             purchase = next(
                 mode for mode in result.discovered_modes
@@ -484,7 +484,7 @@ class BGamingAdapterContractTests(unittest.TestCase):
                     progress=lambda _message: None,
                 )
 
-            self.assertEqual(result.status, "OK")
+            self.assertEqual(result.status, "OK", result.error)
             self.assertEqual(result.successful_spins, 2)
             self.assertEqual(
                 sent_options[0],
@@ -671,7 +671,7 @@ class BGamingAdapterContractTests(unittest.TestCase):
                     progress=lambda _message: None,
                 )
 
-            self.assertEqual(result.status, "OK")
+            self.assertEqual(result.status, "OK", result.error)
             self.assertEqual(result.successful_spins, 4)
             purchase_options = [
                 options
