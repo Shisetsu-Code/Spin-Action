@@ -505,6 +505,170 @@ class BGamingAdapterContractTests(unittest.TestCase):
             )
             self.assertEqual(purchase["cost_multiplier"], 1.5)
 
+    def test_tiered_purchase_uses_matching_client_proven_row_domain(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            provider = BGamingProvider(Path(temp))
+            game = Game(
+                provider="bgaming",
+                slug="tiered-row-slot",
+                name="Tiered Row Slot",
+                url="https://demo.bgaming-network.com/games/TieredRows/FUN",
+            )
+            session = requests.Session()
+            runtime = BGamingRuntime(
+                session=session,
+                launch_url="https://demo.bgaming-network.com/games/TieredRows/FUN",
+                api_url="https://demo.bgaming-network.com/api/TieredRows/1/session",
+                identifier="TieredRows",
+                csrf_header_name="X-CSRF-Token",
+                csrf_header_value="secret",
+                options={},
+                round_series_id=1,
+            )
+            init = {
+                "api_version": "2",
+                "options": {
+                    "default_bet": 5,
+                    "layout": {"reels": 5, "rows": 5},
+                    "valid_bets": {
+                        "3": [5, 10, 20],
+                        "4": [5, 10, 20],
+                        "5": [5, 10, 20],
+                    },
+                    "feature_options": {
+                        "feature_multipliers": {
+                            "freespin_buy": {"3": 12000}
+                        },
+                        "disabled_features": [],
+                    },
+                },
+                "balance": {"wallet": 100000, "game": 0},
+                "flow": {
+                    "command": "init",
+                    "state": "ready",
+                    "available_actions": ["init", "spin"],
+                },
+            }
+            base_spin = {
+                "api_version": "2",
+                "outcome": {
+                    "screen": [["1", "2", "3", "4", "5"]] * 5,
+                    "bet": 20,
+                    "win": 0,
+                },
+                "balance": {"wallet": 99980, "game": 0},
+                "flow": {
+                    "round_id": 1,
+                    "last_action_id": "1_1",
+                    "command": "spin",
+                    "state": "closed",
+                    "available_actions": ["init", "spin"],
+                    "purchased_feature": {},
+                },
+            }
+            purchase_spin = {
+                "api_version": "2",
+                "outcome": {
+                    "screen": [["1", "2", "3"]] * 5,
+                    "bet": 20,
+                    "win": 0,
+                },
+                "balance": {"wallet": 88000, "game": 0},
+                "flow": {
+                    "round_id": 2,
+                    "last_action_id": "2_1",
+                    "command": "spin",
+                    "state": "closed",
+                    "available_actions": ["init", "spin"],
+                    "purchased_feature": {
+                        "name": "freespin_buy",
+                        "level": "3",
+                    },
+                },
+            }
+            sent_options = []
+
+            def fake_post(_runtime, command, **kwargs):
+                if command == "init":
+                    return Response(), {"command": "init"}, init
+                options = dict(kwargs.get("options") or {})
+                sent_options.append(options)
+                payload = {"command": command, "options": options}
+                if options.get("purchased_feature"):
+                    if str(options.get("rows")) != str(
+                        options.get("purchased_feature_level")
+                    ):
+                        response = requests.Response()
+                        response.status_code = 422
+                        response.headers["Content-Type"] = "application/json"
+                        response._content = (
+                            b'{"errors":[{"code":203,"desc":"invalid_options"}]}'
+                        )
+                        response.request = requests.Request(
+                            "POST",
+                            runtime.api_url,
+                        ).prepare()
+                        raise requests.HTTPError(
+                            "422 invalid_options",
+                            response=response,
+                        )
+                    return Response(), payload, purchase_spin
+                return Response(), payload, base_spin
+
+            profile = BGamingProfile(
+                family=API_V2,
+                confidence=1.0,
+                evidence=[
+                    "client.additionalSpinOptions.rows",
+                    "init.valid_bets:rows-domain",
+                ],
+                spin_options={"rows": 5},
+                spin_option_choices={"rows": [3, 4, 5]},
+                dynamic_purchased_feature=True,
+                purchase_feature_level_supported=True,
+                purchase_features=["freespin_buy"],
+                source="bundle",
+            )
+
+            with (
+                patch.object(provider, "_new_session", return_value=session),
+                patch(
+                    "tester_spin.providers.bgaming.execution.bootstrap_game",
+                    return_value=runtime,
+                ),
+                patch(
+                    "tester_spin.providers.bgaming.execution.discover_profile",
+                    return_value=profile,
+                ),
+                patch(
+                    "tester_spin.providers.bgaming.execution.discover_api_v2_wire_profile",
+                    return_value={},
+                ),
+                patch(
+                    "tester_spin.providers.bgaming.execution.post_command",
+                    side_effect=fake_post,
+                ),
+            ):
+                result = provider.test_game(
+                    game,
+                    spins=1,
+                    timeout_s=5,
+                    stop_event=threading.Event(),
+                    progress=lambda _message: None,
+                )
+
+            self.assertEqual(result.status, "OK")
+            self.assertEqual(result.successful_spins, 2)
+            purchase_options = next(
+                options for options in sent_options
+                if options.get("purchased_feature") == "freespin_buy"
+            )
+            self.assertEqual(purchase_options["rows"], 3)
+            self.assertEqual(
+                purchase_options["purchased_feature_level"],
+                "3",
+            )
+
     def test_unexplained_bet_translation_cannot_be_ok(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             provider = BGamingProvider(Path(temp))
