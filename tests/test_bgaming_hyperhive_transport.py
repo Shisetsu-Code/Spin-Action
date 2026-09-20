@@ -9,6 +9,7 @@ import requests
 from tester_spin.providers.bgaming import BGamingProvider  # noqa: F401
 from tester_spin.providers.bgaming import hyperhive
 from tester_spin.providers.bgaming.hyperhive_transport import (
+    _dynamic_loader_script_urls,
     hyperhive_client_url,
     prepare_hyperhive_client,
 )

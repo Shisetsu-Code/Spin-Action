@@ -109,7 +109,7 @@ def _loader_res_value(text: str) -> str:
     if direct:
         return direct
     match = re.search(
-        r"\\bres\\s*(?::|=)[^\\\"\']{0,240}[\\\"\']([^\\\"\']{1,160})[\\\"\']",
+        r"\\bres\\s*(?::|=)[^\\\"\']*[\\\"\']([^\\\"\']+?)[\\\"\']",
         text or "",
     )
     return str(match.group(1) or "") if match else ""
