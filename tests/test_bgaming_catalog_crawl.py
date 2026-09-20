@@ -175,6 +175,34 @@ class BGamingCatalogCrawlTests(unittest.TestCase):
                 provider.catalog_crawl_reason,
             )
 
+    def test_catalog_availability_can_authoritatively_mark_target_unavailable(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            provider = self.provider(temp)
+            game = __import__("tester_spin.models", fromlist=["Game"]).Game(
+                "bgaming",
+                "future-game",
+                "Future Game",
+                "https://bgaming.com/games/future-game",
+            )
+            metadata = provider.game_dir(game) / "game.json"
+            metadata.write_text(
+                '{"availability":"COMING_SOON"}',
+                encoding="utf-8",
+            )
+            self.assertIn("COMING_SOON", provider.validation_unavailable_reason(game))
+
+            metadata.write_text(
+                '{"availability":"NO_DEMO"}',
+                encoding="utf-8",
+            )
+            self.assertIn("NO_DEMO", provider.validation_unavailable_reason(game))
+
+            metadata.write_text(
+                '{"availability":"DEMO"}',
+                encoding="utf-8",
+            )
+            self.assertEqual(provider.validation_unavailable_reason(game), "")
+
     def test_manual_page_limit_is_never_authoritative(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             provider = self.provider(temp)
