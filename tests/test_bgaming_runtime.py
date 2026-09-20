@@ -195,6 +195,42 @@ class BGamingRuntimeTests(unittest.TestCase):
             ],
         )
 
+    def test_purchase_multiplier_table_matching_selector_domain_is_not_a_feature_level(self) -> None:
+        modes = discover_purchase_modes(
+            {
+                "options": {
+                    "feature_options": {
+                        "feature_multipliers": {
+                            "freespin_buy": {
+                                "3": 12000,
+                                "4": 20000,
+                                "5": 30000,
+                            },
+                        },
+                        "disabled_features": [],
+                    }
+                }
+            },
+            selector_domains={"rows": [3, 4, 5]},
+        )
+
+        self.assertEqual(
+            [
+                (
+                    mode["name"],
+                    mode["level"],
+                    mode.get("selector_field"),
+                    mode.get("selector_value"),
+                )
+                for mode in modes
+            ],
+            [
+                ("freespin_buy", None, "rows", "3"),
+                ("freespin_buy", None, "rows", "4"),
+                ("freespin_buy", None, "rows", "5"),
+            ],
+        )
+
     def test_expected_effective_bet_can_explain_server_bet_translation(self) -> None:
         warnings = validate_spin(
             {
