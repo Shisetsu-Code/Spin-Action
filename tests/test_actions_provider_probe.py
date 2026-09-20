@@ -135,6 +135,14 @@ class ActionsProviderProbeTests(unittest.TestCase):
             summarize_audits([{"verdict": "COMPLETE"}, {"verdict": "COMPLETE"}]),
             "COMPLETE",
         )
+        self.assertEqual(
+            summarize_audits([{"verdict": "COMPLETE"}, {"verdict": "UNAVAILABLE"}]),
+            "COMPLETE",
+        )
+        self.assertEqual(
+            summarize_audits([{"verdict": "UNAVAILABLE"}, {"verdict": "UNAVAILABLE"}]),
+            "COMPLETE",
+        )
 
 
 if __name__ == "__main__":
