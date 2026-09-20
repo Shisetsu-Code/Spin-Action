@@ -8,6 +8,7 @@ from tester_spin.providers.bgaming.contracts import (
     command_contract,
 )
 from tester_spin.providers.bgaming import flow_choices
+from tester_spin.providers import bgaming_exhaustive
 
 
 def _response(
@@ -45,6 +46,7 @@ def test_buy_extra_bonus_contract_is_provider_level_and_runtime_driven() -> None
     )
     assert contract.choice.mapping_keys is True
     assert contract.choice.mapping_values_are_debit is True
+    assert contract.choice.repeatable_domain is True
 
     # Deliberately use option names that do not exist in Hottest666. The
     # contract must consume whatever finite domain the runtime advertises.
@@ -173,3 +175,41 @@ def test_forced_extra_bonus_overrides_freespin_and_validates_advertised_debit(
     assert validated["allow_observed_debit"] is False
     assert trace[-1]["selected"] == "beta"
     assert trace[-1]["expected_debit"] == 35.0
+
+
+def test_repeatable_extra_bonus_domain_does_not_expand_into_sequences() -> None:
+    graph: dict = {}
+    scope = "PURCHASE_FUTURE_FEATURE"
+    trace = [
+        {
+            "scope": scope,
+            "command": "buy_extra_bonus",
+            "option_field": "bonus_type",
+            "source": "provider-runtime",
+            "prefix": [],
+            "available": ["alpha", "beta"],
+            "selected": "alpha",
+            "path_after": ["alpha"],
+        },
+        {
+            "scope": scope,
+            "command": "buy_extra_bonus",
+            "option_field": "bonus_type",
+            "source": "provider-runtime",
+            "prefix": ["alpha"],
+            "available": ["alpha", "beta"],
+            "selected": "",
+            "path_after": ["alpha"],
+        },
+    ]
+
+    bgaming_exhaustive._merge_choice_trace(graph, trace, complete=True)
+
+    assert list(graph) == [(scope, "buy_extra_bonus", ())]
+    point = graph[(scope, "buy_extra_bonus", ())]
+    assert point["sample_counts"] == {"alpha": 1}
+    assert bgaming_exhaustive._next_discovery_choice(graph, set()) == (
+        scope,
+        "buy_extra_bonus",
+        ("beta",),
+    )

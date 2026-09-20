@@ -19,6 +19,11 @@ class ChoiceContract:
     ``mapping_values_are_debit`` means the mapping value is the authoritative
     price for that option. When ``balance_path`` is available, choices the
     official client would disable for insufficient balance are filtered out.
+
+    repeatable_domain means executing one option can leave the same command
+    and finite option domain advertised again. Repetition is runtime behavior,
+    not a new structural branch; exhaustive coverage therefore proves each
+    option independently rather than enumerating arbitrary option sequences.
     """
 
     option_field: str
@@ -27,6 +32,7 @@ class ChoiceContract:
     mapping_keys: bool = False
     mapping_values_are_debit: bool = False
     balance_path: tuple[str, ...] = ()
+    repeatable_domain: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,6 +86,7 @@ _COMMANDS = (
             mapping_keys=True,
             mapping_values_are_debit=True,
             balance_path=("balance", "wallet"),
+            repeatable_domain=True,
         ),
         source=(
             "provider-client.buyExtraBonus(options.bonus_type)+"

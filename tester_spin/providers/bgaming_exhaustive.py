@@ -20,6 +20,7 @@ from tester_spin.providers.bgaming.dynamic_index_domains import (
     probe_contiguous_index_domain,
     retry_until_target,
 )
+from tester_spin.providers.bgaming.contracts import command_contract
 from tester_spin.providers.bgaming.flow_choices import (
     begin_flow_choice_run,
     begin_resolved_dynamic_choice_run,
@@ -259,7 +260,10 @@ def _merge_choice_trace(
             continue
         scope = str(item.get("scope") or "SPIN")
         command = str(item.get("command") or item.get("wire_command") or "")
-        prefix = tuple(str(value) for value in item.get("prefix") or [])
+        raw_prefix = tuple(str(value) for value in item.get("prefix") or [])
+        contract = command_contract(command)
+        choice = contract.choice if contract is not None else None
+        prefix = () if choice is not None and choice.repeatable_domain else raw_prefix
         available = tuple(
             str(value) for value in item.get("available") or [] if str(value)
         )
