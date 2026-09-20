@@ -41,6 +41,18 @@ class BGamingBaseSpinContractTests(unittest.TestCase):
             )
         )
 
+    def test_hyperhive_play_proves_base_primitive_only_when_terminal(self) -> None:
+        proven = {
+            "kind": "SPIN",
+            "wire_method": "play",
+            "validated": True,
+            "execution_state": "PROVEN_TERMINAL",
+        }
+        self.assertTrue(_mode_proves_base_spin(proven, evidence="DEMOSTRADO"))
+        unproven = dict(proven)
+        unproven["validated"] = False
+        self.assertFalse(_mode_proves_base_spin(unproven, evidence="DEMOSTRADO"))
+
 
 if __name__ == "__main__":
     unittest.main()
