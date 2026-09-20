@@ -11,6 +11,6 @@
   "max_pages": 0,
   "allow_har_fallback": false,
   "install_browser": false,
-  "run_sequence": 113,
-  "slugs": "dice-million,fortune-bells,burning-chilli-x,fishing-club,fishing-club-2,krakens-hunger,royal-fruits-multilines,wild-tiger"
+  "run_sequence": 114,
+  "slugs": "krakens-hunger"
 }
