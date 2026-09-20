@@ -2,6 +2,9 @@ name: Lab Safe Remediation
 
 on: push
 
+permissions:
+  contents: write
+
 jobs:
   patch-and-test:
     runs-on: ubuntu-24.04
