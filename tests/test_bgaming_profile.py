@@ -311,5 +311,50 @@ class BGamingProfileTests(unittest.TestCase):
         self.assertFalse(profile.variable_layout)
 
 
+    def test_valid_bets_keys_preserve_client_proven_rows_domain(self) -> None:
+        runtime = self.runtime()
+        init = {
+            "api_version": "2",
+            "options": {
+                "default_bet": 100,
+                "layout": {"reels": 5, "rows": 5},
+                "valid_bets": {
+                    "3": [5, 10, 20],
+                    "4": [5, 10, 20],
+                    "5": [5, 10, 20],
+                },
+            },
+            "flow": {
+                "command": "init",
+                "state": "ready",
+                "available_actions": ["init", "spin"],
+            },
+        }
+        wire = {
+            "spin_options": {},
+            "request_extra_data": {},
+            "purchase_features": [],
+            "dynamic_purchased_feature": False,
+            "purchase_feature_level_supported": False,
+            "required_option_fields": ["rows"],
+            "spin_option_choices": {},
+            "effective_bet_multipliers": {},
+            "source": "https://cdn.bgaming-network.com/game/bundle.js",
+            "bundle_sha256": "rows-contract",
+            "diagnostics": [],
+        }
+
+        profile = discover_profile(
+            runtime,
+            init,
+            timeout_s=1,
+            wire_profile=wire,
+        )
+
+        self.assertEqual(profile.spin_options["rows"], 5)
+        self.assertEqual(profile.spin_option_choices["rows"], [3, 4, 5])
+        self.assertIn("init.valid_bets:rows-domain", profile.evidence)
+
+
 if __name__ == "__main__":
     unittest.main()
