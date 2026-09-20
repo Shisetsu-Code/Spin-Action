@@ -1262,7 +1262,11 @@ def resolve_base_bet(data: dict[str, Any]) -> tuple[int | float | None, str]:
     return None, ""
 
 
-def discover_purchase_modes(data: dict[str, Any]) -> list[dict[str, Any]]:
+def discover_purchase_modes(
+    data: dict[str, Any],
+    *,
+    selector_domains: dict[str, list[Any]] | None = None,
+) -> list[dict[str, Any]]:
     """Return only purchase modes explicitly advertised by BGaming init.
 
     HAR 2026-09-09 (AlienFruits3) exposes:
@@ -1274,6 +1278,11 @@ def discover_purchase_modes(data: dict[str, Any]) -> list[dict[str, Any]]:
 
     The wire request uses options.purchased_feature=<name>.  base_bet is a
     denominator/reference, not itself a purchased feature.
+
+    A nested feature multiplier table is not automatically a
+    purchased_feature_level domain. If its keys exactly match one unique
+    client-proven selector domain, the table is selector-scoped pricing instead
+    (for example rows=3/4/5), and no purchased_feature_level is invented.
     """
     options = data.get("options")
     if not isinstance(options, dict):
@@ -1305,6 +1314,16 @@ def discover_purchase_modes(data: dict[str, Any]) -> list[dict[str, Any]]:
             if bool(value)
         }
 
+    proven_domains = (
+        {
+            str(field): list(values)
+            for field, values in selector_domains.items()
+            if isinstance(values, list) and values
+        }
+        if isinstance(selector_domains, dict)
+        else {}
+    )
+
     modes: list[dict[str, Any]] = []
     for name, raw_multiplier in multipliers.items():
         feature_name = str(name)
@@ -1312,6 +1331,7 @@ def discover_purchase_modes(data: dict[str, Any]) -> list[dict[str, Any]]:
             continue
 
         level_values: list[tuple[str | None, int | float]] = []
+        selector_field = ""
         if isinstance(raw_multiplier, (int, float)) and raw_multiplier > 0:
             level_values.append((None, raw_multiplier))
         elif isinstance(raw_multiplier, dict):
@@ -1322,11 +1342,28 @@ def discover_purchase_modes(data: dict[str, Any]) -> list[dict[str, Any]]:
                 ):
                     level_values.append((str(raw_level), level_multiplier))
 
+            level_keys = {
+                str(level)
+                for level, _multiplier in level_values
+                if level is not None
+            }
+            if len(level_keys) >= 2:
+                selector_matches = []
+                for field, values in proven_domains.items():
+                    domain_keys = {str(value) for value in values}
+                    if domain_keys == level_keys:
+                        selector_matches.append(field)
+                if len(selector_matches) == 1:
+                    selector_field = selector_matches[0]
+
         for level, level_multiplier in level_values:
+            selector_value = level if selector_field and level is not None else None
             modes.append(
                 {
                     "name": feature_name,
-                    "level": level,
+                    "level": None if selector_field else level,
+                    "selector_field": selector_field,
+                    "selector_value": selector_value,
                     "feature_multiplier": level_multiplier,
                     "base_multiplier": base,
                     "base_source": base_source,
