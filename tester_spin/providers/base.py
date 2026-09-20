@@ -70,6 +70,14 @@ class ProviderAdapter(ABC):
     def catalog_record_invalid_reason(self, game: Game) -> str:
         return ""
 
+    def validation_unavailable_reason(self, game: Game) -> str:
+        """Return an authoritative reason when a catalog target is not runnable.
+
+        The neutral default never assumes unavailability. Provider adapters may
+        opt in only when their own catalog/runtime metadata explicitly proves it.
+        """
+        return ""
+
     def effective_test_concurrency(self, requested: int) -> int:
         value = max(1, int(requested))
         cap = self.max_test_concurrency
