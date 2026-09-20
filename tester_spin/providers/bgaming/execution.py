@@ -33,6 +33,7 @@ from tester_spin.providers.bgaming.runtime import (
     discover_purchase_modes,
     effective_bet_for_options,
     flow_continuation_command,
+    flow_terminal_for_base_action,
     http_error_evidence,
     initial_flow_command,
     is_line_bet_init,
@@ -1635,9 +1636,9 @@ class BGamingExecutionMixin:
                             if isinstance(final_actions, list)
                             else set()
                         )
-                        terminal = (
-                            final_flow_state == "closed"
-                            and "spin" in final_action_names
+                        terminal = flow_terminal_for_base_action(
+                            {"flow": flow},
+                            base_wire_command,
                         )
                         if not terminal and not stop_event.is_set():
                             warnings.append(

@@ -1476,6 +1476,23 @@ def flow_available_actions(data: dict[str, Any]) -> list[str]:
     return [str(action) for action in actions if str(action)]
 
 
+def flow_terminal_for_base_action(
+    data: dict[str, Any],
+    base_action: str,
+) -> bool:
+    """Return whether a closed API-v2 round exposes the same base wager action."""
+    flow = data.get("flow")
+    if not isinstance(flow, dict):
+        return False
+    if str(flow.get("state") or "") != "closed":
+        return False
+    actions = flow.get("available_actions")
+    if not isinstance(actions, list):
+        return False
+    expected = str(base_action or "").strip()
+    return bool(expected and expected in {str(action) for action in actions})
+
+
 def flow_continuation_command(data: dict[str, Any]) -> str:
     """Return only provider-level continuation commands with a known wire shape.
 

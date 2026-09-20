@@ -20,6 +20,7 @@ from tester_spin.providers.bgaming.runtime import (
     extract_options,
     extract_script_urls,
     flow_continuation_command,
+    flow_terminal_for_base_action,
     initial_flow_command,
     infer_missing_wire_options,
     infer_observed_debit,
@@ -1498,6 +1499,18 @@ class BGamingRuntimeTests(unittest.TestCase):
         self.assertTrue(
             any("acción base no resoluble" in item for item in validate_init(init))
         )
+
+
+    def test_terminal_flow_uses_provider_advertised_base_action(self) -> None:
+        play_closed = {
+            "flow": {
+                "state": "closed",
+                "command": "play",
+                "available_actions": ["init", "play"],
+            }
+        }
+        self.assertTrue(flow_terminal_for_base_action(play_closed, "play"))
+        self.assertFalse(flow_terminal_for_base_action(play_closed, "spin"))
 
 
 if __name__ == "__main__":
