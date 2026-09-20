@@ -154,7 +154,7 @@ class BGamingHyperHiveTransportTests(unittest.TestCase):
         self.assertTrue(rows)
         rendered = str(rows)
         self.assertNotIn("play-token-value", rendered)
-        self.assertIn("<session>", rendered)
+        self.assertNotIn("?token=", rendered)
         self.assertTrue(
             any(row.get("kind") == "inner-client-response" for row in rows)
         )

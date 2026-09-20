@@ -50,6 +50,12 @@ def _record_transport_diagnostic(runtime: Any, kind: str, **fields: Any) -> None
     for key, value in fields.items():
         if key.endswith("_url"):
             safe[key] = sanitize_session_url(str(value or ""))
+        elif key.endswith("_urls") and isinstance(value, (list, tuple)):
+            safe[key] = [
+                sanitize_session_url(str(item or ""))
+                for item in value
+                if str(item or "")
+            ][:32]
         elif key == "error":
             safe[key] = sanitize_error_text(str(value or ""))[:1200]
         elif isinstance(value, (str, int, float, bool)) or value is None:
@@ -236,6 +242,8 @@ def prepare_hyperhive_client(
         html_bytes=len((response.text or "").encode("utf-8", errors="replace")),
         static_scripts=len(static_scripts),
         dynamic_scripts=len(dynamic_scripts),
+        static_script_urls=static_scripts,
+        dynamic_script_urls=dynamic_scripts,
     )
 
     # The dynamic bootstrap first fetches hash manifests and then composes the
@@ -288,6 +296,8 @@ def prepare_hyperhive_client(
         response_url=response_url,
         discovered_scripts=len(discovered),
         keyed_scripts=len(keyed_scripts),
+        discovered_script_urls=discovered,
+        keyed_script_urls=keyed_scripts,
         total_runtime_scripts=len(existing),
     )
 
