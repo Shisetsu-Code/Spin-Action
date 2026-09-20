@@ -1227,6 +1227,8 @@ class BGamingExecutionMixin:
                                     mode_id == "SPIN"
                                     and not isinstance(purchase, dict)
                                     and observed_base_bet_multiplier == 1.0
+                                    and active_profile is not None
+                                    and bool(active_profile.spin_options)
                                 ),
                             )
                         )
@@ -1239,9 +1241,17 @@ class BGamingExecutionMixin:
                             if (
                                 isinstance(actual_base_bet, (int, float))
                                 and actual_base_bet > 0
-                                and float(default_bet) > 0
+                                and isinstance(expected_outcome_bet, (int, float))
+                                and float(expected_outcome_bet) > 0
                             ):
-                                learned_ratio = float(actual_base_bet) / float(default_bet)
+                                # Learn only the residual multiplier not already
+                                # explained by a provider/client selector contract.
+                                # This prevents double-applying explicit effective-bet
+                                # tables while still allowing a structurally proven
+                                # mode/rows option to establish a server wager scale.
+                                learned_ratio = (
+                                    float(actual_base_bet) / float(expected_outcome_bet)
+                                )
                                 if abs(learned_ratio - 1.0) > 1e-9:
                                     observed_base_bet_multiplier = learned_ratio
                                     for discovered in discovered_modes:

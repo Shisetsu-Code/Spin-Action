@@ -264,8 +264,13 @@ def _apply_observed_custom_profile_to_base_mode(
     mode: dict[str, Any],
     profile: ObservedHyperHiveWire,
 ) -> None:
-    """Prefer an exact live serializer contract over legacy shape heuristics."""
+    """Add an observed serializer only when no stronger profile exists."""
     if not profile.custom_req:
+        return
+    # A pre-existing request profile is provider/client evidence for a concrete
+    # shape. A later generic formatted-custom_req observation must not replace
+    # it unless that concrete profile has first been disproved.
+    if str(mode.get("custom_req_profile") or ""):
         return
     mode["custom_req_profile"] = profile.custom_profile
     mode["custom_req_literal_keys"] = sorted(profile.custom_literals)

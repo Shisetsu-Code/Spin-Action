@@ -288,7 +288,7 @@ class BGamingHyperHiveWireTests(unittest.TestCase):
             },
         )
 
-    def test_observed_serializer_replaces_legacy_pz_profile(self) -> None:
+    def test_observed_serializer_does_not_replace_legacy_pz_profile(self) -> None:
         mode = {
             "id": "SPIN",
             "kind": "SPIN",
@@ -305,10 +305,10 @@ class BGamingHyperHiveWireTests(unittest.TestCase):
             custom_literals={"isNormalBuy": False},
         )
         _apply_observed_custom_profile_to_base_mode(mode, profile)
-        self.assertEqual(mode["custom_req_profile"], "observed-formatted-stake")
-        self.assertEqual(mode["custom_req_literal_keys"], ["isNormalBuy"])
-        self.assertEqual(mode["discovery_state"], "OBSERVED_ENGINE_CONTRACT")
-        self.assertEqual(mode["source"], "live-inner-client+engine-contract")
+        self.assertEqual(mode["custom_req_profile"], "pz-per-line")
+        self.assertNotIn("custom_req_literal_keys", mode)
+        self.assertEqual(mode["discovery_state"], "BASE_CONTRACT")
+        self.assertEqual(mode["source"], "engine-heuristic")
 
     def test_no_observed_serializer_keeps_legacy_profile(self) -> None:
         mode = {"custom_req_profile": "pz-per-line", "executable": True}
