@@ -7,6 +7,7 @@ from typing import Any
 from urllib.parse import quote, urljoin, urlparse
 
 from tester_spin.providers.bgaming.runtime import (
+    _provider_script_references,
     _provider_script_url,
     extract_script_urls,
     sanitize_error_text,
@@ -143,6 +144,66 @@ def _dynamic_loader_script_urls(runtime: Any, html: str, base_url: str) -> list[
     return out
 
 
+def _expand_provider_script_graph(
+    runtime: Any,
+    seeds: list[str],
+    *,
+    timeout_s: float,
+    max_depth: int = 2,
+    max_scripts: int = 24,
+) -> list[str]:
+    """Follow provider-owned JS loader references without executing JavaScript."""
+    queue: list[tuple[str, int]] = [
+        (url, 0) for url in seeds if _provider_script_url(runtime, url)
+    ]
+    seen: set[str] = set()
+    ordered: list[str] = []
+    while queue and len(seen) < max_scripts:
+        url, depth = queue.pop(0)
+        if url in seen or not _provider_script_url(runtime, url):
+            continue
+        seen.add(url)
+        ordered.append(url)
+        if depth >= max_depth:
+            continue
+        try:
+            response = runtime.session.get(url, timeout=timeout_s)
+            response.raise_for_status()
+        except Exception as exc:
+            _record_transport_diagnostic(
+                runtime,
+                "script-graph-error",
+                script_url=url,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            continue
+        response_url = str(getattr(response, "url", "") or url)
+        text = response.text or ""
+        children = _provider_script_references(
+            runtime,
+            parent_url=response_url,
+            text=text,
+        )
+        for child in _dynamic_loader_script_urls(
+            runtime,
+            text,
+            response_url,
+        ):
+            if child not in children:
+                children.append(child)
+        _record_transport_diagnostic(
+            runtime,
+            "script-graph-node",
+            script_url=response_url,
+            status=int(getattr(response, "status_code", 0) or 0),
+            bytes=len(text.encode("utf-8", errors="replace")),
+            child_script_urls=children,
+        )
+        for child in children:
+            if child not in seen:
+                queue.append((child, depth + 1))
+    return ordered
+
 def _hash_manifest_script_urls(runtime: Any, manifest_url: str, text: str) -> list[str]:
     """Convert BGaming *FilesHashes.js rows into the exact keyed JS URLs.
 
@@ -233,6 +294,18 @@ def prepare_hyperhive_client(
         response_url,
     )
     discovered = [*static_scripts, *dynamic_scripts]
+    provider_seeds = [
+        url for url in discovered if _provider_script_url(runtime, url)
+    ]
+    expanded_scripts = _expand_provider_script_graph(
+        runtime,
+        provider_seeds,
+        timeout_s=timeout_s,
+    )
+    for url in expanded_scripts:
+        if url not in discovered:
+            discovered.append(url)
+
     _record_transport_diagnostic(
         runtime,
         "inner-client-response",

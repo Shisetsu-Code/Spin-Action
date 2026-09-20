@@ -81,6 +81,43 @@ class BGamingHyperHiveTransportTests(unittest.TestCase):
             runtime.script_urls,
         )
 
+    def test_loader_script_can_reveal_hash_manifests_one_level_later(self) -> None:
+        runtime = self._runtime()
+        client = hyperhive_client_url(runtime)
+        origin = "https://the-godfather3-pillars-of-power.demo.bgaming-network.com/"
+        inner_html = '<script src="/loader.js"></script>'
+        loader_js = """
+            var versionPath = "";
+            loadScript("./clientfilesHashes.js");
+            loadScript(`./game${versionPath}/gamesFilesHashes.js`);
+        """
+        client_hashes = 'var x=[{"fileName":"client.min.js","hash":"aaaaaaaaaaaaaaaa"}];'
+        game_hashes = 'var x=[{"fileName":"game.min.js","hash":"bbbbbbbbbbbbbbbb"}];'
+
+        def fake_get(url, *args, **kwargs):
+            if url == client:
+                return _Response(text=inner_html, url=client)
+            if url == origin + "loader.js":
+                return _Response(text=loader_js, url=url)
+            if "clientfilesHashes.js" in url:
+                return _Response(text=client_hashes, url=url)
+            if "gamesFilesHashes.js" in url:
+                return _Response(text=game_hashes, url=url)
+            return _Response(text="", url=url)
+
+        runtime.session.get.side_effect = fake_get
+        prepare_hyperhive_client(runtime, timeout_s=1, force=True)
+
+        self.assertIn(origin + "clientfilesHashes.js", runtime.script_urls)
+        self.assertIn(origin + "game/gamesFilesHashes.js", runtime.script_urls)
+        self.assertIn(
+            origin + "client.min.js?key=aaaaaaaaaaaaaaaa",
+            runtime.script_urls,
+        )
+        self.assertIn(
+            origin + "game/game.min.js?key=bbbbbbbbbbbbbbbb",
+            runtime.script_urls,
+        )
     def test_dynamic_loader_resolves_live_hash_manifests_and_keyed_binaries(self) -> None:
         runtime = self._runtime()
         client = hyperhive_client_url(runtime)
