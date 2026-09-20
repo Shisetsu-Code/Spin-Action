@@ -9,6 +9,7 @@ from scripts.actions_provider_probe import (
     enumerate_catalog_for_probe,
     provider_class_for,
     select_games,
+    select_games_by_slug_list,
     summarize_audits,
 )
 from tester_spin.models import Game
@@ -115,6 +116,17 @@ class ActionsProviderProbeTests(unittest.TestCase):
             [game.slug for game in all_games],
             ["a-first", "m-middle", "z-last"],
         )
+
+    def test_slug_batch_selection_is_exact_ordered_and_fail_closed(self) -> None:
+        games = [
+            Game("p", "alpha", "A", "https://example.invalid/a"),
+            Game("p", "beta", "B", "https://example.invalid/b"),
+            Game("p", "gamma", "G", "https://example.invalid/g"),
+        ]
+        selected = select_games_by_slug_list(games, "gamma,alpha,gamma")
+        self.assertEqual([game.slug for game in selected], ["gamma", "alpha"])
+        with self.assertRaises(ValueError):
+            select_games_by_slug_list(games, "alpha,missing")
 
     def test_slug_selection_is_exact(self) -> None:
         games = [
