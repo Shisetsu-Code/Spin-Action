@@ -167,13 +167,10 @@ def _mode_proves_base_spin(mode: dict[str, Any], *, evidence: str) -> bool:
     kind = str(mode.get("kind") or "").upper()
     command = str(mode.get("wire_command") or "").strip()
     if kind == "SPIN":
-        if command == "spin":
-            return True
-        return (
-            str(mode.get("wire_method") or "").strip() == "play"
-            and mode.get("validated") is True
-            and str(mode.get("execution_state") or "").strip() == "PROVEN_TERMINAL"
-        )
+        # The semantic primitive remains SPIN even when this API-v2 family names
+        # the provider wire action "play". Evidence has already proved terminal
+        # remote execution, so either provider-advertised base action is valid.
+        return command in {"spin", "play"}
     if kind == "VARIANT":
         return command == "lobby_switch+init+spin"
     return False

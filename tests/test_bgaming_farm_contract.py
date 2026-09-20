@@ -160,6 +160,20 @@ class BGamingFarmContractTests(unittest.TestCase):
             self.assertEqual(by_id["FREESPIN"]["evidence"], "DEMOSTRADO")
             self.assertEqual(validate_bgaming_farm_contract(contract), [])
 
+    def test_play_wire_action_can_prove_semantic_base_spin(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            _write_game_json(root, profile=_profile())
+            result = _result()
+            spin = result.discovered_modes[0]
+            spin["wire_command"] = "play"
+            contract = build_bgaming_farm_contract(_game(), result, root)
+
+        self.assertTrue(contract["ready"], contract["unresolved"])
+        by_id = {mode["id"]: mode for mode in contract["modes"]}
+        self.assertEqual(by_id["SPIN"]["executor"], "play")
+        self.assertEqual(by_id["SPIN"]["evidence"], "DEMOSTRADO")
+
     def test_complete_flow_choice_is_demonstrated_and_preserves_parent_prefix(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
