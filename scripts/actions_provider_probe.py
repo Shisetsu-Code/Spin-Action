@@ -113,6 +113,28 @@ def select_games(
     return remaining[:count]
 
 
+def select_games_by_slug_list(
+    games: list[Game],
+    raw_slugs: str,
+) -> list[Game]:
+    requested: list[str] = []
+    for raw in str(raw_slugs or "").split(","):
+        slug = raw.strip()
+        if slug and slug not in requested:
+            requested.append(slug)
+    if not requested:
+        return []
+
+    by_slug = {str(game.slug): game for game in games}
+    missing = [slug for slug in requested if slug not in by_slug]
+    if missing:
+        raise ValueError(
+            "Slugs solicitados ausentes del catálogo autoritativo: "
+            + ", ".join(missing)
+        )
+    return [by_slug[slug] for slug in requested]
+
+
 def summarize_audits(audits: list[dict[str, Any]]) -> str:
     if not audits:
         return "UNKNOWN"
@@ -131,6 +153,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--provider", required=True, choices=sorted(_PROVIDER_CLASSES))
     parser.add_argument("--slug", default="", help="Slug exacto; vacío usa offset/limit.")
+    parser.add_argument(
+        "--slugs",
+        default="",
+        help="CSV de slugs exactos; tiene prioridad sobre --slug y offset/limit.",
+    )
     parser.add_argument(
         "--game-url",
         default="",
@@ -278,12 +305,15 @@ def run_probe(args: argparse.Namespace) -> tuple[str, dict[str, Any]]:
                 "games": [_game_dict(game) for game in games],
             },
         )
-        selected = select_games(
-            games,
-            slug=args.slug,
-            offset=args.game_offset,
-            limit=args.game_limit,
-        )
+        if str(args.slugs or "").strip():
+            selected = select_games_by_slug_list(games, args.slugs)
+        else:
+            selected = select_games(
+                games,
+                slug=args.slug,
+                offset=args.game_offset,
+                limit=args.game_limit,
+            )
 
     progress(
         "Selección: "
@@ -382,6 +412,7 @@ def run_probe(args: argparse.Namespace) -> tuple[str, dict[str, Any]]:
         "overall_verdict": overall,
         "settings": {
             "slug": str(args.slug or ""),
+            "slugs": str(args.slugs or ""),
             "game_url": str(args.game_url or ""),
             "game_name": str(args.game_name or ""),
             "symbol": str(args.symbol or ""),
