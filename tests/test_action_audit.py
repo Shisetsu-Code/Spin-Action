@@ -211,6 +211,16 @@ class ActionAuditTests(unittest.TestCase):
         self.assertEqual(audit["verdict"], "INCOMPLETE")
         self.assertTrue(any("path-coverage" in reason for reason in audit["missing_reasons"]))
 
+    def test_authoritative_unavailable_is_distinct_from_complete(self) -> None:
+        result = _result(status="UNAVAILABLE")
+        result.error = "provider catalog authority: NO_DEMO"
+        audit = build_action_audit(result)
+
+        self.assertEqual(audit["verdict"], "UNAVAILABLE")
+        self.assertEqual(audit["runtime_status"], "UNAVAILABLE")
+        self.assertIn("NO_DEMO", audit["unavailable_reason"])
+        self.assertEqual(audit["counts"]["actions"], 0)
+
     def test_error_and_cancelled_are_never_complete(self) -> None:
         error_audit = build_action_audit(_result(status="ERROR"))
         cancelled_audit = build_action_audit(_result(status="CANCELADO"))
