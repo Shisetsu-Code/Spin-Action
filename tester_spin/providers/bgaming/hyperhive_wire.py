@@ -243,8 +243,8 @@ def _request_alias_defaults(compact: str) -> dict[str, Any]:
                 try:
                     value = _parse_js_scalar(assignments[-1].group(1))
                 except ValueError:
-                    value = object()
-                if value is not object():
+                    pass
+                else:
                     found.setdefault(key, []).append(value)
                     continue
 
