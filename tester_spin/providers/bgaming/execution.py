@@ -1779,6 +1779,11 @@ class BGamingExecutionMixin:
                     + ", ".join(sorted(coverage_gaps))
                     + "."
                 )
+            if errors:
+                detail.append(
+                    "Errores internos: "
+                    + " | ".join(list(dict.fromkeys(errors))[:3])
+                )
             optional_pending = pending_actions - coverage_gaps
             if optional_pending:
                 detail.append(
