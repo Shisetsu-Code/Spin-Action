@@ -11,6 +11,6 @@
   "max_pages": 0,
   "allow_har_fallback": false,
   "install_browser": false,
-  "run_sequence": 114,
+  "run_sequence": 115,
   "slugs": "krakens-hunger"
 }

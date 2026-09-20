@@ -4,6 +4,9 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
+
+import tester_spin.providers.bgaming_paths_v2 as bgaming_paths_v2
 
 from tester_spin.models import GameTestResult
 from tester_spin.providers.bgaming_path_policy import (
@@ -165,6 +168,33 @@ class BGamingPathPolicyTests(unittest.TestCase):
             self.assertIn("PURCHASE_BONUS_BUY", path_ids)
             self.assertIn("PURCHASE_FREESPIN_BUY", path_ids)
             self.assertEqual(paths["phase"], "coverage")
+
+    def test_purchase_modes_guard_forwards_selector_domains(self) -> None:
+        observed: dict[str, object] = {}
+
+        def fake_discover(data, *, selector_domains=None):
+            observed["data"] = data
+            observed["selector_domains"] = selector_domains
+            return [{"name": "freespin_buy", "level": None}]
+
+        init_data = {"options": {}}
+        domains = {"rows": [3, 4, 5]}
+        with (
+            patch.object(
+                bgaming_paths_v2._policy,
+                "_ORIGINAL_DISCOVER_PURCHASE_MODES",
+                side_effect=fake_discover,
+            ),
+            patch.object(bgaming_paths_v2, "_coverage_active", return_value=False),
+        ):
+            modes = bgaming_paths_v2._purchase_modes_guard(
+                init_data,
+                selector_domains=domains,
+            )
+
+        self.assertEqual(observed["data"], init_data)
+        self.assertEqual(observed["selector_domains"], domains)
+        self.assertEqual(modes, [{"name": "freespin_buy", "level": None}])
 
 
 if __name__ == "__main__":

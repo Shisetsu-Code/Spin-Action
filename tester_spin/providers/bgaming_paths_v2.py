@@ -178,8 +178,19 @@ def _purchase_mode_authorized(mode: dict[str, Any]) -> bool:
     return bool(dynamic and (level is None or level_supported))
 
 
-def _purchase_modes_guard(data: dict[str, Any]) -> list[dict[str, Any]]:
-    advertised = _policy._ORIGINAL_DISCOVER_PURCHASE_MODES(data)
+def _purchase_modes_guard(
+    data: dict[str, Any],
+    *,
+    selector_domains: dict[str, list[Any]] | None = None,
+) -> list[dict[str, Any]]:
+    # Keep the policy guard signature compatible with runtime discovery and
+    # forward the exact client-proven selector domain unchanged. The policy may
+    # filter advertised purchases, but it must never erase evidence required to
+    # distinguish a selector-scoped price table from a feature-level domain.
+    advertised = _policy._ORIGINAL_DISCOVER_PURCHASE_MODES(
+        data,
+        selector_domains=selector_domains,
+    )
     if not _coverage_active():
         return advertised
 
