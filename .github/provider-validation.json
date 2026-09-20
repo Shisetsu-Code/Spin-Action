@@ -1,6 +1,6 @@
 {
   "provider": "bgaming",
-  "slug": "alien-fruits-3",
+  "slug": "big-bucks-saloon",
   "game_url": "",
   "game_name": "",
   "symbol": "",
@@ -11,5 +11,5 @@
   "max_pages": 0,
   "allow_har_fallback": false,
   "install_browser": false,
-  "run_sequence": 89
+  "run_sequence": 90
 }
