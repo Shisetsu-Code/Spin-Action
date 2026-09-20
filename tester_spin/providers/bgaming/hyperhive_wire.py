@@ -235,7 +235,7 @@ def _request_alias_defaults(compact: str) -> dict[str, Any]:
 
             assignments = list(
                 re.finditer(
-                    rf"\b{re.escape(alias)}\s*=\s*({scalar})(?=[,;])",
+                    rf"(?:^|[;,]|let|const|var){re.escape(alias)}\s*=\s*({scalar})(?=[,;])",
                     left,
                 )
             )
@@ -253,7 +253,7 @@ def _request_alias_defaults(compact: str) -> dict[str, Any]:
             if key == "purchased_feature":
                 ternaries = list(
                     re.finditer(
-                        rf"\b{re.escape(alias)}\s*=\s*[^;]{{0,500}}"
+                        rf"(?:^|[;,]|let|const|var){re.escape(alias)}\s*=\s*[^;]{{0,500}}"
                         rf"\?[\"'](?:buy_[A-Za-z0-9_\-]+|[A-Za-z0-9_\-]*(?:bonus|chance)[A-Za-z0-9_\-]*)[\"']"
                         rf":(null)(?=[,;])",
                         left,
