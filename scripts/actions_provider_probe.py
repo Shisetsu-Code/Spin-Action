@@ -304,7 +304,7 @@ def run_probe(args: argparse.Namespace) -> tuple[str, dict[str, Any]]:
             game_progress(f"UNAVAILABLE: {unavailable_reason}")
         else:
             try:
-                    if args.allow_har_fallback:
+                if args.allow_har_fallback:
                     game_progress("HAR fallback habilitado explícitamente: preparando artefactos.")
                     provider.prepare_test_artifacts(
                         game,
