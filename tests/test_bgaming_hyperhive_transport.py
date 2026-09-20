@@ -81,6 +81,17 @@ class BGamingHyperHiveTransportTests(unittest.TestCase):
             runtime.script_urls,
         )
 
+    def test_loader_res_literal_resolves_versioned_bundle(self) -> None:
+        runtime = self._runtime()
+        loader = "https://the-godfather3-pillars-of-power.demo.bgaming-network.com/loader.js"
+        text = 'const res="v2026"; loadScript("bundle.js");'
+
+        urls = _dynamic_loader_script_urls(runtime, text, loader)
+
+        self.assertIn(
+            "https://the-godfather3-pillars-of-power.demo.bgaming-network.com/v2026/bundle.js",
+            urls,
+        )
     def test_loader_script_can_reveal_hash_manifests_one_level_later(self) -> None:
         runtime = self._runtime()
         client = hyperhive_client_url(runtime)
@@ -208,8 +219,7 @@ class BGamingHyperHiveTransportTests(unittest.TestCase):
             prepare_hyperhive_client(runtime, timeout_s=1, force=True)
         prepare_hyperhive_client(runtime, timeout_s=1)
 
-        self.assertEqual(runtime.session.get.call_count, 2)
-        self.assertIn(
+        requested_urls = [call.args[0] for call in runtime.session.get.call_args_list]\n        self.assertEqual(requested_urls.count(client), 2)\n        self.assertIn(
             "https://the-godfather3-pillars-of-power.demo.bgaming-network.com/client.js",
             runtime.script_urls,
         )

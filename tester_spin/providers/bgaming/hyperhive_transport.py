@@ -141,6 +141,33 @@ def _dynamic_loader_script_urls(runtime: Any, html: str, base_url: str) -> list[
             continue
         seen.add(url)
         out.append(url)
+
+    # Some HyperHive loaders expose a version/resource directory as a literal
+    # "res" field and then append bundle.js at runtime. This is provider-owned
+    # path evidence, not a title rule. Follow only a bounded relative res value.
+    res = _literal_assignment(html, "res").strip().strip("/")
+    if (
+        res
+        and "bundle.js" in (html or "")
+        and "://" not in res
+        and ".." not in res.split("/")
+    ):
+        candidates = [urljoin(base_url, res + "/bundle.js")]
+        options = getattr(runtime, "options", None)
+        resources_path = (
+            str(options.get("resources_path") or "").strip()
+            if isinstance(options, dict)
+            else ""
+        )
+        if resources_path:
+            candidates.append(
+                urljoin(resources_path.rstrip("/") + "/", res + "/bundle.js")
+            )
+        for url in candidates:
+            if not _provider_script_url(runtime, url) or url in seen:
+                continue
+            seen.add(url)
+            out.append(url)
     return out
 
 
@@ -297,6 +324,16 @@ def prepare_hyperhive_client(
     provider_seeds = [
         url for url in discovered if _provider_script_url(runtime, url)
     ]
+    options = getattr(runtime, "options", None)
+    if isinstance(options, dict):
+        for key in ("games_loader_source", "game_bundle_source"):
+            configured = str(options.get(key) or "").strip()
+            if (
+                configured
+                and _provider_script_url(runtime, configured)
+                and configured not in provider_seeds
+            ):
+                provider_seeds.append(configured)
     expanded_scripts = _expand_provider_script_graph(
         runtime,
         provider_seeds,
