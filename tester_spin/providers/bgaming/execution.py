@@ -76,6 +76,13 @@ def _fmt_number(value: Any) -> str:
 
 def _purchase_mode_id(purchase: dict[str, Any]) -> str:
     name = str(purchase.get("name") or "").upper()
+    selector_field = str(purchase.get("selector_field") or "").upper()
+    selector_value = purchase.get("selector_value")
+    if selector_field and selector_value is not None:
+        return (
+            f"PURCHASE_{name}_{selector_field}_"
+            f"{str(selector_value).upper()}"
+        )
     level = purchase.get("level")
     if level is None:
         return f"PURCHASE_{name}"
@@ -554,7 +561,14 @@ class BGamingExecutionMixin:
             purchase_modes = (
                 []
                 if legacy_line_bets
-                else discover_purchase_modes(init_data)
+                else discover_purchase_modes(
+                    init_data,
+                    selector_domains=(
+                        active_profile.spin_option_choices
+                        if active_profile is not None
+                        else None
+                    ),
+                )
             )
             client_purchase_features = (
                 set(active_profile.purchase_features)
@@ -618,6 +632,8 @@ class BGamingExecutionMixin:
                         "wire_command": "spin",
                         "purchased_feature": name,
                         "purchased_feature_level": level,
+                        "selector_field": purchase.get("selector_field") or "",
+                        "selector_value": purchase.get("selector_value"),
                         "feature_multiplier": purchase["feature_multiplier"],
                         "base_multiplier": purchase["base_multiplier"],
                         "cost_multiplier": purchase["cost_multiplier"],
@@ -959,6 +975,16 @@ class BGamingExecutionMixin:
                     if isinstance(purchase, dict)
                     else None
                 )
+                purchase_selector_field = (
+                    str(purchase.get("selector_field") or "")
+                    if isinstance(purchase, dict)
+                    else ""
+                )
+                purchase_selector_value = (
+                    purchase.get("selector_value")
+                    if isinstance(purchase, dict)
+                    else None
+                )
 
                 for repetition in range(1, repetitions + 1):
                     if stop_event.is_set():
@@ -1006,39 +1032,30 @@ class BGamingExecutionMixin:
                                     purchase_level
                                 )
 
-                            # Some tiered purchases share their level domain with
-                            # a client-proven selectable row/grid contract. Align
-                            # that selector only when the client demonstrated
-                            # additionalSpinOptions.rows and init.valid_bets
-                            # independently proved the finite row domain.
                             if (
-                                active_profile is not None
-                                and purchase_level is not None
-                                and "init.valid_bets:rows-domain"
-                                in active_profile.evidence
-                                and "rows" in active_profile.spin_options
+                                purchase_selector_field
+                                and purchase_selector_value is not None
                             ):
-                                row_choices = active_profile.spin_option_choices.get(
-                                    "rows"
-                                )
-                                row_choice_keys = (
-                                    {str(value) for value in row_choices}
-                                    if isinstance(row_choices, list)
-                                    else set()
-                                )
-                                if str(purchase_level) in row_choice_keys:
-                                    current_rows = active_profile.spin_options.get(
-                                        "rows"
-                                    )
-                                    try:
-                                        aligned_rows: Any = (
-                                            int(str(purchase_level))
-                                            if isinstance(current_rows, int)
-                                            else str(purchase_level)
+                                selector_value: Any = purchase_selector_value
+                                if active_profile is not None:
+                                    proven_values = (
+                                        active_profile.spin_option_choices.get(
+                                            purchase_selector_field
                                         )
-                                    except (TypeError, ValueError):
-                                        aligned_rows = str(purchase_level)
-                                    spin_options["rows"] = aligned_rows
+                                    )
+                                    if isinstance(proven_values, list):
+                                        selector_value = next(
+                                            (
+                                                value
+                                                for value in proven_values
+                                                if str(value)
+                                                == str(purchase_selector_value)
+                                            ),
+                                            purchase_selector_value,
+                                        )
+                                spin_options[
+                                    purchase_selector_field
+                                ] = selector_value
 
                             if (
                                 active_profile is not None
