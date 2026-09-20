@@ -1463,8 +1463,6 @@ def initial_flow_command(data: dict[str, Any]) -> str:
         return "spin"
     if "play" in names:
         return "play"
-    if len(names) == 1:
-        return names[0]
     return ""
 
 
@@ -1611,6 +1609,10 @@ def validate_init(data: dict[str, Any]) -> list[str]:
         not isinstance(default_bet, (int, float))
         and (not isinstance(available_bets, list) or not available_bets)
         and (not isinstance(line_bets, list) or not line_bets)
+        and not (
+            isinstance(options.get("bet"), (int, float))
+            and options.get("bet") > 0
+        )
     ):
         warnings.append("init sin metadata de apuestas")
 
