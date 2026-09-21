@@ -175,7 +175,21 @@ def parse_official_game_list_csv(
         if not name:
             raise ValueError("RubyPlay Game List: fila Active con Name vacío.")
         if not _GAME_ID_RE.fullmatch(game_id):
-            raise ValueError(f"RubyPlay Game List: Game ID inválido en {name!r}.")
+            try:
+                demo_parsed = urlparse(demo_url)
+                demo_host = (demo_parsed.hostname or "").casefold()
+                demo_path = str(demo_parsed.path or "")
+                demo_query_keys = sorted(parse_qs(demo_parsed.query, keep_blank_values=True))
+            except Exception:
+                demo_host = ""
+                demo_path = ""
+                demo_query_keys = []
+            raise ValueError(
+                "RubyPlay Game List: Game ID inválido "
+                f"{game_id!r} en {name!r}; "
+                f"demo_host={demo_host!r}, demo_path={demo_path!r}, "
+                f"demo_query_keys={demo_query_keys!r}."
+            )
         canonical_id = game_id.casefold()
         if canonical_id in seen_ids:
             raise ValueError(f"RubyPlay Game List: Game ID duplicado: {game_id}.")

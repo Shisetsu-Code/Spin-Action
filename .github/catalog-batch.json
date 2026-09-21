@@ -1,7 +1,7 @@
 {
-  "providers": "pragmatic,1spin4win,belatra,rubyplay,redtiger",
-  "workers": 5,
+  "providers": "rubyplay",
+  "workers": 1,
   "max_pages": 0,
   "install_browser": true,
-  "run_sequence": 6
+  "run_sequence": 7
 }

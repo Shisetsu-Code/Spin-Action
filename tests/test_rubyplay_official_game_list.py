@@ -98,5 +98,22 @@ class RubyPlayOfficialGameListTests(unittest.TestCase):
         self.assertLess(len(message), 600)
 
 
+    def test_invalid_game_id_diagnostic_is_bounded_and_hides_query_values(self) -> None:
+        broken = (
+            "Name,Status,Release Date,Game ID,Wager,Buy Feature,Demo Link\n"
+            "Voltage Blitz Rapid Boost 94,Active,2026-09-10,koala_123,1,Yes,"
+            "https://demo.rubyplay.com/launcher?gamename=koala_123&mode=offline&token=secret-value\n"
+        )
+        with self.assertRaises(ValueError) as caught:
+            parse_official_game_list_csv(broken, provider_key="rubyplay")
+        message = str(caught.exception)
+        self.assertIn("koala_123", message)
+        self.assertIn("demo.rubyplay.com", message)
+        self.assertIn("/launcher", message)
+        self.assertIn("token", message)
+        self.assertNotIn("secret-value", message)
+        self.assertLess(len(message), 700)
+
+
 if __name__ == "__main__":
     unittest.main()
