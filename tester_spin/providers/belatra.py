@@ -716,10 +716,10 @@ class BelatraProvider(ProviderAdapter):
         """Return bounded, sanitized client-code contexts for purchase selectors."""
         source = str(text or "")
         patterns = (
-            ("buyBonus", r"\\bbuyBonus\\b"),
-            ("selectId", r"\\bselectId\\b"),
-            ("buyTotalBetK", r"\\bbuyTotalBetK\\b"),
-            ("start", r"(?:[\"']q[\"']\\s*:\\s*[\"']start[\"']|\\bq\\s*=\\s*[\"']start[\"'])"),
+            ("buyBonus", r"\bbuyBonus\b"),
+            ("selectId", r"\bselectId\b"),
+            ("buyTotalBetK", r"\bbuyTotalBetK\b"),
+            ("start", r"(?:[\"']q[\"']\s*:\s*[\"']start[\"']|\bq\s*=\s*[\"']start[\"'])"),
         )
         rows: list[dict[str, Any]] = []
         seen: set[tuple[str, int]] = set()
@@ -732,10 +732,10 @@ class BelatraProvider(ProviderAdapter):
                 seen.add(key)
                 start = max(0, match.start() - 320)
                 end = min(len(source), match.end() + 420)
-                snippet = re.sub(r"\\s+", " ", source[start:end]).strip()
+                snippet = re.sub(r"\s+", " ", source[start:end]).strip()
                 snippet = re.sub(
                     r'((?:sid|session|token|secret|csrf|sc)\\s*[:=]\\s*[\"\'])[^\"\']{4,}([\"\'])',
-                    r"\\1<redacted>\\2",
+                    r"\1<redacted>\2",
                     snippet,
                     flags=re.IGNORECASE,
                 )
@@ -814,6 +814,7 @@ class BelatraProvider(ProviderAdapter):
                 ) if "sanitize_error_text" in globals() else f"{type(exc).__name__}: {exc}"
             scripts.append(item)
 
+        target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(
             json.dumps(
                 {
