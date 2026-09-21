@@ -734,7 +734,7 @@ class BelatraProvider(ProviderAdapter):
                 end = min(len(source), match.end() + 420)
                 snippet = re.sub(r"\s+", " ", source[start:end]).strip()
                 snippet = re.sub(
-                    r'((?:sid|session|token|secret|csrf|sc)\\s*[:=]\\s*[\"\'])[^\"\']{4,}([\"\'])',
+                    r'((?:sid|session|token|secret|csrf|sc)\s*[:=]\s*[\"\'])[^\"\']{4,}([\"\'])',
                     r"\1<redacted>\2",
                     snippet,
                     flags=re.IGNORECASE,
