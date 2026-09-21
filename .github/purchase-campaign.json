@@ -1,16 +1,19 @@
 {
-  "run_sequence": 7,
-  "provider": "redtiger",
+  "run_sequence": 8,
+  "provider": "pragmatic",
   "slug": "",
   "game_url": "",
   "game_name": "",
   "symbol": "",
   "game_offset": 0,
   "game_limit": 0,
-  "timeout": 45,
+  "timeout": 60,
   "max_pages": 0,
-  "install_chromium": true,
-  "requests_per_minute": 30,
-  "inter_game_delay": 4.0,
-  "circuit_breaker_threshold": 3
+  "install_chromium": false,
+  "requests_per_minute": 120,
+  "inter_game_delay": 0.5,
+  "circuit_breaker_threshold": 5,
+  "min_requests_per_minute": 30,
+  "rate_backoff_factor": 0.5,
+  "concurrency": 3
 }
