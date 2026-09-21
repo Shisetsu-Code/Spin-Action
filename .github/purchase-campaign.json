@@ -1,6 +1,6 @@
 {
-  "run_sequence": 8,
-  "provider": "pragmatic",
+  "run_sequence": 9,
+  "provider": "belatra",
   "slug": "",
   "game_url": "",
   "game_name": "",
@@ -10,10 +10,10 @@
   "timeout": 60,
   "max_pages": 0,
   "install_chromium": false,
-  "requests_per_minute": 120,
-  "inter_game_delay": 0.5,
+  "requests_per_minute": 90,
+  "inter_game_delay": 0.75,
   "circuit_breaker_threshold": 5,
   "min_requests_per_minute": 30,
   "rate_backoff_factor": 0.5,
-  "concurrency": 3
+  "concurrency": 2
 }
