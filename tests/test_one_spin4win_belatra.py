@@ -954,5 +954,20 @@ class BelatraCatalogTests(unittest.TestCase):
         self.assertEqual(result.discovered_modes[0]["transport"], "encrypted_http")
 
 
+    def test_belatra_purchase_evidence_is_bounded_and_redacted(self) -> None:
+        source = (
+            'var sid="very-secret-session";'
+            'function start(){return {q:"start",buyBonus:null,selectId:null}};'
+            'state.buyTotalBetK=[{id:1,cost:100}];'
+        )
+        rows = self.provider._client_purchase_evidence_snippets(source)
+        kinds = {row["kind"] for row in rows}
+        self.assertTrue({"buyBonus", "selectId", "buyTotalBetK"} <= kinds)
+        joined = " ".join(row["snippet"] for row in rows)
+        self.assertNotIn("very-secret-session", joined)
+        self.assertIn("<redacted>", joined)
+        self.assertTrue(all(len(row["snippet"]) <= 900 for row in rows))
+
+
 if __name__ == "__main__":
     unittest.main()

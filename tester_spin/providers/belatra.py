@@ -712,6 +712,123 @@ class BelatraProvider(ProviderAdapter):
         return decoded
 
     @staticmethod
+    def _client_purchase_evidence_snippets(text: str) -> list[dict[str, Any]]:
+        """Return bounded, sanitized client-code contexts for purchase selectors."""
+        source = str(text or "")
+        patterns = (
+            ("buyBonus", r"\\bbuyBonus\\b"),
+            ("selectId", r"\\bselectId\\b"),
+            ("buyTotalBetK", r"\\bbuyTotalBetK\\b"),
+            ("start", r"(?:[\"']q[\"']\\s*:\\s*[\"']start[\"']|\\bq\\s*=\\s*[\"']start[\"'])"),
+        )
+        rows: list[dict[str, Any]] = []
+        seen: set[tuple[str, int]] = set()
+        for kind, pattern in patterns:
+            count = 0
+            for match in re.finditer(pattern, source, flags=re.IGNORECASE):
+                key = (kind, match.start())
+                if key in seen:
+                    continue
+                seen.add(key)
+                start = max(0, match.start() - 320)
+                end = min(len(source), match.end() + 420)
+                snippet = re.sub(r"\\s+", " ", source[start:end]).strip()
+                snippet = re.sub(
+                    r'((?:sid|session|token|secret|csrf|sc)\\s*[:=]\\s*[\"\'])[^\"\']{4,}([\"\'])',
+                    r"\\1<redacted>\\2",
+                    snippet,
+                    flags=re.IGNORECASE,
+                )
+                snippet = re.sub(
+                    r"[A-Za-z0-9+/=_-]{96,}",
+                    "<redacted-opaque>",
+                    snippet,
+                )
+                rows.append({
+                    "kind": kind,
+                    "offset": int(match.start()),
+                    "snippet": snippet[:900],
+                })
+                count += 1
+                if count >= 8:
+                    break
+        return rows[:32]
+
+    def _collect_client_purchase_evidence(
+        self,
+        session: requests.Session,
+        html: str,
+        base_url: str,
+        *,
+        timeout_s: float,
+        target: Path,
+    ) -> None:
+        """Inspect only provider-owned scripts already referenced by the live demo."""
+        soup = BeautifulSoup(html or "", "html.parser")
+        base_host = (urlparse(base_url).hostname or "").casefold()
+        urls: list[str] = []
+        for node in soup.find_all("script", src=True):
+            raw = str(node.get("src") or "").strip()
+            if not raw:
+                continue
+            url = urljoin(base_url, raw)
+            parsed = urlparse(url)
+            host = (parsed.hostname or "").casefold()
+            if parsed.scheme not in {"http", "https"}:
+                continue
+            if not (
+                host == base_host
+                or host == "bltr-static.com"
+                or host.endswith(".bltr-static.com")
+                or host == "belatragames.com"
+                or host.endswith(".belatragames.com")
+            ):
+                continue
+            clean_url = parsed._replace(query="", fragment="").geturl()
+            if clean_url not in urls:
+                urls.append(clean_url)
+
+        rows: list[dict[str, Any]] = []
+        scripts: list[dict[str, Any]] = []
+        for url in urls[:24]:
+            item: dict[str, Any] = {"url": url, "ok": False}
+            try:
+                response = session.get(url, timeout=min(float(timeout_s), 20.0), allow_redirects=True)
+                response.raise_for_status()
+                if len(response.content) > 8 * 1024 * 1024:
+                    item["error"] = "asset_too_large"
+                    scripts.append(item)
+                    continue
+                text = response.text or ""
+                snippets = self._client_purchase_evidence_snippets(text)
+                item.update({
+                    "ok": True,
+                    "bytes": len(response.content),
+                    "evidence_count": len(snippets),
+                })
+                for snippet in snippets:
+                    rows.append({"script_url": url, **snippet})
+            except Exception as exc:
+                item["error"] = sanitize_error_text(
+                    f"{type(exc).__name__}: {exc}"
+                ) if "sanitize_error_text" in globals() else f"{type(exc).__name__}: {exc}"
+            scripts.append(item)
+
+        target.write_text(
+            json.dumps(
+                {
+                    "schema": "tester-spin/belatra-client-purchase-evidence/v1",
+                    "base_host": base_host,
+                    "scripts": scripts,
+                    "evidence": rows[:96],
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
+    @staticmethod
     def _redacted_session(value: str) -> str:
         value = str(value or "")
         if len(value) <= 8:
@@ -749,6 +866,17 @@ class BelatraProvider(ProviderAdapter):
                     demo = session.get(nested, timeout=timeout_s, allow_redirects=True)
 
         demo.raise_for_status()
+        try:
+            self._collect_client_purchase_evidence(
+                session,
+                demo.text,
+                demo.url,
+                timeout_s=timeout_s,
+                target=run_dir / "client-purchase-evidence.json",
+            )
+        except Exception:
+            # Passive diagnostics must never change runtime behavior.
+            pass
         config = self._parse_demo_config(demo.text)
         if not config:
             raise RuntimeError("Belatra: no se encontró var config en la demo oficial.")
