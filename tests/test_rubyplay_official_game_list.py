@@ -115,5 +115,26 @@ class RubyPlayOfficialGameListTests(unittest.TestCase):
         self.assertLess(len(message), 700)
 
 
+    def test_parser_accepts_namespaced_official_game_id_when_launcher_matches(self) -> None:
+        text = (
+            "Name,Status,Release Date,Game ID,Wager,Buy Feature,Demo Link\n"
+            "Voltage Blitz Rapid Boost 94,Active,2026-09-10,kg_5025,1,Yes,"
+            "https://demo.rubyplay.com/launcher?gamename=kg_5025&mode=offline\n"
+        )
+        records = parse_official_game_list_csv(text, provider_key="rubyplay")
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0].game.symbol, "kg_5025")
+        self.assertEqual(records[0].game.slug, "kg_5025")
+
+    def test_namespaced_official_game_id_still_requires_exact_launcher_identity(self) -> None:
+        text = (
+            "Name,Status,Release Date,Game ID,Wager,Buy Feature,Demo Link\n"
+            "Mismatch,Active,2026-09-10,kg_5025,1,Yes,"
+            "https://demo.rubyplay.com/launcher?gamename=kg_9999&mode=offline\n"
+        )
+        with self.assertRaisesRegex(ValueError, "no coincide"):
+            parse_official_game_list_csv(text, provider_key="rubyplay")
+
+
 if __name__ == "__main__":
     unittest.main()

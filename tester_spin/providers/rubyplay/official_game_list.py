@@ -13,7 +13,13 @@ from tester_spin.models import Game
 
 _SHEET_PATH_RE = re.compile(r"^/spreadsheets/d/([A-Za-z0-9_-]+)/edit/?$")
 _PUBLIC_GAME_PATH_RE = re.compile(r"^/games/([a-z0-9][a-z0-9-]*)/?$", re.I)
-_GAME_ID_RE = re.compile(r"^rp_[A-Za-z0-9_-]+$", re.I)
+# The official RubyPlay Game List can contain studio namespaces beyond rp_
+# (for example kg_). The authoritative identity is the exact Game ID matched
+# against the official launcher gamename, not a hardcoded studio prefix.
+_GAME_ID_RE = re.compile(
+    r"^[A-Za-z][A-Za-z0-9]{0,31}_[A-Za-z0-9][A-Za-z0-9_-]{0,127}$",
+    re.I,
+)
 _REQUIRED_HEADERS = {"Name", "Status", "Release Date", "Game ID", "Demo Link"}
 
 
