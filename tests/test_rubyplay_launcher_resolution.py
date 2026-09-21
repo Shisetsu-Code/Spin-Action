@@ -3,7 +3,10 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
-from tester_spin.providers.rubyplay.browser_launcher import _pick_complete_launcher
+from tester_spin.providers.rubyplay.browser_launcher import (
+    _pick_complete_launcher,
+    _reconstruct_launcher_from_init_session,
+)
 from tester_spin.providers.rubyplay.launcher_params import parse_launcher_url
 from tester_spin.providers.rubyplay.launcher_resolver import (
     extract_executable_launcher_url,
@@ -70,6 +73,30 @@ class RubyPlayLauncherResolutionTests(unittest.TestCase):
         parsed = parse_launcher_url(malformed)
         self.assertEqual(parsed.gamename, "rp_160")
         self.assertIn("gamename=rp_160&", parsed.launcher_url)
+
+
+    def test_partial_official_launcher_is_completed_from_matching_init_session(self) -> None:
+        seed = "https://demo.rubyplay.com/launcher?gamename=kg_5001&mode=offline"
+        init = (
+            "https://srv.example/init-session/demo?"
+            "currency=EUR&gamename=kg_5001&mode=offline&operator=rubyplay.com"
+        )
+        resolved = _reconstruct_launcher_from_init_session(seed, init)
+        self.assertIsNotNone(resolved)
+        parsed = parse_launcher_url(str(resolved))
+        self.assertEqual(parsed.gamename, "kg_5001")
+        self.assertEqual(parsed.mode, "offline")
+        self.assertEqual(parsed.currency, "EUR")
+        self.assertEqual(parsed.operator, "rubyplay.com")
+        self.assertEqual(parsed.server_url, "https://srv.example")
+
+    def test_partial_launcher_rejects_mismatched_init_session_identity(self) -> None:
+        seed = "https://demo.rubyplay.com/launcher?gamename=kg_5001&mode=offline"
+        init = (
+            "https://srv.example/init-session/demo?"
+            "currency=EUR&gamename=kg_9999&mode=offline&operator=rubyplay.com"
+        )
+        self.assertIsNone(_reconstruct_launcher_from_init_session(seed, init))
 
 
 if __name__ == "__main__":

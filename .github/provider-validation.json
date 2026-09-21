@@ -1,6 +1,6 @@
 {
-  "provider": "belatra",
-  "slug": "africa-gold-2",
+  "provider": "rubyplay",
+  "slug": "kg_5001",
   "game_url": "",
   "game_name": "",
   "symbol": "",
@@ -10,7 +10,7 @@
   "timeout": 90,
   "max_pages": 0,
   "allow_har_fallback": false,
-  "install_browser": false,
-  "run_sequence": 127,
+  "install_browser": true,
+  "run_sequence": 128,
   "slugs": ""
 }

@@ -81,6 +81,54 @@ def _pick_complete_launcher(candidates: list[str]) -> str | None:
     return next(iter(by_key.values()))
 
 
+def _reconstruct_launcher_from_init_session(
+    seed_launcher_url: str,
+    init_session_url: str,
+) -> str | None:
+    """Complete a partial official launcher from its own init-session request."""
+    if not _is_launcher_url(seed_launcher_url):
+        return None
+    try:
+        seed = urlparse(seed_launcher_url)
+        seed_params = parse_qs(seed.query, keep_blank_values=True)
+        request = urlparse(init_session_url)
+        if not request.path.rstrip("/").endswith("/init-session/demo"):
+            return None
+        request_params = parse_qs(request.query, keep_blank_values=True)
+    except Exception:
+        return None
+
+    def one(params: dict[str, list[str]], name: str) -> str:
+        values = [str(item) for item in params.get(name, []) if str(item)]
+        unique = list(dict.fromkeys(values))
+        return unique[0] if len(unique) == 1 else ""
+
+    seed_game = one(seed_params, "gamename")
+    seed_mode = one(seed_params, "mode")
+    req_game = one(request_params, "gamename")
+    req_mode = one(request_params, "mode")
+    currency = one(request_params, "currency")
+    operator = one(request_params, "operator")
+    if not seed_game or not seed_mode:
+        return None
+    if req_game != seed_game or req_mode != seed_mode:
+        return None
+    if not currency or not operator or request.scheme not in {"http", "https"} or not request.netloc:
+        return None
+
+    server_url = f"{request.scheme}://{request.netloc}"
+    lang = one(seed_params, "lang") or one(request_params, "lang") or "en"
+    items = [
+        ("gamename", seed_game),
+        ("operator", operator),
+        ("server_url", server_url),
+        ("currency", currency),
+        ("mode", seed_mode),
+        ("lang", lang),
+    ]
+    return urlunparse(seed._replace(query=urlencode(items), fragment=""))
+
+
 def _launch_browser(*, headless: bool = True):
     from playwright.sync_api import sync_playwright
 
@@ -100,6 +148,7 @@ def resolve_demo_launcher_browser(public_url: str, *, timeout_s: float = 30.0) -
     """Resolve the executable RubyPlay demo launcher through the official UI."""
     timeout_ms = max(5_000, int(float(timeout_s) * 1000))
     observed: list[str] = []
+    observed_init_launchers: list[str] = []
 
     def remember(value: str) -> None:
         candidate = str(value or "").strip()
@@ -108,7 +157,16 @@ def resolve_demo_launcher_browser(public_url: str, *, timeout_s: float = 30.0) -
 
     playwright, browser, context = _launch_browser(headless=True)
     try:
-        context.on("request", lambda request: remember(request.url))
+        def observe_request(request) -> None:
+            remember(request.url)
+            reconstructed = _reconstruct_launcher_from_init_session(
+                public_url,
+                request.url,
+            )
+            if reconstructed and reconstructed not in observed_init_launchers:
+                observed_init_launchers.append(reconstructed)
+
+        context.on("request", observe_request)
         page = context.new_page()
         page.goto(public_url, wait_until="domcontentloaded", timeout=timeout_ms)
 
@@ -137,6 +195,10 @@ def resolve_demo_launcher_browser(public_url: str, *, timeout_s: float = 30.0) -
         direct = _pick_complete_launcher(observed)
         if direct:
             return direct
+
+        direct_observed = _pick_complete_launcher(observed_init_launchers)
+        if direct_observed:
+            return direct_observed
 
         clicked = False
         patterns = [
@@ -225,6 +287,9 @@ def resolve_demo_launcher_browser(public_url: str, *, timeout_s: float = 30.0) -
             resolved = _pick_complete_launcher(observed)
             if resolved:
                 return resolved
+            resolved_observed = _pick_complete_launcher(observed_init_launchers)
+            if resolved_observed:
+                return resolved_observed
             page.wait_for_timeout(250)
 
         details = observed[-8:]
