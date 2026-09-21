@@ -128,7 +128,11 @@ def _attempt_session(result: GameTestResult, attempt: SpinAttempt) -> dict[str, 
         if state is None:
             known = False
             reasons.append("D1 continuation result has no integer st state")
-        elif state not in _ACTIVE_STATES and state not in _TERMINAL_STATES:
+        elif (
+            state not in _ACTIVE_STATES
+            and state not in _TERMINAL_STATES
+            and state != evidence_terminal_state
+        ):
             known = False
             reasons.append(f"D1 continuation result state {state} is unclassified")
         rounds.append(
