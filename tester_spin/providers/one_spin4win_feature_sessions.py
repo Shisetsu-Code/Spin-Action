@@ -88,6 +88,29 @@ def _attempt_session(result: GameTestResult, attempt: SpinAttempt) -> dict[str, 
 
     root_result = pairs[0][1]
     root_state = _state(root_result.get("st"))
+
+    final_result = artifact.get("final_result")
+    final_state = (
+        _state(final_result.get("st"))
+        if isinstance(final_result, dict)
+        else None
+    )
+    artifact_terminal = artifact.get("terminal") is True
+    evidence_terminal_state = (
+        final_state
+        if attempt.ok and attempt.terminal and artifact_terminal and final_state is not None
+        else None
+    )
+
+    # A one-step natural spin is not a feature session when the executor itself
+    # proved that exact type=3 result terminal. This keeps feature normalization
+    # aligned with the D1 path auditor without hardcoding a newly observed st.
+    if (
+        len(pairs) == 1
+        and root_state is not None
+        and evidence_terminal_state == root_state
+    ):
+        return None
     if root_state in _TERMINAL_STATES:
         return None
 
@@ -122,8 +145,13 @@ def _attempt_session(result: GameTestResult, attempt: SpinAttempt) -> dict[str, 
         if state is not None:
             final_state = state
 
-    artifact_terminal = artifact.get("terminal") is True
-    terminal_state = final_state in _TERMINAL_STATES
+    terminal_state = bool(
+        final_state in _TERMINAL_STATES
+        or (
+            evidence_terminal_state is not None
+            and final_state == evidence_terminal_state
+        )
+    )
     terminal = bool(attempt.terminal and artifact_terminal and terminal_state)
     returned_to_base = terminal_state
     if not terminal:

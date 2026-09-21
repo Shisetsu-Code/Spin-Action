@@ -131,5 +131,65 @@ class OneSpin4WinFeatureSessionTests(unittest.TestCase):
         self.assertEqual(report["sessions"][0]["totals"]["logical_rounds"], 1)
 
 
+    def _result_with_artifact(self, root: Path, states: list[int], *, terminal: bool = True) -> GameTestResult:
+        attempt_dir = root / "SPIN" / "attempt-001"
+        attempt_dir.mkdir(parents=True, exist_ok=True)
+        frames = []
+        for index, state in enumerate(states, 1):
+            frames.append({
+                "direction": "sent",
+                "payload": {"kind": "text", "text": json.dumps({"type": 1, "data": "spin"})},
+            })
+            frames.append({
+                "direction": "received",
+                "payload": {"kind": "text", "text": json.dumps({"type": 3, "st": state})},
+            })
+        artifact = {
+            "frames": frames,
+            "terminal": terminal,
+            "wire_steps": len(states),
+            "final_result": {"type": 3, "st": states[-1]},
+        }
+        (attempt_dir / "ws-attempt.json").write_text(json.dumps(artifact), encoding="utf-8")
+        attempt = SpinAttempt(
+            number=1,
+            ok=terminal,
+            mode_id="SPIN",
+            mode_kind="SPIN",
+            terminal=terminal,
+            wire_steps=len(states),
+            artifact_dir=str(attempt_dir),
+        )
+        return GameTestResult(
+            provider="1spin4win",
+            slug="synthetic",
+            game_name="Synthetic",
+            game_url="https://example.invalid",
+            requested_spins=1,
+            successful_spins=int(terminal),
+            failed_spins=int(not terminal),
+            status="OK" if terminal else "PARCIAL",
+            attempts=[attempt],
+            run_dir=str(root),
+        )
+
+    def test_executor_proven_terminal_state_is_not_invented_as_feature(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            result = self._result_with_artifact(Path(temp), [3])
+            report = build_one_spin4win_feature_sessions(result)
+        self.assertEqual(report["session_count"], 0)
+        self.assertTrue(report["complete"])
+
+    def test_feature_chain_can_end_in_executor_proven_terminal_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            result = self._result_with_artifact(Path(temp), [5, 6, 12, 3])
+            report = build_one_spin4win_feature_sessions(result)
+        self.assertEqual(report["session_count"], 1)
+        session = report["sessions"][0]
+        self.assertEqual(session["state"], "COMPLETE")
+        self.assertTrue(session["terminal"]["proven"])
+        self.assertTrue(session["terminal"]["returned_to_base"])
+
+
 if __name__ == "__main__":
     unittest.main()
