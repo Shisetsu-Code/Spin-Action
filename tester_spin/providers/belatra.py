@@ -754,6 +754,59 @@ class BelatraProvider(ProviderAdapter):
                     break
         return rows[:32]
 
+    @staticmethod
+    def _client_script_candidates(
+        text: str,
+        base_url: str,
+        *,
+        allowed_hosts: set[str],
+    ) -> list[str]:
+        """Extract provider-owned JS references from HTML or loaded JS text."""
+        source = str(text or "")
+        raw_values: list[str] = []
+
+        try:
+            soup = BeautifulSoup(source, "html.parser")
+        except Exception:
+            soup = None
+        if soup is not None:
+            for node in soup.find_all(True):
+                for _name, raw in node.attrs.items():
+                    values = raw if isinstance(raw, list) else [raw]
+                    for value in values:
+                        candidate = str(value or "").strip()
+                        if ".js" in candidate.casefold():
+                            raw_values.append(candidate)
+
+        patterns = (
+            r'["\']([^"\']{1,500}\.js(?:\?[^"\']{0,300})?)["\']',
+            r'\bimport\s*\(\s*["\']([^"\']+\.js(?:\?[^"\']*)?)["\']\s*\)',
+        )
+        for pattern in patterns:
+            raw_values.extend(
+                str(match.group(1) or "").strip()
+                for match in re.finditer(pattern, source, flags=re.IGNORECASE)
+            )
+
+        out: list[str] = []
+        seen: set[str] = set()
+        for raw in raw_values:
+            if not raw or raw.startswith(("data:", "blob:", "javascript:")):
+                continue
+            try:
+                url = urljoin(base_url, raw)
+                parsed = urlparse(url)
+            except Exception:
+                continue
+            host = (parsed.hostname or "").casefold()
+            if parsed.scheme not in {"http", "https"} or host not in allowed_hosts:
+                continue
+            clean = parsed._replace(fragment="").geturl()
+            if clean not in seen:
+                seen.add(clean)
+                out.append(clean)
+        return out
+
     def _collect_client_purchase_evidence(
         self,
         session: requests.Session,
@@ -764,36 +817,40 @@ class BelatraProvider(ProviderAdapter):
         target: Path,
     ) -> None:
         """Inspect only provider-owned scripts already referenced by the live demo."""
-        soup = BeautifulSoup(html or "", "html.parser")
         base_host = (urlparse(base_url).hostname or "").casefold()
-        urls: list[str] = []
-        for node in soup.find_all("script", src=True):
-            raw = str(node.get("src") or "").strip()
-            if not raw:
-                continue
-            url = urljoin(base_url, raw)
-            parsed = urlparse(url)
-            host = (parsed.hostname or "").casefold()
-            if parsed.scheme not in {"http", "https"}:
-                continue
-            if not (
-                host == base_host
-                or host == "bltr-static.com"
-                or host.endswith(".bltr-static.com")
-                or host == "belatragames.com"
-                or host.endswith(".belatragames.com")
-            ):
-                continue
-            clean_url = parsed._replace(query="", fragment="").geturl()
-            if clean_url not in urls:
-                urls.append(clean_url)
+        allowed_hosts = {
+            base_host,
+            "bltr-static.com",
+            "demo.bltr-static.com",
+            "belatragames.com",
+            "www.belatragames.com",
+        }
+        allowed_hosts = {host for host in allowed_hosts if host}
 
+        queue: list[tuple[str, int]] = [
+            (url, 0)
+            for url in self._client_script_candidates(
+                html,
+                base_url,
+                allowed_hosts=allowed_hosts,
+            )
+        ]
         rows: list[dict[str, Any]] = []
         scripts: list[dict[str, Any]] = []
-        for url in urls[:24]:
-            item: dict[str, Any] = {"url": url, "ok": False}
+        seen_urls: set[str] = set()
+
+        while queue and len(seen_urls) < 32:
+            url, depth = queue.pop(0)
+            if url in seen_urls:
+                continue
+            seen_urls.add(url)
+            item: dict[str, Any] = {"url": url, "ok": False, "depth": depth}
             try:
-                response = session.get(url, timeout=min(float(timeout_s), 20.0), allow_redirects=True)
+                response = session.get(
+                    url,
+                    timeout=min(float(timeout_s), 20.0),
+                    allow_redirects=True,
+                )
                 response.raise_for_status()
                 if len(response.content) > 8 * 1024 * 1024:
                     item["error"] = "asset_too_large"
@@ -808,10 +865,21 @@ class BelatraProvider(ProviderAdapter):
                 })
                 for snippet in snippets:
                     rows.append({"script_url": url, **snippet})
+
+                if depth < 2:
+                    for child in self._client_script_candidates(
+                        text,
+                        str(getattr(response, "url", "") or url),
+                        allowed_hosts=allowed_hosts,
+                    ):
+                        if child not in seen_urls and all(
+                            existing != child for existing, _d in queue
+                        ):
+                            queue.append((child, depth + 1))
             except Exception as exc:
-                item["error"] = sanitize_error_text(
+                item["error"] = (
                     f"{type(exc).__name__}: {exc}"
-                ) if "sanitize_error_text" in globals() else f"{type(exc).__name__}: {exc}"
+                )[:1200]
             scripts.append(item)
 
         target.parent.mkdir(parents=True, exist_ok=True)

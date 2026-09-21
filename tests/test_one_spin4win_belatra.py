@@ -969,5 +969,25 @@ class BelatraCatalogTests(unittest.TestCase):
         self.assertTrue(all(len(row["snippet"]) <= 900 for row in rows))
 
 
+    def test_belatra_client_script_candidates_follow_inline_and_link_assets(self) -> None:
+        html = (
+            '<link rel="modulepreload" href="/assets/app-abc.js">'
+            '<script>const x="/assets/chunk-def.js";'
+            'const bad="https://example.com/foreign.js";</script>'
+        )
+        urls = self.provider._client_script_candidates(
+            html,
+            "https://demo.bltr-static.com/?sid=x",
+            allowed_hosts={"demo.bltr-static.com"},
+        )
+        self.assertEqual(
+            urls,
+            [
+                "https://demo.bltr-static.com/assets/app-abc.js",
+                "https://demo.bltr-static.com/assets/chunk-def.js",
+            ],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
