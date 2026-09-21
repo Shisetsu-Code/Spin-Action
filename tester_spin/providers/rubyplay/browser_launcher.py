@@ -129,6 +129,86 @@ def _reconstruct_launcher_from_init_session(
     return urlunparse(seed._replace(query=urlencode(items), fragment=""))
 
 
+def _safe_script_contract_hints(text: str, script_url: str) -> dict[str, object]:
+    """Return bounded non-secret hints from an official launcher script."""
+    source = str(text or "")
+    markers = [
+        marker
+        for marker in (
+            "init-session", "gameserver", "server_url", "serverUrl",
+            "currency", "operator", "RP_CONFIG", "WebSocket", "fetch(",
+        )
+        if marker in source
+    ]
+    scalar_values: dict[str, list[str]] = {}
+    for key in ("currency", "operator", "server_url", "serverUrl"):
+        values: list[str] = []
+        for value in re.findall(
+            rf"(?:\\b{re.escape(key)}\\b|[\"\']{re.escape(key)}[\"\'])\\s*[:=]\\s*[\"\']([^\"\']{{1,160}})[\"\']",
+            source,
+            flags=re.IGNORECASE,
+        ):
+            clean = str(value).strip()
+            if clean and clean not in values:
+                values.append(clean)
+        if values:
+            scalar_values[key] = values[:8]
+
+    urls: list[str] = []
+    for raw in re.findall(r"https?://[^\"\'<>\\s)]+", source):
+        try:
+            parsed = urlparse(str(raw))
+        except Exception:
+            continue
+        if not parsed.hostname:
+            continue
+        host = parsed.hostname.casefold()
+        if not (
+            host.endswith("rubyplay.com")
+            or host.endswith("rubyplay.io")
+            or host.endswith("prrpeu3.com")
+        ):
+            continue
+        clean = parsed._replace(query="", fragment="").geturl()
+        if clean not in urls:
+            urls.append(clean)
+
+    parsed_script = urlparse(script_url)
+    safe_script = parsed_script._replace(query="", fragment="").geturl()
+    return {
+        "script": safe_script,
+        "markers": markers,
+        "scalars": scalar_values,
+        "urls": urls[:24],
+    }
+
+
+def _collect_loaded_script_hints(context, page) -> list[dict[str, object]]:
+    hints: list[dict[str, object]] = []
+    try:
+        script_urls = page.locator("script[src]").evaluate_all(
+            "els => els.map(e => e.src).filter(Boolean)"
+        )
+    except Exception:
+        return hints
+    for script_url in list(dict.fromkeys(str(url) for url in script_urls))[:12]:
+        host = (urlparse(script_url).hostname or "").casefold()
+        if not (host.endswith("rubyplay.com") or host.endswith("rubyplay.io")):
+            continue
+        try:
+            response = context.request.get(script_url, timeout=15000)
+            if not response.ok:
+                continue
+            text = response.text()
+        except Exception:
+            continue
+        if len(text) > 8 * 1024 * 1024:
+            continue
+        hint = _safe_script_contract_hints(text, script_url)
+        if hint.get("markers") or hint.get("scalars") or hint.get("urls"):
+            hints.append(hint)
+    return hints
+
 def _launch_browser(*, headless: bool = True):
     from playwright.sync_api import sync_playwright
 
@@ -149,6 +229,7 @@ def resolve_demo_launcher_browser(public_url: str, *, timeout_s: float = 30.0) -
     timeout_ms = max(5_000, int(float(timeout_s) * 1000))
     observed: list[str] = []
     observed_init_launchers: list[str] = []
+    script_hints: list[dict[str, object]] = []
 
     def remember(value: str) -> None:
         candidate = str(value or "").strip()
@@ -199,6 +280,7 @@ def resolve_demo_launcher_browser(public_url: str, *, timeout_s: float = 30.0) -
         direct_observed = _pick_complete_launcher(observed_init_launchers)
         if direct_observed:
             return direct_observed
+        script_hints.extend(_collect_loaded_script_hints(context, page))
 
         clicked = False
         patterns = [
@@ -295,7 +377,8 @@ def resolve_demo_launcher_browser(public_url: str, *, timeout_s: float = 30.0) -
         details = observed[-8:]
         raise ValueError(
             "RubyPlay demo: no apareció un launcher ejecutable después de resolver "
-            f"Play Demo (click={clicked}, launchers_observados={details!r})."
+            f"Play Demo (click={clicked}, launchers_observados={details!r}, "
+            f"script_hints={script_hints[:8]!r})."
         )
     finally:
         try:

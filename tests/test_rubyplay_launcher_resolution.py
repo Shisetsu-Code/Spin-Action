@@ -6,6 +6,7 @@ from unittest.mock import patch
 from tester_spin.providers.rubyplay.browser_launcher import (
     _pick_complete_launcher,
     _reconstruct_launcher_from_init_session,
+    _safe_script_contract_hints,
 )
 from tester_spin.providers.rubyplay.launcher_params import parse_launcher_url
 from tester_spin.providers.rubyplay.launcher_resolver import (
@@ -97,6 +98,21 @@ class RubyPlayLauncherResolutionTests(unittest.TestCase):
             "currency=EUR&gamename=kg_9999&mode=offline&operator=rubyplay.com"
         )
         self.assertIsNone(_reconstruct_launcher_from_init_session(seed, init))
+
+    def test_script_contract_hints_strip_queries_and_keep_safe_config(self) -> None:
+        text = (
+            'const cfg={currency:"EUR",operator:"rubyplay.com",'
+            'server_url:"https://srv.prrpeu3.com?token=secret"};'
+            'fetch("https://srv.prrpeu3.com/init-session/demo?token=secret");'
+        )
+        hint = _safe_script_contract_hints(
+            text,
+            "https://static-demo.rubyplay.com/game.js?key=secret",
+        )
+        self.assertEqual(hint["scalars"]["currency"], ["EUR"])
+        self.assertEqual(hint["scalars"]["operator"], ["rubyplay.com"])
+        self.assertIn("https://srv.prrpeu3.com/", hint["urls"])
+        self.assertNotIn("secret", str(hint))
 
 
 if __name__ == "__main__":
