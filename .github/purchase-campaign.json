@@ -1,19 +1,19 @@
 {
-  "run_sequence": 10,
-  "provider": "1spin4win",
+  "run_sequence": 11,
+  "provider": "rubyplay",
   "slug": "",
   "game_url": "",
   "game_name": "",
   "symbol": "",
   "game_offset": 0,
   "game_limit": 0,
-  "timeout": 60,
+  "timeout": 90,
   "max_pages": 0,
-  "install_chromium": false,
-  "requests_per_minute": 90,
-  "inter_game_delay": 0.75,
-  "circuit_breaker_threshold": 5,
-  "min_requests_per_minute": 30,
+  "install_chromium": true,
+  "requests_per_minute": 45,
+  "inter_game_delay": 1.5,
+  "circuit_breaker_threshold": 4,
+  "min_requests_per_minute": 15,
   "rate_backoff_factor": 0.5,
-  "concurrency": 2
+  "concurrency": 1
 }
