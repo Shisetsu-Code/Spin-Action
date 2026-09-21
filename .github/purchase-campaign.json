@@ -1,6 +1,6 @@
 {
-  "run_sequence": 12,
-  "provider": "redtiger",
+  "run_sequence": 13,
+  "provider": "1spin4win",
   "slug": "",
   "game_url": "",
   "game_name": "",
@@ -10,10 +10,10 @@
   "timeout": 90,
   "max_pages": 0,
   "install_chromium": true,
-  "requests_per_minute": 30,
-  "inter_game_delay": 4,
-  "circuit_breaker_threshold": 3,
-  "min_requests_per_minute": 10,
+  "requests_per_minute": 90,
+  "inter_game_delay": 0.75,
+  "circuit_breaker_threshold": 5,
+  "min_requests_per_minute": 30,
   "rate_backoff_factor": 0.5,
-  "concurrency": 1
+  "concurrency": 2
 }
