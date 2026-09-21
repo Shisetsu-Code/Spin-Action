@@ -141,7 +141,9 @@ def _validated_demo_identity(demo_url: str, game_id: str) -> tuple[str, str]:
         modes = list(dict.fromkeys(str(item) for item in params.get("mode", []) if str(item)))
         if names != [game_id] or modes != ["offline"]:
             raise ValueError(
-                f"RubyPlay Game List: Demo Link no coincide con Game ID={game_id}."
+                "RubyPlay Game List: Demo Link no coincide con "
+                f"Game ID={game_id}; launcher_gamename={names!r}, "
+                f"launcher_mode={modes!r}."
             )
         return game_id.casefold(), demo_url
 
