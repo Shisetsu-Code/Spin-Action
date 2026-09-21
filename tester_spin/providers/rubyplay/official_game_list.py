@@ -139,7 +139,7 @@ def _validated_demo_identity(demo_url: str, game_id: str) -> tuple[str, str]:
         params = parse_qs(parsed.query, keep_blank_values=True)
         names = list(dict.fromkeys(str(item) for item in params.get("gamename", []) if str(item)))
         modes = list(dict.fromkeys(str(item) for item in params.get("mode", []) if str(item)))
-        if names != [game_id] or modes != ["offline"]:
+        if names != [game_id] or len(modes) != 1 or modes[0].casefold() not in {"offline", "demo"}:
             raise ValueError(
                 "RubyPlay Game List: Demo Link no coincide con "
                 f"Game ID={game_id}; launcher_gamename={names!r}, "
@@ -257,4 +257,9 @@ def is_official_game_list_target(game: Game) -> bool:
     params = parse_qs(parsed.query, keep_blank_values=True)
     names = list(dict.fromkeys(str(item).casefold() for item in params.get("gamename", []) if str(item)))
     modes = list(dict.fromkeys(str(item).casefold() for item in params.get("mode", []) if str(item)))
-    return bool(symbol and names == [symbol] and modes == ["offline"])
+    return bool(
+        symbol
+        and names == [symbol]
+        and len(modes) == 1
+        and modes[0] in {"offline", "demo"}
+    )

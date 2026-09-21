@@ -136,5 +136,26 @@ class RubyPlayOfficialGameListTests(unittest.TestCase):
             parse_official_game_list_csv(text, provider_key="rubyplay")
 
 
+    def test_parser_accepts_official_demo_mode_when_identity_matches(self) -> None:
+        text = (
+            "Name,Status,Release Date,Game ID,Wager,Buy Feature,Demo Link\n"
+            "MH Game,Active,2026-09-10,mh_10001,1,Yes,"
+            "https://demo.rubyplay.com/launcher?gamename=mh_10001&mode=demo\n"
+        )
+        records = parse_official_game_list_csv(text, provider_key="rubyplay")
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0].game.symbol, "mh_10001")
+        self.assertIn("mode=demo", records[0].game.url)
+
+    def test_parser_rejects_unknown_official_launcher_mode(self) -> None:
+        text = (
+            "Name,Status,Release Date,Game ID,Wager,Buy Feature,Demo Link\n"
+            "MH Game,Active,2026-09-10,mh_10001,1,Yes,"
+            "https://demo.rubyplay.com/launcher?gamename=mh_10001&mode=unexpected\n"
+        )
+        with self.assertRaisesRegex(ValueError, "no coincide"):
+            parse_official_game_list_csv(text, provider_key="rubyplay")
+
+
 if __name__ == "__main__":
     unittest.main()
