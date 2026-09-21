@@ -101,13 +101,13 @@ class RubyPlayOfficialGameListTests(unittest.TestCase):
     def test_invalid_game_id_diagnostic_is_bounded_and_hides_query_values(self) -> None:
         broken = (
             "Name,Status,Release Date,Game ID,Wager,Buy Feature,Demo Link\n"
-            "Voltage Blitz Rapid Boost 94,Active,2026-09-10,koala_123,1,Yes,"
-            "https://demo.rubyplay.com/launcher?gamename=koala_123&mode=offline&token=secret-value\n"
+            "Broken Identity,Active,2026-09-10,bad id!,1,Yes,"
+            "https://demo.rubyplay.com/launcher?gamename=bad-id&mode=offline&token=secret-value\n"
         )
         with self.assertRaises(ValueError) as caught:
             parse_official_game_list_csv(broken, provider_key="rubyplay")
         message = str(caught.exception)
-        self.assertIn("koala_123", message)
+        self.assertIn("bad id!", message)
         self.assertIn("demo.rubyplay.com", message)
         self.assertIn("/launcher", message)
         self.assertIn("token", message)
